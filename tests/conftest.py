@@ -1,0 +1,66 @@
+"""Configuration partagée de la suite de tests du moteur de paie Camp LilySO.
+
+Ce module :
+
+- documente les marqueurs pytest utilisés dans le projet (aussi déclarés dans
+  ``[tool.pytest.ini_options]`` de ``pyproject.toml``, source unique de vérité
+  côté configuration) ;
+- expose des fixtures de chemins vers les corpus de scénarios ``QC001``–``QC006``
+  (Requirement 12 de la spec ``moteur-paie-contrats``) ;
+- prépare l'accueil des stratégies Hypothesis définies dans
+  ``tests/strategies.py`` (importables sans effets de bord).
+
+Règles applicables (voir ``.kiro/steering/``) :
+
+- Règle 01 — ``Decimal`` obligatoire : aucun test ne DOIT introduire de ``float``
+  pour représenter un montant ou un taux fiscal.
+- Règle 02 — Traçabilité : chaque test golden compare au cent près contre une
+  fixture officielle documentée dans ``docs/scenario-qc0XX.md``.
+- Règle 03 — Périmètre : les tests marqués ``unsupported`` vérifient qu'un cas
+  hors matrice lève ``UnsupportedPayrollCase``.
+- Règle 04 — Données sensibles : aucune donnée nominative réelle ne DOIT
+  apparaître dans les fixtures (voir garde ``tests/test_guards.py`` future).
+- Règle 06 — Workflow : tests avant code, sans exception.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Chemins vers les fixtures (partagés par tous les tests golden et de garde).
+# ---------------------------------------------------------------------------
+
+TESTS_DIR: Final[Path] = Path(__file__).parent
+FIXTURES_DIR: Final[Path] = TESTS_DIR / "fixtures"
+FIXTURES_INPUTS_DIR: Final[Path] = FIXTURES_DIR / "inputs"
+FIXTURES_OUTPUTS_DIR: Final[Path] = FIXTURES_DIR / "outputs"
+FIXTURES_OFFICIAL_DIR: Final[Path] = FIXTURES_DIR / "official"
+
+
+@pytest.fixture(scope="session")
+def fixtures_dir() -> Path:
+    """Racine des fixtures de test."""
+    return FIXTURES_DIR
+
+
+@pytest.fixture(scope="session")
+def fixtures_inputs_dir() -> Path:
+    """Fixtures d'entrée ``PayrollInput`` (JSON) pour ``QC001``–``QC006``."""
+    return FIXTURES_INPUTS_DIR
+
+
+@pytest.fixture(scope="session")
+def fixtures_outputs_dir() -> Path:
+    """Fixtures de sortie ``PayrollResult`` (JSON) pour ``QC001``–``QC006``."""
+    return FIXTURES_OUTPUTS_DIR
+
+
+@pytest.fixture(scope="session")
+def fixtures_official_dir() -> Path:
+    """Captures PDF WebRAS/PDOC archivées (règle 06, étape 4)."""
+    return FIXTURES_OFFICIAL_DIR

@@ -1,0 +1,106 @@
+{
+  "annee": 2026,
+  "juridiction": "quebec",
+  "source": "Revenu Québec — TP-1015.F 2026",
+  "date_publication": "TO_FILL",
+  "date_consultation": "TO_FILL",
+  "url_consultee": "TO_FILL",
+  "notes": "Valeurs marquées 'VALIDE_WEBRAS' ont été vérifiées au cent près par exécution WebRAS sur scénario QC001 et corpus des 5 paies réelles (paie 1 saison 2026). Les 'TO_FILL' doivent être remplis par consultation directe du TP-1015.F 2026 avant de couvrir des cas hors du corpus actuel (ex. dépassement du MGA).",
+
+  "frequence_paie": {
+    "commentaire": "Nombre officiel de périodes de paie dans l'année pour un cycle aux deux semaines. WebRAS utilise 27 pour 2026 (année à 27 paies bi-hebdomadaires selon le calendrier Camp LilySO). Cette valeur DOIT être ré-évaluée chaque année selon le calendrier de paye : 27 pour 2026, 26 pour 2027 (et années standard). Renseignée manuellement à la mise à jour annuelle des paramètres.",
+    "nb_periodes_annuelles": 27,
+    "statut": "VALIDE_WEBRAS"
+  },
+
+  "rrq": {
+    "commentaire": "TP-1015.F 2026, section RRQ. Cotisation de base incluant la première cotisation supplémentaire (bonification 2019+). Le taux 6,3 % agrège base 5,4 % + supplémentaire 0,9 % (à confirmer avec TP-1015.F). La deuxième cotisation supplémentaire (RRQ2, 4 %) ne s'applique qu'aux gains entre MGA et MSGA — hors périmètre Camp LilySO (jamais atteint).",
+    "taux_cotisation_totale_employe": "0.063",
+    "taux_cotisation_totale_employeur": "0.063",
+    "taux_deuxieme_cotisation_supplementaire_employe": "0.040",
+    "taux_deuxieme_cotisation_supplementaire_employeur": "0.040",
+    "exemption_generale_annuelle": "3500.00",
+    "exemption_par_periode_aux_deux_semaines_2026": "129.63",
+    "portion_supplementaire_deductible_fed": {
+      "commentaire": "Portion de la cotisation totale RRQ qui est traitée fédéralement comme une déduction du revenu (et non un crédit). Calculée par PDOC comme 1 % × (brut − exemption). Utile pour le module impot-federal.",
+      "taux_effectif": "0.010"
+    },
+    "maximum_gains_admissibles_mga": "TO_FILL",
+    "maximum_supplementaire_gains_admissibles_msga": "TO_FILL",
+    "cotisation_max_annuelle_employe": "TO_FILL",
+    "statut_taux": "VALIDE_WEBRAS",
+    "statut_plafonds": "TO_FILL"
+  },
+
+  "rqap": {
+    "commentaire": "TP-1015.F 2026, section RQAP. Taux employé et employeur distincts.",
+    "taux_employe": "0.0043",
+    "taux_employeur": "0.00602",
+    "maximum_gains_assurables": "TO_FILL",
+    "cotisation_max_employe": "TO_FILL",
+    "cotisation_max_employeur": "TO_FILL",
+    "statut_taux": "VALIDE_WEBRAS",
+    "statut_plafonds": "TO_FILL"
+  },
+
+  "impot_quebec": {
+    "commentaire": "TP-1015.F 2026, section impôt. Le revenu imposable pour le calcul de la retenue diffère du brut : dans QC001, imposable = brut − 67,57 $ où 67,57 correspond à environ 1 825 $ annuel / 27 périodes (probablement la déduction pour travailleur, à confirmer contre TP-1015.F). Les paliers, taux, constantes et abattements sont à extraire du guide officiel.",
+    "montant_personnel_base": "18952.00",
+    "deduction_pour_travailleur_annuelle": "TO_FILL",
+    "paliers": [
+      {
+        "seuil_bas_annuel": "TO_FILL",
+        "seuil_haut_annuel": "TO_FILL",
+        "taux": "TO_FILL",
+        "constante_k": "TO_FILL"
+      }
+    ],
+    "taux_credits_convertibles": "TO_FILL",
+    "regles_arrondissement": "TO_FILL",
+    "statut": "TO_FILL_FORMULE"
+  },
+
+  "fss": {
+    "commentaire": "TP-1015.F 2026, section Fonds des services de santé. Taux applicable selon la masse salariale totale annuelle de l'employeur. Pour Camp LilySO en 2026 (masse ≈ 14 862 $), le taux appliqué par WebRAS est 1,65 %.",
+    "taux_camp_lilyso_2026": "0.0165",
+    "masse_salariale_utilisee_webras_2026": "14861.60",
+    "table_taux_par_masse_salariale": "TO_FILL",
+    "statut": "VALIDE_WEBRAS_POUR_MASSE_ACTUELLE"
+  },
+
+  "td_1015_3": {
+    "commentaire": "TP-1015.3 — Déclaration pour la retenue d'impôt du Québec. Les valeurs personnelles (montant total, retenue additionnelle) sont normalement portées par la fiche employé. La clé 'retenue_additionnelle_defaut' fournit la valeur par défaut lue par la fabrique 'Employee.avec_defauts_par_annee' (Req 1.7, task 12.5) lorsque le kwarg 'retenue_additionnelle_QC' est absent : conforme à la règle 05, aucune valeur '0.00' n'est codée en dur dans le code Python — elle est portée ici, dans le fichier de paramètres versionné par année.",
+    "retenue_additionnelle_defaut": "0.00",
+    "statut": "VALIDE_STRUCTURE"
+  },
+
+  "cnesst": {
+    "commentaire": "Classification et taux confirmés officiellement par la CNESST pour Camp LilySO.",
+    "statut": "VALIDE_OFFICIEL",
+    "unite": "57020",
+    "taux_cni": "0.0090",
+    "taux_unite": "0.0022",
+    "taux_total": "0.0112",
+    "en_attente_classification": false
+  },
+
+  "cnt": {
+    "commentaire": "Cotisation relative aux normes du travail — taux annuel officiel. N'apparaît pas dans WebRAS par paie (charge annuelle).",
+    "taux": "TO_FILL",
+    "base_admissible": "TO_FILL",
+    "statut": "TO_FILL"
+  },
+
+  "vacances": {
+    "commentaire": "Politique employeur — non fiscal.",
+    "taux_defaut": "0.04",
+    "taux_alternatif": "0.06",
+    "mode_versement": "chaque_paie"
+  },
+
+  "heures_supplementaires": {
+    "commentaire": "Loi sur les normes du travail du Québec.",
+    "seuil_hebdomadaire_heures": "40",
+    "multiplicateur": "1.5"
+  }
+}

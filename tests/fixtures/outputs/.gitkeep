@@ -1,0 +1,4 @@
+# Ce dossier accueillera les fixtures de sortie anonymisées QC001..QC006
+# (Requirement 12, Acceptance Criteria 7 à 9 de moteur-paie-contrats).
+# Valeurs de référence issues de WebRAS et PDOC, comparées au cent près.
+# Aucune donnée nominative réelle ne DOIT y être déposée (règle 04).

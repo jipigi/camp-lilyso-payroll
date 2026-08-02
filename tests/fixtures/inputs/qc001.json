@@ -1,0 +1,76 @@
+{
+  "employee": {
+    "id": "EMPTEST001",
+    "nom_affichage": "Employé Test QC001",
+    "date_naissance": "2005-06-15",
+    "province_travail": "quebec",
+    "titre_emploi": "Employé synthétique",
+    "taux_horaire_base": "18.00",
+    "date_embauche": "2026-06-15",
+    "date_fin_emploi": null,
+    "taux_indemnite_vacances": "0.04",
+    "exoneration_TP1015_3": false,
+    "exoneration_TD1": false,
+    "montant_total_TP1015_3": "18952.00",
+    "montant_total_TD1": "16452.00",
+    "retenue_additionnelle_QC": "0.00",
+    "retenue_additionnelle_federale": "0.00"
+  },
+  "pay_period": {
+    "numero_periode": 1,
+    "date_debut": "2026-07-13",
+    "date_fin": "2026-07-26",
+    "date_paiement": "2026-07-29",
+    "frequence": "aux_deux_semaines",
+    "nb_periodes_annuelles": 27,
+    "annee_fiscale": 2026,
+    "semaines": [
+      {
+        "date_debut": "2026-07-13",
+        "date_fin": "2026-07-19",
+        "heures_normales": "40.5",
+        "heures_supplementaires": "0"
+      },
+      {
+        "date_debut": "2026-07-20",
+        "date_fin": "2026-07-26",
+        "heures_normales": "40.5",
+        "heures_supplementaires": "0"
+      }
+    ]
+  },
+  "heures_par_semaine": [
+    {
+      "heures_normales": "40.5",
+      "heures_supplementaires": "0"
+    },
+    {
+      "heures_normales": "40.5",
+      "heures_supplementaires": "0"
+    }
+  ],
+  "taux_horaire_effectif": "18.00",
+  "taux_vacances": "0.04",
+  "jours_feries_manuels": "0.00",
+  "montant_total_TP1015_3_effectif": "18952.00",
+  "exoneration_TP1015_3_effectif": false,
+  "retenue_additionnelle_QC_effective": "0.00",
+  "montant_total_TD1_effectif": "16452.00",
+  "exoneration_TD1_effective": false,
+  "retenue_additionnelle_federale_effective": "0.00",
+  "cumuls_debut": {
+    "employe_id": "EMPTEST001",
+    "annee_civile": 2026,
+    "brut": "0.00",
+    "vacances": "0.00",
+    "rrq_employe": "0.00",
+    "rrq_employeur": "0.00",
+    "rqap_employe": "0.00",
+    "rqap_employeur": "0.00",
+    "ae_employe": "0.00",
+    "ae_employeur": "0.00",
+    "impot_qc_retenu": "0.00",
+    "impot_federal_retenu": "0.00",
+    "net": "0.00"
+  }
+}

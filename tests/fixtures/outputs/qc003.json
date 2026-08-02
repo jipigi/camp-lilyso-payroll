@@ -1,0 +1,261 @@
+{
+  "id_paie": "PAIE-EMP002-2026-01",
+  "version": 1,
+  "employe_id": "EMP002",
+  "annee_fiscale": 2026,
+  "pay_period": {
+    "numero_periode": 1,
+    "date_debut": "2026-07-13",
+    "date_fin": "2026-07-26",
+    "date_paiement": "2026-07-29",
+    "frequence": "aux_deux_semaines",
+    "nb_periodes_annuelles": 27,
+    "annee_fiscale": 2026,
+    "semaines": [
+      {
+        "date_debut": "2026-07-13",
+        "date_fin": "2026-07-19",
+        "heures_normales": "58",
+        "heures_supplementaires": "5"
+      },
+      {
+        "date_debut": "2026-07-20",
+        "date_fin": "2026-07-26",
+        "heures_normales": "58",
+        "heures_supplementaires": "5"
+      }
+    ]
+  },
+  "gains": {
+    "salaire_regulier": "1856.00",
+    "heures_supplementaires_montant": "240.00",
+    "vacances": "83.84",
+    "jours_feries_manuels": "0.00",
+    "brut_total": "2179.84",
+    "multiplicateur_heures_supp": "1.5",
+    "seuil_heures_supp_hebdo": "40"
+  },
+  "retenues_employe": {
+    "rrq": {
+      "montant": "129.16",
+      "trace": {
+        "source": "TP-1015.F 2026, section 3.2 — RRQ",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "3.2 — RRQ",
+        "parametres_utilises": {"taux_base_employe": "0.0630", "exemption_generale_annuelle": "3500.00"},
+        "entrees": {"salaire_periode": "2179.84", "nb_periodes_annuelles": "27", "cumul_ytd": "0.00"},
+        "sous_totaux": {"exemption_periode": "129.63", "assiette_cotisable": "2050.21"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "129.16"
+      }
+    },
+    "rqap": {
+      "montant": "9.37",
+      "trace": {
+        "source": "TP-1015.F 2026, section 3.3 — RQAP",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "3.3 — RQAP employé",
+        "parametres_utilises": {"taux_employe": "0.00430"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_brute": "9.37"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "9.37"
+      }
+    },
+    "ae": {
+      "montant": "28.34",
+      "trace": {
+        "source": "T4127 2026, section 4 — Assurance-emploi",
+        "annee": 2026,
+        "juridiction": "canada",
+        "section": "4 — AE employé (taux Québec)",
+        "parametres_utilises": {"taux_employe_quebec": "0.01300"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_brute": "28.34"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "28.34"
+      }
+    },
+    "impot_qc_formule": {
+      "montant": "201.17",
+      "trace": {
+        "source": "TP-1015.F 2026, section 4 — Impôt du Québec",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "4 — Retenue d'impôt du Québec (formule pré-exonération)",
+        "parametres_utilises": {"montant_personnel_base": "18952.00"},
+        "entrees": {"salaire_periode": "2179.84", "nb_periodes_annuelles": "27"},
+        "sous_totaux": {"impot_avant_exoneration": "201.17"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "201.17"
+      }
+    },
+    "impot_qc_retenu": {
+      "montant": "0.00",
+      "trace": {
+        "source": "TP-1015.F 2026, section 4 — Impôt du Québec",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "4 — Retenue d'impôt du Québec (court-circuit exonération TP-1015.3)",
+        "parametres_utilises": {"exoneration_tp1015_3_active": "1"},
+        "entrees": {"impot_qc_formule": "201.17"},
+        "sous_totaux": {"retenue_effective": "0.00"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "0.00"
+      }
+    },
+    "impot_federal_formule": {
+      "montant": "173.35",
+      "trace": {
+        "source": "T4127 2026, section 3 — Impôt fédéral",
+        "annee": 2026,
+        "juridiction": "canada",
+        "section": "3 — Retenue d'impôt fédéral (formule pré-exonération)",
+        "parametres_utilises": {"montant_personnel_base": "16452.00"},
+        "entrees": {"salaire_periode": "2179.84", "nb_periodes_annuelles": "27"},
+        "sous_totaux": {"impot_avant_exoneration": "173.35"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "173.35"
+      }
+    },
+    "impot_federal_retenu": {
+      "montant": "0.00",
+      "trace": {
+        "source": "T4127 2026, section 3 — Impôt fédéral",
+        "annee": 2026,
+        "juridiction": "canada",
+        "section": "3 — Retenue d'impôt fédéral (court-circuit exonération TD1)",
+        "parametres_utilises": {"exoneration_td1_active": "1"},
+        "entrees": {"impot_federal_formule": "173.35"},
+        "sous_totaux": {"retenue_effective": "0.00"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "0.00"
+      }
+    },
+    "total_retenues_employe": "166.87"
+  },
+  "cotisations_employeur": {
+    "rrq_employeur": {
+      "montant": "129.16",
+      "trace": {
+        "source": "TP-1015.F 2026, section 3.2 — RRQ",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "3.2 — RRQ employeur",
+        "parametres_utilises": {"taux_base_employeur": "0.0630"},
+        "entrees": {"salaire_periode": "2179.84", "assiette_cotisable": "2050.21"},
+        "sous_totaux": {"cotisation_employeur": "129.16"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "129.16"
+      }
+    },
+    "rqap_employeur": {
+      "montant": "13.12",
+      "trace": {
+        "source": "TP-1015.F 2026, section 3.3 — RQAP",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "3.3 — RQAP employeur",
+        "parametres_utilises": {"taux_employeur": "0.00602"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_employeur": "13.12"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "13.12"
+      }
+    },
+    "ae_employeur": {
+      "montant": "39.68",
+      "trace": {
+        "source": "T4127 2026, section 4 — Assurance-emploi",
+        "annee": 2026,
+        "juridiction": "canada",
+        "section": "4 — AE employeur (multiplicateur 1.4)",
+        "parametres_utilises": {"multiplicateur_employeur": "1.4"},
+        "entrees": {"ae_employe": "28.34"},
+        "sous_totaux": {"cotisation_employeur": "39.676"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "39.68"
+      }
+    },
+    "fss": {
+      "montant": "35.97",
+      "trace": {
+        "source": "TP-1015.F 2026, section 5 — FSS",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "5 — Fonds des services de santé",
+        "parametres_utilises": {"taux_fss": "0.0165"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_brute": "35.97"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "35.97"
+      }
+    },
+    "cnesst": {
+      "montant": "24.41",
+      "trace": {
+        "source": "TP-1015.F 2026, section 6 — CNESST",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "6 — CNESST (unité 57020)",
+        "parametres_utilises": {"taux_cnesst_provisoire": "0.0112"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_brute": "24.41"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "24.41"
+      }
+    },
+    "cnesst_en_attente_classification": false,
+    "cnt": {
+      "montant": "0.00",
+      "trace": {
+        "source": "TP-1015.F 2026, section 7 — CNT",
+        "annee": 2026,
+        "juridiction": "quebec",
+        "section": "7 — Commission des normes du travail",
+        "parametres_utilises": {"taux_cnt": "0.0000"},
+        "entrees": {"salaire_periode": "2179.84"},
+        "sous_totaux": {"cotisation_brute": "0.00"},
+        "mode_arrondissement": "ROUND_HALF_UP",
+        "precision_arrondissement": 2,
+        "resultat": "0.00"
+      }
+    },
+    "total_cotisations_employeur": "242.34"
+  },
+  "net": "2012.97",
+  "cout_employeur": "2422.18",
+  "cumuls_fin": {
+    "employe_id": "EMP002",
+    "annee_civile": 2026,
+    "brut": "2179.84",
+    "vacances": "83.84",
+    "rrq_employe": "129.16",
+    "rrq_employeur": "129.16",
+    "rqap_employe": "9.37",
+    "rqap_employeur": "13.12",
+    "ae_employe": "28.34",
+    "ae_employeur": "39.68",
+    "impot_qc_retenu": "0.00",
+    "impot_federal_retenu": "0.00",
+    "net": "2012.97"
+  },
+  "statut": "emise",
+  "remplace_par_id": null,
+  "date_creation": "2026-07-27T09:00:00",
+  "date_emission": "2026-07-29T09:00:00"
+}

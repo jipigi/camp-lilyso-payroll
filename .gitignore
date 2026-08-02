@@ -1,0 +1,86 @@
+# =============================================================
+# Camp LilySO — .gitignore
+# La priorité absolue est d'exclure toute donnée personnelle réelle.
+# Voir la règle de steering 04-donnees-sensibles.md.
+# =============================================================
+
+# ---- Données sensibles (règle 04) ----
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+data/
+personal/
+secrets/
+.env
+.env.*
+!.env.example
+
+# Documents nominatifs (TD1, TP-1015.3, bulletins réels, RE)
+*_reel.*
+*_real.*
+bulletins_reels/
+donnees_reelles/
+
+# Zone d'atterrissage pour fichiers sources contenant potentiellement des données
+# personnelles réelles (Excel de fiches d'employés, bulletins générés depuis
+# WebRAS/PDOC, captures d'écran nominatives). Voir docs/atelier-donnees-sources.md.
+intake/
+
+# Captures WebRAS/PDOC contenant potentiellement des données réelles
+tests/fixtures/personal/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- Outils ----
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+
+# ---- IDE ----
+.vscode/
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Sorties temporaires ----
+*.log
+*.pdf
+!docs/**/*.pdf
+!tests/fixtures/official/QC*/**.pdf
+
+# ---- Streamlit ----
+.streamlit/secrets.toml

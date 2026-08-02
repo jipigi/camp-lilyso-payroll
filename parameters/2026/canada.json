@@ -1,0 +1,61 @@
+{
+  "annee": 2026,
+  "juridiction": "canada",
+  "source": "Agence du revenu du Canada — T4127 2026",
+  "date_publication": "TO_FILL",
+  "date_consultation": "TO_FILL",
+  "url_consultee": "TO_FILL",
+  "notes": "Valeurs marquées 'VALIDE_PDOC' ont été vérifiées au cent près par exécution PDOC sur scénario QC001 et corpus des 5 paies réelles. Les 'TO_FILL' doivent être remplis par consultation directe du T4127 2026 avant de couvrir des cas hors du corpus actuel.",
+
+  "frequence_paie": {
+    "commentaire": "Nombre officiel de périodes de paie dans l'année pour un cycle aux deux semaines. PDOC utilise 27 pour 2026 (identique à la valeur québécoise, doit rester synchronisé entre les deux juridictions).",
+    "nb_periodes_annuelles": 27,
+    "statut": "VALIDE_PDOC"
+  },
+
+  "assurance_emploi": {
+    "commentaire": "T4127 2026 — taux applicable aux résidents du Québec en raison du RQAP. Multiplicateur employeur standard 1,4 (aucune réduction pour Camp LilySO — OBNL sans régime admissible).",
+    "province_taux": "QC",
+    "taux_employe_quebec": "0.0130",
+    "multiplicateur_employeur": "1.4",
+    "maximum_gains_assurables": "TO_FILL",
+    "cotisation_max_employe": "TO_FILL",
+    "cotisation_max_employeur": "TO_FILL",
+    "reduction_taux_employeur": "aucune",
+    "commentaire_reduction": "Camp LilySO n'a aucun régime admissible à la réduction du taux employeur.",
+    "statut_taux": "VALIDE_PDOC",
+    "statut_plafonds": "TO_FILL"
+  },
+
+  "impot_federal": {
+    "commentaire": "T4127 2026 — formules de retenue de l'impôt fédéral. Le revenu imposable fédéral diffère du brut : PDOC déduit la portion supplémentaire du RRQ (1 % × (brut − exemption RRQ)). Pour QC001, revenu imposable féd. = brut − 13,87 $ = 1 502,45 $.",
+    "montant_personnel_base": "16452.00",
+    "deduction_rrq_supplementaire": {
+      "commentaire": "La portion 1 % du RRQ (cotisation supplémentaire bonifiée) est déduite du revenu avant calcul de l'impôt fédéral, comme une déduction plutôt qu'un crédit. Formule : deduction = 0,01 × (brut − exemption_rrq_pp).",
+      "taux": "0.010",
+      "statut": "VALIDE_PDOC"
+    },
+    "paliers": [
+      {
+        "seuil_bas_annuel": "TO_FILL",
+        "seuil_haut_annuel": "TO_FILL",
+        "taux": "TO_FILL",
+        "constante_k": "TO_FILL"
+      }
+    ],
+    "taux_credits_convertibles": "TO_FILL",
+    "annualisation": "TO_FILL",
+    "regles_arrondissement": "TO_FILL",
+    "montant_emploi_canadien_annuel": "TO_FILL",
+    "statut": "TO_FILL_FORMULE"
+  },
+
+  "td1": {
+    "commentaire": "Formulaire TD1 fédéral — paramètres personnels. Ni PDOC ni WebRAS ne proposent de case 'exonération de la retenue' : cette décision est prise par l'employeur en aval du calcul, sur la base de la case cochée sur le TD1 par l'employé (ou du fait que le revenu annuel projeté du camp est inférieur au montant personnel de base). La clé 'retenue_additionnelle_defaut' fournit la valeur par défaut lue par la fabrique 'Employee.avec_defauts_par_annee' (Req 1.7, task 12.5) lorsque le kwarg 'retenue_additionnelle_federale' est absent : conforme à la règle 05, aucune valeur '0.00' n'est codée en dur dans le code Python.",
+    "montant_base_2026": "16452.00",
+    "retenue_additionnelle_defaut": "0.00",
+    "exoneration_supportee_par_moteur": true,
+    "exoneration_mecanisme": "court-circuit en amont du calcul d'impôt fédéral",
+    "retenue_additionnelle_supportee": true
+  }
+}
