@@ -61,89 +61,52 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Property test : `brut = regulier + hs + vacances`
 - Cas d'erreur : heures négatives, taux nul, semaine à 168 h
 
-## Étape 3 — Spec `rrq`
+## Étape 3 — Spec `cotisations-sociales-qc` (RRQ, RQAP, AE)
 
-**Objectif** : reproduire la formule RRQ du TP-1015.F 2026 au cent près.
-
-**Livrables** :
-
-- `payroll_engine/rrq.py`
-- Support de l'exemption générale annuelle (répartition selon la fréquence de paie)
-- Support du plafond annuel (arrêt de la cotisation)
-- Support des cumuls YTD
-
-**Tests** :
-
-- Golden test QC001 : cotisation employé = 86,34 $ sur 1 516,32 $
-- Property test : cotisation ≤ plafond annuel, monotonie du cumul
-- Cas d'erreur : gains inférieurs à l'exemption prorata → cotisation nulle
-
-## Étape 4 — Spec `rqap`
-
-**Objectif** : reproduire la formule RQAP du TP-1015.F 2026.
+**Objectif** : reproduire au cent près les trois cotisations sociales à taux fixe plafonné (RRQ, RQAP, AE) du TP-1015.F 2026 et du T4127 2026. Regroupées dans une seule spec car les trois formules partagent la même forme (taux × gains admissibles, plafond annuel, cumul YTD, cotisation employeur dérivée de la cotisation employé).
 
 **Livrables** :
 
-- `payroll_engine/rqap.py`
-- Cotisation employé et employeur
-- Plafond annuel
+- `payroll_engine/rrq.py` — cotisation RRQ employé/employeur
+  - Support de l'exemption générale annuelle (répartition selon la fréquence de paie)
+  - Support du plafond annuel (arrêt de la cotisation)
+  - Support des cumuls YTD
+- `payroll_engine/rqap.py` — cotisation RQAP employé/employeur
+  - Plafond annuel
+- `payroll_engine/ei.py` — cotisation AE employé (taux QC) et employeur (× 1,4)
+  - Plafond annuel
 
 **Tests** :
 
-- Golden test QC001 (à compléter)
-- Property test : plafonds respectés, cumul monotone
+- Golden test QC001 : RRQ employé = 86,34 $ sur 1 516,32 $ ; RQAP et AE à compléter via WebRAS/PDOC
+- Property test RRQ : cotisation ≤ plafond annuel, monotonie du cumul
+- Property test RQAP/AE : plafonds respectés, cumul monotone, `AE employeur = 1.4 * AE employé` (au cent près)
+- Cas d'erreur RRQ : gains inférieurs à l'exemption prorata → cotisation nulle
+- Anomalie connue à trancher lors de l'implémentation RQAP : écart de 1 ¢ sur QC004 (EMP003) entre l'Excel source (1,78 $) et la formule (1,77 $) — ré-exécuter WebRAS et retenir sa valeur comme référence.
 
-## Étape 5 — Spec `assurance-emploi`
+## Étape 4 — Spec `impots-retenues-source` (Québec et fédéral)
 
-**Objectif** : reproduire la formule AE du T4127 2026 (taux Québec).
+**Objectif** : reproduire au cent près les retenues d'impôt du Québec (TP-1015.F 2026) et fédérale (T4127 2026). Regroupées dans une seule spec car les deux formules partagent la même forme (paliers progressifs, constantes d'ajustement, mécanisme d'exonération porté par un formulaire personnel, retenue additionnelle).
 
 **Livrables** :
 
-- `payroll_engine/ei.py`
-- Cotisation employé (taux QC)
-- Cotisation employeur (× 1,4)
-- Plafond annuel
+- `payroll_engine/quebec_tax.py` — retenue d'impôt du Québec
+  - Support de la fréquence de paie théorique (26 périodes annuelles ou selon la formule officielle)
+  - Support de l'exonération TP-1015.3
+  - Support de la retenue additionnelle
+- `payroll_engine/federal_tax.py` — retenue d'impôt fédéral
+  - Support de la fréquence de paie théorique
+  - Support de l'exonération TD1
+  - Support de la retenue additionnelle
+- Séparation stricte, commune aux deux modules : exonération d'impôt ≠ exemption des cotisations sociales (RRQ/RQAP/AE restent dus même si l'impôt est exonéré)
 
 **Tests** :
 
-- Golden test QC001 (à compléter via PDOC)
-- Property test : `employeur = 1.4 * employe` (au cent près)
+- Golden test QC001 : impôt QC = 104,56 $ ; impôt fédéral à compléter via PDOC
+- Cas d'exonération (QC et fédéral) : impôt = 0 $, RRQ/RQAP/AE inchangés
+- Retenue additionnelle : ajout au cent près (QC et fédéral)
 
-## Étape 6 — Spec `impot-quebec`
-
-**Objectif** : reproduire la retenue d'impôt du Québec selon TP-1015.F 2026.
-
-**Livrables** :
-
-- `payroll_engine/quebec_tax.py`
-- Support de la fréquence de paie théorique (26 périodes annuelles ou selon la formule officielle)
-- Support de l'exonération TP-1015.3
-- Support de la retenue additionnelle
-- Séparation stricte : exonération d'impôt ≠ exemption des cotisations sociales
-
-**Tests** :
-
-- Golden test QC001 : impôt QC = 104,56 $
-- Cas d'exonération : impôt QC = 0 $, RRQ/RQAP/AE inchangés
-- Retenue additionnelle : ajout au cent près
-
-## Étape 7 — Spec `impot-federal`
-
-**Objectif** : reproduire la retenue d'impôt fédéral selon T4127 2026.
-
-**Livrables** :
-
-- `payroll_engine/federal_tax.py`
-- Support de la fréquence de paie théorique
-- Support de l'exonération TD1
-- Support de la retenue additionnelle
-
-**Tests** :
-
-- Golden test QC001 (à compléter via PDOC)
-- Cas d'exonération
-
-## Étape 8 — Spec `charges-patronales`
+## Étape 5 — Spec `charges-patronales`
 
 **Objectif** : calculer les charges assumées par l'employeur (hors bulletin employé).
 
@@ -160,7 +123,7 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Property test : `cout_employeur = brut + total_charges_patronales`
 - Comportement CNESST en attente : flag `EN_ATTENTE_CLASSIFICATION` dans la trace
 
-## Étape 9 — Spec `net-cumuls-registre`
+## Étape 6 — Spec `net-cumuls-registre`
 
 **Objectif** : assembler un `PayrollResult` complet et maintenir le registre maître.
 
@@ -177,7 +140,7 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Property test : cumul YTD n paies = somme des paies 1..n
 - Test d'annulation-remplacement (immutabilité, versionnement)
 
-## Étape 10 — Spec `bulletin-pdf`
+## Étape 7 — Spec `bulletin-pdf`
 
 **Objectif** : générer un bulletin PDF conforme aux exigences du guide TP-1015.G.
 
@@ -192,7 +155,7 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Snapshot PDF (comparaison structure)
 - Présence des champs obligatoires
 
-## Étape 11 — Spec `interface-streamlit`
+## Étape 8 — Spec `interface-streamlit`
 
 **Objectif** : interface locale pour saisir une paie et générer les livrables.
 
@@ -207,7 +170,7 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Tests d'intégration : parcours saisie → PDF sans erreur
 - Aucun test UI automatisé au niveau des composants (hors périmètre MVP)
 
-## Étape 12 — Validation croisée continue
+## Étape 9 — Validation croisée continue
 
 **Objectif** : politique de validation permanente.
 
@@ -221,10 +184,10 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 
 Si la première saison arrive avant la complétion de toutes les étapes :
 
-1. Étapes 0 à 3 (contrats + gains + RRQ) sont nécessaires
-2. Étapes 4 à 7 (RQAP, AE, impôts) sont nécessaires
-3. Étape 8 (charges patronales) est nécessaire pour la comptabilité
-4. Étape 9 (registre) est nécessaire pour les cumuls
-5. Étape 10 (PDF) et Étape 11 (Streamlit) peuvent temporairement être remplacés par un export CSV et une saisie via un notebook Jupyter
+1. Étapes 0 à 3 (contrats + gains + cotisations sociales RRQ/RQAP/AE) sont nécessaires
+2. Étape 4 (impôts QC et fédéral) est nécessaire
+3. Étape 5 (charges patronales) est nécessaire pour la comptabilité
+4. Étape 6 (registre) est nécessaire pour les cumuls
+5. Étape 7 (PDF) et Étape 8 (Streamlit) peuvent temporairement être remplacés par un export CSV et une saisie via un notebook Jupyter
 
 L'objectif reste **exactitude avant automatisation**.

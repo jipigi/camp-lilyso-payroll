@@ -47,15 +47,12 @@ Chaque module de calcul doit inclure au minimum ces propriétés :
 
 1. `moteur-paie-contrats` — modèles, exceptions, trace, chargeur de paramètres
 2. `gains-bruts-vacances-hs` — salaire régulier, heures supp par semaine, vacances 4 %
-3. `rrq` — cotisation employé et employeur
-4. `rqap` — cotisation employé et employeur
-5. `assurance-emploi` — AE employé et employeur (taux Québec, ×1.4)
-6. `impot-quebec` — retenue TP-1015.F avec exonération TP-1015.3
-7. `impot-federal` — retenue T4127 avec exonération TD1
-8. `charges-patronales` — FSS, CNESST, CNT
-9. `net-cumuls-registre` — assemblage, cumuls YTD, registre maître
-10. `bulletin-pdf` — génération du bulletin PDF
-11. `interface-streamlit` — saisie et affichage
+3. `cotisations-sociales-qc` — RRQ, RQAP et AE (employé et employeur), regroupées car formes de formule identiques (taux × gains admissibles plafonnés, cumul YTD)
+4. `impots-retenues-source` — impôt QC (TP-1015.F, exonération TP-1015.3) et impôt fédéral (T4127, exonération TD1), regroupées car formes de formule identiques (paliers progressifs, exonération, retenue additionnelle)
+5. `charges-patronales` — FSS, CNESST, CNT
+6. `net-cumuls-registre` — assemblage, cumuls YTD, registre maître
+7. `bulletin-pdf` — génération du bulletin PDF
+8. `interface-streamlit` — saisie et affichage
 
 ## Discipline générale
 
