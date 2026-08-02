@@ -56,12 +56,16 @@ Requirements couverts : 12.7, 12.8, 12.9.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Final
 
 import pytest
 
-from models.payroll_result import PayrollResult
+from models.enums import Juridiction
+from models.payroll_input import PayrollInput
+from models.payroll_result import GainsDecomposes, PayrollResult
+from payroll_engine.parameters_loader import load_parameters
 
 
 # ---------------------------------------------------------------------------
@@ -246,4 +250,125 @@ def test_golden_output_scenario(
         f"vis-à-vis du contrat ``PayrollResult``, (3) que les valeurs "
         f"``Decimal`` sont écrites comme des chaînes guillemées dans la "
         f"fixture (règle 01)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Golden test — section `gains` du corpus QC001–QC006 (spec
+# gains-bruts-vacances-hs, tâche 3.1).
+#
+# ``calcul_gains`` n'existe pas encore à ce stade de la règle 06 (« tests
+# avant code ») : le module ``payroll_engine.gains_bruts`` sera livré par
+# les tâches 5.1/5.2. L'import est donc effectué **localement**, à
+# l'intérieur du test, afin qu'un ``ModuleNotFoundError`` sur cette seule
+# fonction ne fasse pas échouer la collecte de tout ce fichier (les golden
+# tests ci-dessus, portant sur des modules déjà livrés, doivent continuer à
+# passer).
+# ---------------------------------------------------------------------------
+
+SCENARIOS_GAINS: Final[tuple[str, ...]] = (
+    "QC001",
+    "QC002",
+    "QC003",
+    "QC004",
+    "QC005",
+    "QC006",
+)
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize("scenario_id", SCENARIOS_GAINS)
+def test_calcul_gains_reproduit_fixture(
+    scenario_id: str,
+    fixtures_inputs_dir: Path,
+    fixtures_outputs_dir: Path,
+) -> None:
+    """Reproduit la section ``gains`` de la fixture au cent près.
+
+    **Limitation connue du corpus** (héritée de l'Introduction des
+    requirements de la spec ``gains-bruts-vacances-hs`` et de
+    ``docs/hypotheses-2026.md`` §9) : les fixtures ``qc00X.json``
+    portent une décomposition hebdomadaire des heures qui est une
+    **fabrication 50/50** du total de période sur les deux semaines
+    constituantes — les valeurs WebRAS/PDOC de référence ont été
+    calculées sur les **totaux de période**, pas semaine par semaine.
+    La reproduction au cent près validée ici ne porte donc que sur les
+    totaux de période ; elle reste correcte car la formule de
+    ``calcul_gains`` est linéaire (``Σ heures_semaine × taux ==
+    heures_totales × taux``), indépendamment du découpage fabriqué.
+
+    Validates: Requirements 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7,
+    11.8
+    """
+    # Import local — voir le commentaire de section ci-dessus : le
+    # module n'existe pas encore (tâches 5.1/5.2), l'échec attendu à ce
+    # stade est un ``ModuleNotFoundError`` propre, pas un crash de
+    # collecte pour le reste du fichier.
+    from payroll_engine.gains_bruts import calcul_gains
+
+    scenario_fichier = scenario_id.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Chargement de la fixture d'entrée → ``PayrollInput``.
+    # ------------------------------------------------------------------
+    fixture_input_path = fixtures_inputs_dir / f"{scenario_fichier}.json"
+    assert fixture_input_path.exists(), (
+        f"Fixture d'entrée manquante : {fixture_input_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    payroll_input = PayrollInput.model_validate_json(
+        fixture_input_path.read_text(encoding="utf-8")
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Chargement des paramètres annuels versionnés (règle 05).
+    # ------------------------------------------------------------------
+    parametres = load_parameters(2026, Juridiction.QUEBEC)
+
+    # ------------------------------------------------------------------
+    # 3. Chargement de la fixture de sortie → section ``gains`` →
+    #    ``GainsDecomposes`` attendu.
+    # ------------------------------------------------------------------
+    fixture_output_path = fixtures_outputs_dir / f"{scenario_fichier}.json"
+    assert fixture_output_path.exists(), (
+        f"Fixture de sortie manquante : {fixture_output_path}. Les "
+        f"tâches 14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    fixture_output = json.loads(
+        fixture_output_path.read_text(encoding="utf-8")
+    )
+    gains_attendus = GainsDecomposes(**fixture_output["gains"])
+
+    # ------------------------------------------------------------------
+    # 4. Appel du moteur de gains bruts.
+    # ------------------------------------------------------------------
+    gains_effectifs, trace = calcul_gains(payroll_input, parametres)
+
+    # ------------------------------------------------------------------
+    # 5. Assertions golden (Req 11.1–11.8).
+    # ------------------------------------------------------------------
+
+    # (a) Égalité stricte des sept champs ``Decimal`` — tolérance nulle
+    #     (règle 01). ``GainsDecomposes`` est ``frozen=True`` et
+    #     implémente l'égalité structurelle Pydantic v2 : ``==`` compare
+    #     bien les sept champs un à un.
+    assert gains_effectifs == gains_attendus, (
+        f"[{scenario_id}] La section gains calculée diverge de la "
+        f"fixture au cent près (Req 11.1–11.5) : "
+        f"{gains_effectifs!r} != {gains_attendus!r}."
+    )
+
+    # (b) Cohérence trace/gains (Req 11.8).
+    assert trace.resultat == gains_attendus.brut_total, (
+        f"[{scenario_id}] trace.resultat ({trace.resultat}) != "
+        f"gains.brut_total ({gains_attendus.brut_total}) (Req 11.8)."
+    )
+
+    # (c) Conformité de ``trace.source`` à la liste blanche TP-1015.G
+    #     2026 (Req 11.7).
+    assert re.match(r"^TP-1015\.G 2026(, section .+)?$", trace.source), (
+        f"[{scenario_id}] trace.source ({trace.source!r}) ne matche pas "
+        f"^TP-1015\\.G 2026(, section .+)?$ (Req 11.7)."
     )

@@ -37,6 +37,7 @@ Règles applicables (voir ``.kiro/steering/``) :
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from decimal import Decimal
@@ -789,4 +790,643 @@ class TestNoPersonalDataInFixtures:
             "(règle 04). Utiliser un motif de la liste blanche "
             "(EMP<num>, Monitrice, Moniteur EMP<num>, Employé Test "
             "QC<num>, etc.) :\n" + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 4.1 (spec gains-bruts-vacances-hs) — Absence de ``float`` dans
+#     ``payroll_engine/gains_bruts.py`` (Req 12.1, 12.2, 12.3, 12.4, 1.4)
+# ===========================================================================
+#
+# Spec de référence : ``gains-bruts-vacances-hs`` — tâche 4.1. Cette garde
+# est écrite AVANT ``payroll_engine/gains_bruts.py`` (tâches 5.1/5.2, non
+# réalisées à ce stade) — règle 06 « tests avant code ». Tant que le
+# fichier n'existe pas, chaque test de cette classe échoue de façon
+# explicite via ``pytest.fail`` (et non par une erreur de collection),
+# ce qui est le comportement rouge attendu.
+
+
+#: Chemin du module cible de cette garde, relatif à la racine du dépôt.
+_CHEMIN_GAINS_BRUTS: Path = _REPO_ROOT / "payroll_engine" / "gains_bruts.py"
+
+
+#: Noms de fonction appelée en forme ``nom(...)`` interdits comme
+#: mécanisme d'arrondissement (Req 12.3) — ``round`` retourne un
+#: ``float`` ou un ``int`` selon le nombre d'arguments, jamais admissible
+#: dans le domaine paie (règle 01).
+_APPELS_ARRONDISSEMENT_INTERDITS: frozenset[str] = frozenset({"round"})
+
+
+#: Attributs de méthode/fonction appelée en forme ``mod.attr(...)``
+#: interdits comme mécanisme d'arrondissement (Req 12.3) — couvre
+#: ``math.floor``, ``math.ceil``, ``math.trunc`` quel que soit l'alias
+#: d'import du module ``math``.
+_ATTRIBUTS_ARRONDISSEMENT_INTERDITS: frozenset[str] = frozenset(
+    {"floor", "ceil", "trunc"}
+)
+
+
+def _parser_module_gains_bruts() -> ast.Module:
+    """Parse ``payroll_engine/gains_bruts.py`` en arbre AST.
+
+    Échoue explicitement (``pytest.fail``) si le fichier n'existe pas
+    encore — état attendu avant les tâches 5.1/5.2 de la spec
+    ``gains-bruts-vacances-hs`` (règle 06, TDD : ce test de garde est
+    rouge par absence de module, pas par erreur de collection).
+    """
+    if not _CHEMIN_GAINS_BRUTS.exists():
+        pytest.fail(
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "n'existe pas encore. Ce test de garde précède "
+            "l'implémentation (tâches 5.1/5.2 de la spec "
+            "gains-bruts-vacances-hs, règle 06) et DOIT rester rouge "
+            "jusqu'à la création du module."
+        )
+    source = _CHEMIN_GAINS_BRUTS.read_text(encoding="utf-8")
+    return ast.parse(source, filename=str(_CHEMIN_GAINS_BRUTS))
+
+
+def _trouver_fonction(arbre: ast.Module, nom: str) -> ast.FunctionDef | None:
+    """Retourne la première ``def <nom>(...)`` de niveau module dans ``arbre``."""
+    for noeud in ast.walk(arbre):
+        if isinstance(noeud, ast.FunctionDef) and noeud.name == nom:
+            return noeud
+    return None
+
+
+class TestGainsBrutsNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/gains_bruts.py`` (Req 12.1–12.4).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module de
+    calcul des gains bruts, par introspection statique de l'AST — sans
+    dépendre d'une exécution ni d'un import du module (Req 1.6 :
+    aucun effet de bord au moment de l'import).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source (Req 12.1).
+    2. Aucun appel ``Decimal(<non-str>)`` — défend contre ``Decimal(1.5)``
+       et ``Decimal(x)`` où ``x`` n'est pas une chaîne littérale
+       (Req 12.2).
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)`` — seul ``Decimal.quantize`` est autorisé
+       pour arrondir (Req 12.3).
+    4. La signature de ``calcul_gains`` retourne l'annotation exacte
+       ``tuple[GainsDecomposes, CalculationTrace]`` et n'accepte aucun
+       paramètre par défaut (Req 1.4, Req 12.4).
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 12.1)."""
+        arbre = _parser_module_gains_bruts()
+        violations = [
+            f"ligne {noeud.lineno} — {noeud.value!r}"
+            for noeud in ast.walk(arbre)
+            if isinstance(noeud, ast.Constant) and isinstance(noeud.value, float)
+        ]
+
+        assert not violations, (
+            "Littérale flottante détectée dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(règle 01, Req 12.1). Remplacer par un ``Decimal(\"...\")`` "
+            "ou une valeur lue depuis ``parametres_annee``. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal(\"...\")`` est admise (Req 12.2)."""
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in ast.walk(arbre):
+            if not (
+                isinstance(noeud, ast.Call)
+                and isinstance(noeud.func, ast.Name)
+                and noeud.func.id == "Decimal"
+            ):
+                continue
+            for argument in noeud.args:
+                est_litterale_str = isinstance(argument, ast.Constant) and isinstance(
+                    argument.value, str
+                )
+                if not est_litterale_str:
+                    violations.append(
+                        f"ligne {noeud.lineno} — Decimal({ast.unparse(argument)})"
+                    )
+
+        assert not violations, (
+            "Appel ``Decimal(<non-str>)`` détecté dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(règle 01, Req 12.2). Seule ``Decimal(\"...\")`` (littérale "
+            "chaîne) ou une valeur déjà ``Decimal`` transportée depuis "
+            "``parametres_annee``/``payroll_input`` est admise. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 12.3).
+
+        Seul ``Decimal.quantize`` est autorisé pour arrondir — détection
+        par nom d'appel direct (``round(...)``) et par attribut de
+        méthode (``<alias>.floor(...)``, ``<alias>.ceil(...)``,
+        ``<alias>.trunc(...)``), robuste à l'alias d'import du module
+        ``math``.
+        """
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in ast.walk(arbre):
+            if not isinstance(noeud, ast.Call):
+                continue
+            fonction = noeud.func
+            if isinstance(fonction, ast.Name) and fonction.id in (
+                _APPELS_ARRONDISSEMENT_INTERDITS
+            ):
+                violations.append(f"ligne {noeud.lineno} — {fonction.id}(...)")
+            elif (
+                isinstance(fonction, ast.Attribute)
+                and fonction.attr in _ATTRIBUTS_ARRONDISSEMENT_INTERDITS
+            ):
+                violations.append(
+                    f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                )
+
+        assert not violations, (
+            "Appel d'arrondissement interdit détecté dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(règle 01, Req 12.3). Seul ``Decimal.quantize(Decimal(\"0.01\"), "
+            "rounding=ROUND_HALF_UP)`` est autorisé pour arrondir. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_signature_calcul_gains_retourne_tuple_gains_trace(self) -> None:
+        """``calcul_gains`` annote son retour ``tuple[GainsDecomposes, CalculationTrace]`` (Req 1.4, 12.4)."""
+        arbre = _parser_module_gains_bruts()
+        fonction = _trouver_fonction(arbre, "calcul_gains")
+
+        assert fonction is not None, (
+            "Aucune fonction ``calcul_gains`` trouvée au niveau module "
+            f"dans {_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 1.1)."
+        )
+        assert fonction.returns is not None, (
+            "``calcul_gains`` ne porte aucune annotation de retour "
+            "(Req 1.4, 12.4). Attendu : "
+            "``tuple[GainsDecomposes, CalculationTrace]``."
+        )
+
+        annotation_retour = ast.unparse(fonction.returns)
+        assert annotation_retour == "tuple[GainsDecomposes, CalculationTrace]", (
+            "L'annotation de retour de ``calcul_gains`` doit être exactement "
+            "``tuple[GainsDecomposes, CalculationTrace]`` (Req 1.4, 12.4). "
+            f"Reçu : {annotation_retour!r}"
+        )
+
+    def test_signature_calcul_gains_sans_parametre_par_defaut(self) -> None:
+        """``calcul_gains`` n'accepte aucun paramètre par défaut (Req 1.4)."""
+        arbre = _parser_module_gains_bruts()
+        fonction = _trouver_fonction(arbre, "calcul_gains")
+
+        assert fonction is not None, (
+            "Aucune fonction ``calcul_gains`` trouvée au niveau module "
+            f"dans {_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 1.1)."
+        )
+
+        arguments = fonction.args
+        defauts_presents = bool(
+            arguments.defaults
+            or any(defaut is not None for defaut in arguments.kw_defaults)
+        )
+        assert not defauts_presents, (
+            "``calcul_gains`` ne doit accepter aucun paramètre par défaut "
+            "(Req 1.4) — chaque appel doit fournir explicitement "
+            "``payroll_input`` et ``parametres_annee``, sans état "
+            "implicite hérité d'une valeur par défaut."
+        )
+
+
+# ===========================================================================
+# 4.2 (spec gains-bruts-vacances-hs) — Absence de valeurs fiscales en dur
+#     dans ``payroll_engine/gains_bruts.py`` (Req 5.7, 9.4)
+# ===========================================================================
+#
+# Spec de référence : ``gains-bruts-vacances-hs`` — tâche 4.2. Même
+# discipline que la tâche 4.1 (règle 06, TDD) : ce test de garde est
+# écrit AVANT ``payroll_engine/gains_bruts.py`` (tâches 5.1/5.2, non
+# réalisées à ce stade). Tant que le fichier n'existe pas, chaque test
+# de cette classe échoue explicitement via ``pytest.fail`` (et non par
+# une erreur de collection), ce qui est le comportement rouge attendu.
+
+
+#: Motifs interdits recherchés ligne à ligne — le multiplicateur des
+#: heures supplémentaires (1,5) et le seuil hebdomadaire (40 h) DOIVENT
+#: provenir exclusivement de ``parametres_annee.heures_supplementaires``
+#: (règle 05, Req 9.4). Les avoir en dur court-circuiterait le
+#: chargement versionné imposé par la règle 05.
+_MOTIFS_HS_INTERDITS: tuple[str, ...] = (
+    'Decimal("1.5")',
+    'Decimal("1.50")',
+    'Decimal("40")',
+    'Decimal("40.00")',
+    'Decimal("40.0")',
+)
+
+
+#: Littéraux ``Decimal("...")`` explicitement autorisés dans
+#: ``payroll_engine/gains_bruts.py`` : neutre additif (Req 9.4) et
+#: précision d'arrondissement ``_PRECISION_MONNAIE`` imposée par
+#: TP-1015.G — pas un paramètre fiscal.
+_DECIMAL_NEUTRES_AUTORISES: tuple[str, ...] = (
+    'Decimal("0")',
+    'Decimal("0.00")',
+    'Decimal("0.01")',
+)
+
+
+#: Littéraux ``Decimal("...")`` du taux de vacances, admis
+#: **uniquement** sur l'unique ligne de défense en profondeur qui
+#: construit l'ensemble des taux supportés (Req 10.3, cohérent avec
+#: l'exception ``Employee`` documentée dans
+#: :class:`TestNoHardcodedFiscalValues`).
+_DECIMAL_VACANCES_AUTORISES: tuple[str, ...] = (
+    'Decimal("0.04")',
+    'Decimal("0.06")',
+)
+
+
+#: Reconnaît tout littéral ``Decimal("...")`` (contenu quelconque entre
+#: guillemets) — utilisé pour neutraliser ces occurrences avant la
+#: recherche de constantes numériques nues, afin qu'un nombre légitime
+#: à l'intérieur d'une chaîne ``Decimal`` autorisée ne soit pas
+#: re-détecté comme une constante déguisée.
+_DECIMAL_LITTERAL_REGEX: re.Pattern[str] = re.compile(r'Decimal\("[^"]*"\)')
+
+
+#: Constantes numériques nues (hors ``Decimal("...")``) dont la
+#: présence signale une valeur fiscale déguisée en littéral ``float``
+#: ou ``int`` — recherchées avec des délimiteurs excluant les chiffres,
+#: points et caractères alphanumériques adjacents pour éviter les faux
+#: positifs (ex. ``2026`` ne doit pas matcher ``40`` ; un identifiant
+#: ``_40`` ne doit pas matcher non plus).
+_CONSTANTES_NUES_INTERDITES_REGEX: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?<![\w.])1\.5(?![\w])"),
+    re.compile(r"(?<![\w.])40(?:\.0+)?(?![\w])"),
+    re.compile(r"(?<![\w.])0\.04(?![\w])"),
+    re.compile(r"(?<![\w.])0\.06(?![\w])"),
+)
+
+
+def _lire_lignes_gains_bruts() -> list[str]:
+    """Retourne les lignes de ``payroll_engine/gains_bruts.py``.
+
+    Échoue explicitement (``pytest.fail``) si le fichier n'existe pas
+    encore — même état rouge attendu que
+    :func:`_parser_module_gains_bruts` avant les tâches 5.1/5.2 de la
+    spec ``gains-bruts-vacances-hs`` (règle 06).
+    """
+    if not _CHEMIN_GAINS_BRUTS.exists():
+        pytest.fail(
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "n'existe pas encore. Ce test de garde précède "
+            "l'implémentation (tâches 5.1/5.2 de la spec "
+            "gains-bruts-vacances-hs, règle 06) et DOIT rester rouge "
+            "jusqu'à la création du module."
+        )
+    return _CHEMIN_GAINS_BRUTS.read_text(encoding="utf-8").splitlines()
+
+
+class TestGainsBrutsNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/gains_bruts.py``.
+
+    Ferme la règle 05 côté module de calcul des gains bruts : le
+    multiplicateur des heures supplémentaires (1,5) et le seuil
+    hebdomadaire (40 h) DOIVENT provenir exclusivement de
+    ``parametres_annee.heures_supplementaires`` (Req 9.4). Trois gardes
+    complémentaires, par lecture ligne à ligne du fichier source :
+
+    1. Absence stricte des motifs ``Decimal("1.5")``, ``Decimal("1.50")``,
+       ``Decimal("40")``, ``Decimal("40.00")``, ``Decimal("40.0")``.
+    2. Confinement de ``Decimal("0.04")``/``Decimal("0.06")`` à l'unique
+       ligne de défense en profondeur (Req 10.3), deux occurrences
+       maximum sur cette ligne — la même exception que celle documentée
+       pour ``Employee`` dans :class:`TestNoHardcodedFiscalValues`.
+    3. Absence de constantes numériques déguisées (``1.5``, ``40``,
+       ``0.04``, ``0.06`` en littéral ``float``/``int`` nu, hors chaîne
+       ``Decimal("...")``).
+
+    Les littéraux ``Decimal("0")``, ``Decimal("0.00")`` (neutre additif)
+    et ``Decimal("0.01")`` (précision ``_PRECISION_MONNAIE``, imposée
+    par TP-1015.G) sont explicitement autorisés partout dans le module
+    — ce ne sont pas des paramètres fiscaux au sens de la règle 05.
+    """
+
+    def test_aucun_motif_multiplicateur_ou_seuil_hs_en_dur(self) -> None:
+        """``1.5``/``40`` DOIVENT provenir de ``parametres_annee`` (Req 9.4)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(_lire_lignes_gains_bruts(), start=1):
+            for motif in _MOTIFS_HS_INTERDITS:
+                if motif in ligne:
+                    violations.append(
+                        f"ligne {numero_ligne} — {motif!r} : {ligne.strip()}"
+                    )
+
+        assert not violations, (
+            "Valeur fiscale du multiplicateur/seuil heures supplémentaires "
+            "codée en dur (règle 05, Req 9.4). Ces valeurs DOIVENT être "
+            "lues via ``parametres_annee.heures_supplementaires``. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_whitelist_vacances_limitee_a_une_ligne_deux_occurrences(self) -> None:
+        """``Decimal("0.04")``/``Decimal("0.06")`` confinés à l'unique ligne
+        de défense en profondeur, deux occurrences maximum (Req 10.3).
+        """
+        lignes_avec_motif_vacances = [
+            (numero, ligne)
+            for numero, ligne in enumerate(_lire_lignes_gains_bruts(), start=1)
+            if any(motif in ligne for motif in _DECIMAL_VACANCES_AUTORISES)
+        ]
+
+        assert len(lignes_avec_motif_vacances) <= 1, (
+            "``Decimal(\"0.04\")``/``Decimal(\"0.06\")`` ne DOIVENT "
+            "apparaître que sur l'unique ligne de défense en profondeur "
+            "qui construit l'ensemble des taux de vacances supportés "
+            "(Req 10.3, exception cohérente avec ``Employee`` dans "
+            "``TestNoHardcodedFiscalValues``). Lignes trouvées :\n"
+            + "\n".join(
+                f"ligne {numero} — {ligne.strip()}"
+                for numero, ligne in lignes_avec_motif_vacances
+            )
+        )
+
+        if lignes_avec_motif_vacances:
+            numero, ligne = lignes_avec_motif_vacances[0]
+            occurrences = sum(
+                ligne.count(motif) for motif in _DECIMAL_VACANCES_AUTORISES
+            )
+            assert occurrences <= 2, (
+                f"La ligne {numero} contient plus de deux occurrences de "
+                "``Decimal(\"0.04\")``/``Decimal(\"0.06\")`` (Req 10.3) : "
+                f"{ligne.strip()!r}"
+            )
+
+    def test_aucune_constante_numerique_deguisee(self) -> None:
+        """Aucun littéral nu ``1.5``/``40``/``0.04``/``0.06`` hors ``Decimal("...")`` (Req 9.4)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(_lire_lignes_gains_bruts(), start=1):
+            # Neutraliser tout littéral ``Decimal("...")`` avant la
+            # recherche de constantes nues, pour qu'un nombre légitime
+            # à l'intérieur d'une chaîne ``Decimal`` autorisée (ou d'un
+            # motif interdit déjà reporté par l'autre garde) ne soit pas
+            # re-détecté ici.
+            ligne_sans_decimal = _DECIMAL_LITTERAL_REGEX.sub("", ligne)
+            for regex in _CONSTANTES_NUES_INTERDITES_REGEX:
+                if regex.search(ligne_sans_decimal):
+                    violations.append(
+                        f"ligne {numero_ligne} — {regex.pattern!r} : "
+                        f"{ligne.strip()}"
+                    )
+
+        assert not violations, (
+            "Constante numérique déguisée détectée (règle 05, Req 9.4). "
+            "Toute valeur fiscale du multiplicateur/seuil heures "
+            "supplémentaires doit provenir de "
+            "``parametres_annee.heures_supplementaires`` et être "
+            "transportée sous forme de ``Decimal`` déjà matérialisé — "
+            "jamais un littéral ``float``/``int`` nu. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 4.3 (spec gains-bruts-vacances-hs) — Non-appel de ``load_parameters`` et
+#     absence de sources de non-déterminisme dans
+#     ``payroll_engine/gains_bruts.py`` (Req 1.3, 1.6, 14.1, 14.2, 14.3)
+# ===========================================================================
+#
+# Spec de référence : ``gains-bruts-vacances-hs`` — tâche 4.3. Même
+# discipline que les tâches 4.1/4.2 (règle 06, TDD) : ce test de garde est
+# écrit AVANT ``payroll_engine/gains_bruts.py`` (tâches 5.1/5.2, non
+# réalisées à ce stade). Tant que le fichier n'existe pas, chaque test de
+# cette classe échoue explicitement via ``pytest.fail`` (et non par une
+# erreur de collection), ce qui est le comportement rouge attendu.
+
+
+#: Seuls ces noms peuvent être importés depuis
+#: ``payroll_engine.parameters_loader`` dans ``gains_bruts.py`` — le
+#: **type** ``ParametresAnnee`` est autorisé (annotation de paramètre),
+#: mais jamais la fonction ``load_parameters`` elle-même : la fonction de
+#: calcul reçoit ``parametres_annee`` déjà matérialisé par l'appelant
+#: (Req 1.3, 1.6).
+_NOMS_AUTORISES_DEPUIS_PARAMETERS_LOADER: frozenset[str] = frozenset(
+    {"ParametresAnnee"}
+)
+
+
+#: Attributs d'appel de méthode signalant une ouverture ou une lecture de
+#: fichier — ``Path(...).read_text()``/``read_bytes()`` (Req 1.3, 1.6).
+_ATTRIBUTS_OUVERTURE_FICHIER_INTERDITS: frozenset[str] = frozenset(
+    {"read_text", "read_bytes"}
+)
+
+
+#: Attributs d'appel signalant une désérialisation JSON directe —
+#: ``json.load(...)``/``json.loads(...)`` (Req 1.3, 1.6). Le nom de base
+#: de l'appel (``json`` quel que soit l'alias) est vérifié séparément pour
+#: éviter tout faux positif sur une méthode ``.load``/``.loads`` non liée
+#: à ``json``.
+_ATTRIBUTS_JSON_INTERDITS: frozenset[str] = frozenset({"load", "loads"})
+
+
+#: Attributs d'appel ``datetime.now()``/``datetime.today()`` — sources de
+#: non-déterminisme proscrites (Req 14.1). Le nom de base de l'appel doit
+#: contenir ``datetime`` pour éviter tout faux positif sur une méthode
+#: homonyme d'un autre objet.
+_ATTRIBUTS_DATETIME_NON_DETERMINISTES: frozenset[str] = frozenset({"now", "today"})
+
+
+#: Noms de variables/appels de niveau module signalant un état mutable
+#: partagé entre appels — proscrit par la contrainte de pureté (Req 14.3).
+_APPELS_CONSTRUCTEURS_MUTABLES_INTERDITS: frozenset[str] = frozenset(
+    {"dict", "list", "set"}
+)
+
+
+class TestGainsBrutsNoLoadParametersCall:
+    """``payroll_engine/gains_bruts.py`` n'appelle jamais ``load_parameters``
+    et ne recourt à aucune source de non-déterminisme (Req 1.3, 1.6, 14.1,
+    14.2, 14.3).
+
+    Ferme la contrainte de pureté du module de calcul des gains bruts
+    (design §Architecture « Contrainte de pureté ») : la fonction reçoit
+    ``parametres_annee`` déjà matérialisé par l'appelant (Req 1.3) et ne
+    doit produire aucun effet de bord ni dépendre d'un état externe
+    variable (Req 1.6, 14.1, 14.2). Cinq gardes complémentaires, par
+    introspection AST et lecture ligne à ligne du fichier source :
+
+    1. Absence stricte du token ``load_parameters`` (import ou appel).
+    2. Tout import depuis ``payroll_engine.parameters_loader`` ne cible
+       que le type ``ParametresAnnee``.
+    3. Absence d'ouverture de fichier (``open(...)``,
+       ``Path(...).read_text()``/``read_bytes()``,
+       ``json.load(...)``/``json.loads(...)``).
+    4. Absence d'appel à ``datetime.now()``/``datetime.today()``,
+       ``random.*`` ou ``os.environ`` — sources de non-déterminisme
+       proscrites (Req 14.1, 14.2).
+    5. Absence de variable de module mutable (``_cache = {}``,
+       ``logging.getLogger(...)`` au niveau module, etc.) — Req 14.3.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.3, 1.6)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(_lire_lignes_gains_bruts(), start=1):
+            if "load_parameters" in ligne:
+                violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+        assert not violations, (
+            "Occurrence du token ``load_parameters`` détectée dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 1.3, 1.6). La fonction de calcul DOIT recevoir "
+            "``parametres_annee`` déjà matérialisé par l'appelant — "
+            "jamais charger elle-même les paramètres. Occurrences :\n"
+            + "\n".join(violations)
+        )
+
+    def test_import_parameters_loader_type_seulement(self) -> None:
+        """Seul le type ``ParametresAnnee`` est importable depuis
+        ``payroll_engine.parameters_loader`` (Req 1.3, 1.6).
+        """
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in ast.walk(arbre):
+            if not (
+                isinstance(noeud, ast.ImportFrom)
+                and noeud.module == "payroll_engine.parameters_loader"
+            ):
+                continue
+            for alias in noeud.names:
+                if alias.name not in _NOMS_AUTORISES_DEPUIS_PARAMETERS_LOADER:
+                    violations.append(
+                        f"ligne {noeud.lineno} — from {noeud.module} "
+                        f"import {alias.name}"
+                    )
+
+        assert not violations, (
+            "Import non autorisé depuis "
+            "``payroll_engine.parameters_loader`` détecté (Req 1.3, 1.6). "
+            "Seul le type ``ParametresAnnee`` (annotation de paramètre) "
+            "est admis — jamais ``load_parameters``. Occurrences :\n"
+            + "\n".join(violations)
+        )
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``, ``Path(...).read_text()``/``read_bytes()``,
+        ``json.load(...)``/``json.loads(...)`` (Req 1.3, 1.6).
+
+        La fonction reçoit ``parametres_annee`` déjà matérialisé — aucune
+        lecture de fichier ne doit avoir lieu dans ce module.
+        """
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in ast.walk(arbre):
+            if not isinstance(noeud, ast.Call):
+                continue
+            fonction = noeud.func
+            if isinstance(fonction, ast.Name) and fonction.id == "open":
+                violations.append(f"ligne {noeud.lineno} — open(...)")
+            elif isinstance(fonction, ast.Attribute):
+                if fonction.attr in _ATTRIBUTS_OUVERTURE_FICHIER_INTERDITS:
+                    violations.append(
+                        f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                    )
+                elif fonction.attr in _ATTRIBUTS_JSON_INTERDITS:
+                    base = ast.unparse(fonction.value)
+                    if "json" in base.lower():
+                        violations.append(
+                            f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                        )
+
+        assert not violations, (
+            "Ouverture ou désérialisation de fichier détectée dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 1.3, 1.6). La fonction reçoit ``parametres_annee`` "
+            "déjà matérialisé par l'appelant — aucune lecture de fichier "
+            "ne doit avoir lieu ici. Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``/``datetime.today()``, ``random.*``,
+        ``os.environ`` (Req 14.1, 14.2).
+        """
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in ast.walk(arbre):
+            if isinstance(noeud, ast.Call) and isinstance(noeud.func, ast.Attribute):
+                fonction = noeud.func
+                if fonction.attr in _ATTRIBUTS_DATETIME_NON_DETERMINISTES:
+                    base = ast.unparse(fonction.value)
+                    if "datetime" in base.lower():
+                        violations.append(
+                            f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                        )
+            if isinstance(noeud, ast.Attribute):
+                base = ast.unparse(noeud.value)
+                premier_segment = base.split(".")[0]
+                if premier_segment == "random":
+                    violations.append(f"ligne {noeud.lineno} — {ast.unparse(noeud)}")
+                if noeud.attr == "environ" and base == "os":
+                    violations.append(f"ligne {noeud.lineno} — os.environ")
+
+        assert not violations, (
+            "Source de non-déterminisme détectée dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 14.1, 14.2). ``datetime.now()``/``datetime.today()``, "
+            "``random.*`` et ``os.environ`` sont proscrits — toute donnée "
+            "variable doit provenir explicitement des paramètres reçus. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (``_cache = {}``,
+        ``logging.getLogger(...)`` au niveau module, etc.) (Req 14.3).
+        """
+        arbre = _parser_module_gains_bruts()
+        violations: list[str] = []
+        for noeud in arbre.body:
+            if not isinstance(noeud, ast.Assign):
+                continue
+            valeur = noeud.value
+            noms_cibles = [
+                cible.id for cible in noeud.targets if isinstance(cible, ast.Name)
+            ]
+            if not noms_cibles:
+                continue
+
+            est_litterale_mutable = isinstance(valeur, (ast.Dict, ast.List, ast.Set))
+            est_appel_mutable = False
+            if isinstance(valeur, ast.Call):
+                appelee = valeur.func
+                if (
+                    isinstance(appelee, ast.Name)
+                    and appelee.id in _APPELS_CONSTRUCTEURS_MUTABLES_INTERDITS
+                ):
+                    est_appel_mutable = True
+                elif (
+                    isinstance(appelee, ast.Attribute)
+                    and appelee.attr == "getLogger"
+                ):
+                    est_appel_mutable = True
+
+            if est_litterale_mutable or est_appel_mutable:
+                violations.append(
+                    f"ligne {noeud.lineno} — {', '.join(noms_cibles)} = "
+                    f"{ast.unparse(valeur)}"
+                )
+
+        assert not violations, (
+            "Variable de module mutable détectée dans "
+            f"{_CHEMIN_GAINS_BRUTS.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 14.3). Un module de calcul pur ne doit exposer aucun "
+            "état mutable partagé entre appels (cache, logger, etc.) au "
+            "niveau module. Occurrences :\n" + "\n".join(violations)
         )
