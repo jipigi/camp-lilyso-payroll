@@ -2,7 +2,7 @@
   "annee": 2026,
   "juridiction": "quebec",
   "source": "Revenu Québec — TP-1015.F 2026",
-  "date_publication": "TO_FILL",
+  "date_publication": "2026-01",
   "date_consultation": "TO_FILL",
   "url_consultee": "TO_FILL",
   "notes": "Valeurs marquées 'VALIDE_WEBRAS' ont été vérifiées au cent près par exécution WebRAS sur scénario QC001 et corpus des 5 paies réelles (paie 1 saison 2026). Les 'TO_FILL' doivent être remplis par consultation directe du TP-1015.F 2026 avant de couvrir des cas hors du corpus actuel (ex. dépassement du MGA).",
@@ -25,22 +25,24 @@
       "commentaire": "Portion de la cotisation totale RRQ qui est traitée fédéralement comme une déduction du revenu (et non un crédit). Calculée par PDOC comme 1 % × (brut − exemption). Utile pour le module impot-federal.",
       "taux_effectif": "0.010"
     },
-    "maximum_gains_admissibles_mga": "TO_FILL",
-    "maximum_supplementaire_gains_admissibles_msga": "TO_FILL",
-    "cotisation_max_annuelle_employe": "TO_FILL",
+    "maximum_gains_admissibles_mga": "74600.00",
+    "maximum_supplementaire_gains_admissibles_msga": "85000.00",
+    "cotisation_max_annuelle_employe": "4479.30",
+    "deuxieme_cotisation_supplementaire_maximale_employe": "416.00",
+    "deuxieme_cotisation_supplementaire_maximale_employeur": "416.00",
     "statut_taux": "VALIDE_WEBRAS",
-    "statut_plafonds": "TO_FILL"
+    "statut_plafonds": "VALIDE_TP1015F_2026"
   },
 
   "rqap": {
     "commentaire": "TP-1015.F 2026, section RQAP. Taux employé et employeur distincts.",
     "taux_employe": "0.0043",
     "taux_employeur": "0.00602",
-    "maximum_gains_assurables": "TO_FILL",
-    "cotisation_max_employe": "TO_FILL",
-    "cotisation_max_employeur": "TO_FILL",
+    "maximum_gains_assurables": "103000.00",
+    "cotisation_max_employe": "442.90",
+    "cotisation_max_employeur": "620.06",
     "statut_taux": "VALIDE_WEBRAS",
-    "statut_plafonds": "TO_FILL"
+    "statut_plafonds": "VALIDE_TP1015F_2026"
   },
 
   "impot_quebec": {

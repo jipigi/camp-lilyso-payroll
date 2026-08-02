@@ -521,13 +521,14 @@ class TestExceptionMessageContract:
     def test_message_missing_parameter_error(self) -> None:
         """``MissingParameterError`` cite chemin JSON, année, juridiction, fichier.
 
-        On charge les paramètres réels 2026 QC (dont plusieurs valeurs
-        RRQ sont marquées ``"TO_FILL"`` dans le JSON versionné) et on
-        déclenche la matérialisation sur un paramètre non renseigné.
+        On charge les paramètres réels 2026 QC (dont la section CNT —
+        charge annuelle non encore formulée par la spec
+        ``charges-patronales`` — reste marquée ``"TO_FILL"`` dans le JSON
+        versionné même après le remplissage des plafonds RRQ/RQAP 2026)
+        et on déclenche la matérialisation sur un paramètre non renseigné.
         Le message DOIT (Req 8.6, Property 16) inclure :
 
-        - le **chemin JSON** du paramètre (ex.
-          ``rrq.maximum_gains_admissibles_mga``) ;
+        - le **chemin JSON** du paramètre (ex. ``cnt.taux``) ;
         - l'**année** courante (``2026``) ;
         - la **juridiction** courante (``quebec``) ;
         - le **fichier** à mettre à jour
@@ -536,20 +537,20 @@ class TestExceptionMessageContract:
         parametres = load_parameters(2026, Juridiction.QUEBEC)
 
         with pytest.raises(MissingParameterError) as exc_info:
-            # ``maximum_gains_admissibles_mga`` est ``"TO_FILL"`` dans
+            # ``taux`` (section ``cnt``) est ``"TO_FILL"`` dans
             # ``parameters/2026/quebec.json`` — l'accès à la propriété
             # déclenche la matérialisation, qui lève l'exception.
-            _ = parametres.rrq.maximum_gains_admissibles_mga
+            _ = parametres.cnt.taux
 
         message = str(exc_info.value)
 
         # Chemin JSON — au minimum le nom du champ ; idéalement
-        # préfixé par la section (``rrq.<champ>``).
-        assert "maximum_gains_admissibles_mga" in message, (
+        # préfixé par la section (``cnt.<champ>``).
+        assert "taux" in message, (
             "Le message doit contenir le nom du paramètre manquant "
             f"(Req 8.6). Reçu : {message!r}"
         )
-        assert "rrq" in message, (
+        assert "cnt" in message, (
             "Le message doit contenir la section (chemin JSON, Req 8.6). "
             f"Reçu : {message!r}"
         )

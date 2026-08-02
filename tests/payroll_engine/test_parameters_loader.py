@@ -185,7 +185,7 @@ class TestValeurToFill:
     ``"TO_FILL"`` DOIT lever ``MissingParameterError`` avec un message
     contenant :
 
-    - le chemin JSON du paramètre manquant (ex. ``rrq.maximum_gains_admissibles_mga``) ;
+    - le chemin JSON du paramètre manquant (ex. ``cnt.taux``) ;
     - l'année et la juridiction ;
     - le fichier de paramètres à mettre à jour ;
     - une référence à la source officielle (TP-1015.F ou T4127).
@@ -193,27 +193,36 @@ class TestValeurToFill:
     Vérification issue de Property 16 (contrat des messages) — testée plus
     complètement par la tâche 15.4. Ici, on couvre le déclenchement de
     l'exception et la présence du chemin JSON dans le message.
+
+    Note (mise à jour paramètres 2026) : les plafonds RRQ
+    (``maximum_gains_admissibles_mga`` et consorts) ont été renseignés
+    depuis TP-1015.F 2026 et ne sont plus ``"TO_FILL"``. La section
+    ``cnt`` (charge patronale annuelle, hors périmètre de la spec
+    ``rrq``/``rqap``/``assurance-emploi``, formulée par la future spec
+    ``charges-patronales``) reste ``"TO_FILL"`` et sert désormais de
+    cible de test pour ce mécanisme.
     """
 
-    def test_acces_rrq_mga_leve_missing_parameter_error(self) -> None:
-        # ``rrq.maximum_gains_admissibles_mga`` est ``"TO_FILL"`` dans le
-        # fichier actuel (2026/quebec.json), et est explicitement cité par la
-        # tâche 12.1 comme exemple de chemin à identifier.
+    def test_acces_cnt_taux_leve_missing_parameter_error(self) -> None:
+        # ``cnt.taux`` est ``"TO_FILL"`` dans le fichier actuel
+        # (2026/quebec.json) — cotisation aux normes du travail, charge
+        # annuelle hors périmètre des specs `rrq`/`rqap`/`assurance-emploi`
+        # (formulée plus tard par la spec `charges-patronales`).
         parametres = load_parameters(2026, Juridiction.QUEBEC)
         with pytest.raises(MissingParameterError) as exc_info:
-            _ = parametres.rrq.maximum_gains_admissibles_mga
+            _ = parametres.cnt.taux
 
         message = str(exc_info.value)
         # Le chemin JSON doit apparaître dans le message (Req 9.5).
-        assert "rrq" in message.lower()
-        assert "maximum_gains_admissibles_mga" in message
+        assert "cnt" in message.lower()
+        assert "taux" in message
 
     def test_message_missing_parameter_error_identifie_le_fichier(self) -> None:
         # Req 8.6 — le message DOIT indiquer le fichier de paramètres à
         # mettre à jour et l'année / la juridiction concernées.
         parametres = load_parameters(2026, Juridiction.QUEBEC)
         with pytest.raises(MissingParameterError) as exc_info:
-            _ = parametres.rrq.maximum_gains_admissibles_mga
+            _ = parametres.cnt.taux
 
         message = str(exc_info.value)
         assert "2026" in message

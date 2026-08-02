@@ -18,13 +18,14 @@
     "province_taux": "QC",
     "taux_employe_quebec": "0.0130",
     "multiplicateur_employeur": "1.4",
-    "maximum_gains_assurables": "TO_FILL",
-    "cotisation_max_employe": "TO_FILL",
-    "cotisation_max_employeur": "TO_FILL",
+    "maximum_gains_assurables": "68900.00",
+    "cotisation_max_employe": "895.70",
+    "cotisation_max_employeur": "1253.98",
     "reduction_taux_employeur": "aucune",
     "commentaire_reduction": "Camp LilySO n'a aucun régime admissible à la réduction du taux employeur.",
     "statut_taux": "VALIDE_PDOC",
-    "statut_plafonds": "TO_FILL"
+    "statut_plafonds": "VALIDE_CANADA_CA_2026",
+    "commentaire_source_plafonds": "Maximum de la rémunération assurable et cotisation maximale employé confirmés via la page canada.ca « Avis important concernant le maximum de la rémunération assurable pour 2026 » (ARC/ESDC), et non via une exécution PDOC : https://www.canada.ca/fr/emploi-developpement-social/programmes/assurance-emploi/ae-liste/assurance-emploi-employeurs/reduction-taux-cotisation/maximum-remuneration-assurable-2026.html"
   },
 
   "impot_federal": {
