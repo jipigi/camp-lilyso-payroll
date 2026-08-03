@@ -22,7 +22,7 @@ Le développement suit strictement l'ordre : **spec → tests → implémentatio
    - Trace complète référençant la source officielle
 4. **Valider contre les outils officiels**
    - Reproduire au moins un scénario dans WebRAS ou le calculateur ARC
-   - Archiver la capture PDF dans `tests/fixtures/official/`
+   - Archiver les guides officiels dans `docs/sources-officielles/<AAAA>/` ; les captures d'exécution nominatives restent hors dépôt (`tests/fixtures/personal/`)
    - Consigner la validation dans `docs/journal-validation.md`
 
 ## Invariants à couvrir en property-based testing

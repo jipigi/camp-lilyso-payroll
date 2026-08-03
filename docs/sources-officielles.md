@@ -48,7 +48,7 @@ Registre exhaustif des documents et outils gouvernementaux utilisés comme réf�
 
 - Génération de résultats de référence pour chaque scénario `QCxxx`
 - Validation continue du moteur (comparaison au cent près)
-- Archivage des captures d'écran ou PDF de chaque exécution dans `tests/fixtures/official/`
+- Archivage des guides officiels dans `docs/sources-officielles/<AAAA>/` (les captures d'exécution nominatives restent hors dépôt, `tests/fixtures/personal/`)
 
 **Entrées WebRAS pertinentes** :
 
@@ -95,7 +95,7 @@ Registre exhaustif des documents et outils gouvernementaux utilisés comme réf�
 
 - Validation croisée de l'impôt fédéral et de l'AE
 - Génération de résultats de référence pour chaque scénario
-- Archivage des captures dans `tests/fixtures/official/`
+- Archivage des guides officiels dans `docs/sources-officielles/<AAAA>/`
 
 **Entrées PDOC pertinentes** :
 

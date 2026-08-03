@@ -78,7 +78,9 @@ TESTS_DIR: Final[Path] = Path(__file__).parent
 FIXTURES_DIR: Final[Path] = TESTS_DIR / "fixtures"
 FIXTURES_INPUTS_DIR: Final[Path] = FIXTURES_DIR / "inputs"
 FIXTURES_OUTPUTS_DIR: Final[Path] = FIXTURES_DIR / "outputs"
-FIXTURES_OFFICIAL_DIR: Final[Path] = FIXTURES_DIR / "official"
+# Guides fiscaux officiels (TP-1015.F, T4127, LE-39.0.2, tables CNESST) —
+# référence de validation, versionnés par année sous docs/sources-officielles/.
+SOURCES_OFFICIELLES_DIR: Final[Path] = TESTS_DIR.parent / "docs" / "sources-officielles"
 
 
 @pytest.fixture(scope="session")
@@ -100,6 +102,6 @@ def fixtures_outputs_dir() -> Path:
 
 
 @pytest.fixture(scope="session")
-def fixtures_official_dir() -> Path:
-    """Captures PDF WebRAS/PDOC archivées (règle 06, étape 4)."""
-    return FIXTURES_OFFICIAL_DIR
+def sources_officielles_dir() -> Path:
+    """Guides fiscaux officiels versionnés (docs/sources-officielles/<AAAA>/)."""
+    return SOURCES_OFFICIELLES_DIR

@@ -78,7 +78,7 @@ Un mapping local `intake/mapping.txt` (ignoré par Git) peut associer `employe-A
    Le scénario est ajouté à `tests/test_reference_payrolls.py` (ou fichier dédié) comme cas paramétré.
 
 8. **Archivage éventuel**
-   Si l'utilisateur souhaite conserver une preuve d'audit visuelle sans données nominatives, une capture caviardée peut être archivée dans `tests/fixtures/official/QCxxx/`. Le nom original ne doit pas apparaître.
+   Si l'utilisateur souhaite conserver une preuve d'audit visuelle sans données nominatives, une capture caviardée peut être archivée dans `tests/fixtures/personal/QCxxx/` (hors dépôt, exclu par `.gitignore`). Le nom original ne doit pas apparaître.
 
 9. **Nettoyage optionnel**
    Une fois le scénario validé et le test créé, le fichier Excel source peut être :
