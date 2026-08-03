@@ -80,7 +80,12 @@ desktop.ini
 *.log
 *.pdf
 !docs/**/*.pdf
-!tests/fixtures/official/QC*/**.pdf
+# Guides fiscaux officiels publics (TP-1015.F, T4127, ...), versionnés par année
+# sous tests/fixtures/official/<AAAA>/ — référence ultime des calculs fiscaux
+# (règles 02 et 05). Documents gouvernementaux publics : AUCUNE donnée
+# personnelle. Les captures WebRAS/PDOC nominatives vont dans
+# tests/fixtures/personal/ (exclu ci-dessus), jamais ici.
+!tests/fixtures/official/**/*.pdf
 
 # ---- Streamlit ----
 .streamlit/secrets.toml
