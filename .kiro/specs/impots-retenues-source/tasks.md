@@ -232,7 +232,7 @@ L'ordre suit strictement la règle 06 : **tests avant code**, puis **mise à jou
     - _Requirements: 10.1, 10.2, 10.3, 10.5_
     - _Design: §Data Models (intégral)_
 
-- [ ] 8. Checkpoint — tests rouges complets avant implémentation des fonctions d'impôt
+- [x] 8. Checkpoint — tests rouges complets avant implémentation des fonctions d'impôt
   - Vérifier que `pytest tests/payroll_engine/test_impot_qc.py tests/payroll_engine/test_impot_federal.py` échoue avec `ModuleNotFoundError` sur les imports `payroll_engine.impot_qc`/`payroll_engine.impot_federal`
   - Vérifier que `pytest tests/test_golden_outputs.py::test_impots_reproduisent_fixture` échoue également avec `ModuleNotFoundError` pour la même raison
   - Vérifier que les nouvelles classes de garde de la tâche 5 échouent (fichiers `impot_qc.py`/`impot_federal.py` inexistants)
