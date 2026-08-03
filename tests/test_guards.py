@@ -226,11 +226,15 @@ class TestNoFloatFields:
 #: Une occurrence détectée bloque la garde ; la seule localisation
 #: autorisée est ``parameters/<AAAA>/*.json`` (non scanné ici).
 _MOTIFS_FISCAUX_INTERDITS: tuple[str, ...] = (
-    'Decimal("0.063")',   # RRQ — taux cotisation base employé
-    'Decimal("0.0043")',  # RQAP — taux employé
-    'Decimal("0.0130")',  # AE — taux employé Québec
-    'Decimal("0.0165")',  # FSS — taux camp LilySO 2026
-    'Decimal("0.0112")',  # CNESST — provision
+    'Decimal("0.063")',    # RRQ — taux cotisation base employé/employeur
+    'Decimal("0.0043")',   # RQAP — taux employé
+    'Decimal("0.00602")',  # RQAP — taux employeur (spec cotisations-sociales-qc)
+    'Decimal("0.0130")',   # AE — taux employé Québec
+    'Decimal("0.0165")',   # FSS — taux camp LilySO 2026
+    'Decimal("0.0112")',   # CNESST — provision
+    'Decimal("1.4")',      # AE — multiplicateur employeur (spec cotisations-sociales-qc)
+    'Decimal("129.63")',   # RRQ — exemption par période aux deux semaines (spec cotisations-sociales-qc)
+    'Decimal("4479.30")',  # RRQ — cotisation maximale annuelle employé (spec cotisations-sociales-qc)
 )
 
 
@@ -1430,4 +1434,1311 @@ class TestGainsBrutsNoLoadParametersCall:
             "(Req 14.3). Un module de calcul pur ne doit exposer aucun "
             "état mutable partagé entre appels (cache, logger, etc.) au "
             "niveau module. Occurrences :\n" + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 7.1 (spec cotisations-sociales-qc) — Absence de ``float`` dans
+#     ``payroll_engine/rrq.py``, ``rqap.py`` et ``assurance_emploi.py``
+#     (Req 2.7, 3.4, 4.5, 5.6, 6.5, 7.4)
+# ===========================================================================
+#
+# Spec de référence : ``cotisations-sociales-qc`` — tâche 7.1. Même
+# discipline que :class:`TestGainsBrutsNoFloat` (règle 06, TDD) : ces
+# tests de garde sont écrits AVANT ``payroll_engine/rrq.py``,
+# ``rqap.py`` et ``assurance_emploi.py`` (tâches 9.1/10.1/11.1, non
+# réalisées à ce stade). Tant que ces fichiers n'existent pas, chaque
+# test échoue explicitement via ``pytest.fail`` (et non par une erreur
+# de collection), ce qui est le comportement rouge attendu.
+
+
+#: Chemins des trois modules cibles de cette spec, relatifs à la racine
+#: du dépôt.
+_CHEMIN_RRQ: Path = _REPO_ROOT / "payroll_engine" / "rrq.py"
+_CHEMIN_RQAP: Path = _REPO_ROOT / "payroll_engine" / "rqap.py"
+_CHEMIN_ASSURANCE_EMPLOI: Path = _REPO_ROOT / "payroll_engine" / "assurance_emploi.py"
+
+
+def _parser_module_cotisation(chemin: Path) -> ast.Module:
+    """Parse un des trois modules de cotisations sociales en arbre AST.
+
+    Échoue explicitement (``pytest.fail``) si le fichier n'existe pas
+    encore — état attendu avant les tâches 9.1/10.1/11.1 de la spec
+    ``cotisations-sociales-qc`` (règle 06, TDD : ce test de garde est
+    rouge par absence de module, pas par erreur de collection).
+    """
+    if not chemin.exists():
+        pytest.fail(
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} n'existe pas "
+            "encore. Ce test de garde précède l'implémentation (tâches "
+            "9.1/10.1/11.1 de la spec cotisations-sociales-qc, règle 06) "
+            "et DOIT rester rouge jusqu'à la création du module."
+        )
+    source = chemin.read_text(encoding="utf-8")
+    return ast.parse(source, filename=str(chemin))
+
+
+def _verifier_aucune_litterale_flottante(chemin: Path) -> None:
+    """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 12.1)."""
+    arbre = _parser_module_cotisation(chemin)
+    violations = [
+        f"ligne {noeud.lineno} — {noeud.value!r}"
+        for noeud in ast.walk(arbre)
+        if isinstance(noeud, ast.Constant) and isinstance(noeud.value, float)
+    ]
+
+    assert not violations, (
+        "Littérale flottante détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (règle 01). "
+        "Remplacer par un ``Decimal(\"...\")`` ou une valeur lue depuis "
+        "``parametres_annee``. Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_aucun_appel_decimal_depuis_non_str(chemin: Path) -> None:
+    """Aucun ``Decimal(<non-str>)`` — ``Decimal(\"...\")`` ou ``Decimal(str(...))`` admis.
+
+    Exception au motif strict : un appel ``Decimal(str(<expr>))`` (le
+    seul argument étant lui-même un appel ``str(...)``) n'est PAS une
+    violation. Ce motif est explicitement mandaté par le design
+    (§Components §2, table de trace de ``calcul_rrq_employe``) pour
+    convertir un entier (ex.
+    ``payroll_input.pay_period.nb_periodes_annuelles``) en ``Decimal``
+    sans passer par ``Decimal(int)`` (risque de heurter une éventuelle
+    validation de format) ni par ``float``. Tout autre argument non
+    littéral-chaîne (``Decimal(1.5)``, ``Decimal(some_variable)``,
+    ``Decimal(x + y)``, etc.) reste signalé.
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if not (
+            isinstance(noeud, ast.Call)
+            and isinstance(noeud.func, ast.Name)
+            and noeud.func.id == "Decimal"
+        ):
+            continue
+        for argument in noeud.args:
+            est_litterale_str = isinstance(argument, ast.Constant) and isinstance(
+                argument.value, str
+            )
+            est_conversion_str = (
+                isinstance(argument, ast.Call)
+                and isinstance(argument.func, ast.Name)
+                and argument.func.id == "str"
+            )
+            if not (est_litterale_str or est_conversion_str):
+                violations.append(
+                    f"ligne {noeud.lineno} — Decimal({ast.unparse(argument)})"
+                )
+
+    assert not violations, (
+        "Appel ``Decimal(<non-str>)`` détecté dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (règle 01). Seule "
+        "``Decimal(\"...\")`` (littérale chaîne) ou ``Decimal(str(...))`` "
+        "(conversion entier-vers-Decimal via chaîne, design §Components "
+        "§2) ou une valeur déjà ``Decimal`` transportée depuis "
+        "``parametres_annee``/``payroll_input``/``gains`` est admise. "
+        "Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_aucune_fonction_arrondissement_interdite(chemin: Path) -> None:
+    """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc``.
+
+    Seul ``Decimal.quantize`` est autorisé pour arrondir — détection par
+    nom d'appel direct (``round(...)``) et par attribut de méthode
+    (``<alias>.floor(...)``, ``<alias>.ceil(...)``, ``<alias>.trunc(...)``),
+    robuste à l'alias d'import du module ``math``.
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if not isinstance(noeud, ast.Call):
+            continue
+        fonction = noeud.func
+        if isinstance(fonction, ast.Name) and fonction.id in (
+            _APPELS_ARRONDISSEMENT_INTERDITS
+        ):
+            violations.append(f"ligne {noeud.lineno} — {fonction.id}(...)")
+        elif (
+            isinstance(fonction, ast.Attribute)
+            and fonction.attr in _ATTRIBUTS_ARRONDISSEMENT_INTERDITS
+        ):
+            violations.append(f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)")
+
+    assert not violations, (
+        "Appel d'arrondissement interdit détecté dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (règle 01). Seul "
+        "``Decimal.quantize(Decimal(\"0.01\"), rounding=ROUND_HALF_UP)`` "
+        "est autorisé pour arrondir. Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_signatures_retournent_tuple_decimal_trace(
+    chemin: Path, noms_fonctions: tuple[str, ...]
+) -> None:
+    """Chaque signature publique retourne ``tuple[Decimal, CalculationTrace]``
+    sans paramètre par défaut.
+    """
+    arbre = _parser_module_cotisation(chemin)
+    for nom in noms_fonctions:
+        fonction = _trouver_fonction(arbre, nom)
+
+        assert fonction is not None, (
+            f"Aucune fonction ``{nom}`` trouvée au niveau module dans "
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 1.1)."
+        )
+        assert fonction.returns is not None, (
+            f"``{nom}`` ne porte aucune annotation de retour (Req 1.4). "
+            "Attendu : ``tuple[Decimal, CalculationTrace]``."
+        )
+
+        annotation_retour = ast.unparse(fonction.returns)
+        assert annotation_retour == "tuple[Decimal, CalculationTrace]", (
+            f"L'annotation de retour de ``{nom}`` doit être exactement "
+            "``tuple[Decimal, CalculationTrace]`` (Req 1.4). "
+            f"Reçu : {annotation_retour!r}"
+        )
+
+        arguments = fonction.args
+        defauts_presents = bool(
+            arguments.defaults
+            or any(defaut is not None for defaut in arguments.kw_defaults)
+        )
+        assert not defauts_presents, (
+            f"``{nom}`` ne doit accepter aucun paramètre par défaut "
+            "(Req 1.4) — chaque appel doit fournir explicitement "
+            "``payroll_input``, ``gains`` et ``parametres_annee``, sans "
+            "état implicite hérité d'une valeur par défaut."
+        )
+
+
+class TestRrqNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/rrq.py`` (Req 2.7, 3.4).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module RRQ, par
+    introspection statique de l'AST — sans dépendre d'une exécution ni
+    d'un import du module. Motif identique à
+    :class:`TestGainsBrutsNoFloat` (design §Testing Strategy « Détail
+    des tests de garde »).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)``.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Les signatures de ``calcul_rrq_employe`` et ``calcul_rrq_employeur``
+       retournent l'annotation exacte ``tuple[Decimal, CalculationTrace]``
+       et n'acceptent aucun paramètre par défaut.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 2.7)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_RRQ)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal(\"...\")`` est admise (Req 2.7)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_RRQ)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 2.7)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_RRQ)
+
+    def test_signatures_retournent_tuple_decimal_trace(self) -> None:
+        """``calcul_rrq_employe``/``calcul_rrq_employeur`` annotent leur retour
+        ``tuple[Decimal, CalculationTrace]`` sans paramètre par défaut (Req 3.4).
+        """
+        _verifier_signatures_retournent_tuple_decimal_trace(
+            _CHEMIN_RRQ, ("calcul_rrq_employe", "calcul_rrq_employeur")
+        )
+
+
+class TestRqapNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/rqap.py`` (Req 4.5, 5.6).
+
+    Ferme la règle 01 côté module RQAP, par introspection statique de
+    l'AST. Motif identique à :class:`TestGainsBrutsNoFloat` (design
+    §Testing Strategy « Détail des tests de garde »).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)``.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Les signatures de ``calcul_rqap_employe`` et
+       ``calcul_rqap_employeur`` retournent l'annotation exacte
+       ``tuple[Decimal, CalculationTrace]`` et n'acceptent aucun
+       paramètre par défaut.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 4.5)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_RQAP)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal(\"...\")`` est admise (Req 4.5)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_RQAP)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 4.5)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_RQAP)
+
+    def test_signatures_retournent_tuple_decimal_trace(self) -> None:
+        """``calcul_rqap_employe``/``calcul_rqap_employeur`` annotent leur retour
+        ``tuple[Decimal, CalculationTrace]`` sans paramètre par défaut (Req 5.6).
+        """
+        _verifier_signatures_retournent_tuple_decimal_trace(
+            _CHEMIN_RQAP, ("calcul_rqap_employe", "calcul_rqap_employeur")
+        )
+
+
+class TestAssuranceEmploiNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/assurance_emploi.py``
+    (Req 6.5, 7.4).
+
+    Ferme la règle 01 côté module AE, par introspection statique de
+    l'AST. Motif identique à :class:`TestGainsBrutsNoFloat` (design
+    §Testing Strategy « Détail des tests de garde »).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)``.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Les signatures de ``calcul_ae_employe`` et ``calcul_ae_employeur``
+       retournent l'annotation exacte ``tuple[Decimal, CalculationTrace]``
+       et n'acceptent aucun paramètre par défaut.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 6.5)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal(\"...\")`` est admise (Req 6.5)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 6.5)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_signatures_retournent_tuple_decimal_trace(self) -> None:
+        """``calcul_ae_employe``/``calcul_ae_employeur`` annotent leur retour
+        ``tuple[Decimal, CalculationTrace]`` sans paramètre par défaut (Req 7.4).
+        """
+        _verifier_signatures_retournent_tuple_decimal_trace(
+            _CHEMIN_ASSURANCE_EMPLOI, ("calcul_ae_employe", "calcul_ae_employeur")
+        )
+
+
+# ===========================================================================
+# 7.2 (spec cotisations-sociales-qc) — Absence de valeurs fiscales en dur
+#     dans ``payroll_engine/rrq.py``, ``rqap.py``, ``assurance_emploi.py``
+#     (Req 12.4)
+# ===========================================================================
+#
+# Spec de référence : ``cotisations-sociales-qc`` — tâche 7.2. Même
+# discipline que :class:`TestGainsBrutsNoHardcodedFiscalValues` (règle 06,
+# TDD) : ces tests de garde sont écrits AVANT ``payroll_engine/rrq.py``,
+# ``rqap.py`` et ``assurance_emploi.py`` (tâches 9.1/10.1/11.1, non
+# réalisées à ce stade). Tant que ces fichiers n'existent pas, chaque test
+# échoue explicitement via ``pytest.fail`` — même comportement rouge que
+# :class:`TestRrqNoFloat` et consorts, via :func:`_parser_module_cotisation`.
+
+
+#: Seule constante ``Decimal`` autorisée dans les trois modules de
+#: cotisations sociales : le plancher/valeur neutre (Req 12.4, design
+#: §Testing Strategy « Détail des tests de garde »). Tout autre littéral
+#: ``Decimal("...")`` doit provenir de ``parametres_annee.rrq``/``rqap``/
+#: ``assurance_emploi`` — jamais codé en dur.
+#: Littéraux ``Decimal("...")`` explicitement autorisés : plancher/valeur
+#: neutre (``"0.00"``) et précision d'arrondissement ``_PRECISION_MONNAIE``
+#: (``"0.01"``, design §Architecture « Helper d'arrondissement partagé »).
+#: Motif identique à ``_DECIMAL_NEUTRES_AUTORISES`` de
+#: :class:`TestGainsBrutsNoHardcodedFiscalValues`, qui établit déjà que
+#: ``"0.01"`` (littéral de précision) est légitimement admis à côté de
+#: ``"0.00"`` dans ce même fichier.
+_DECIMAUX_AUTORISES: tuple[str, ...] = ("0.00", "0.01")
+
+#: Seul littéral entier nu autorisé : la précision d'arrondissement
+#: (``precision_arrondissement=2``, design §Components §8/§10). Tout
+#: autre littéral entier signale une valeur fiscale ou de paramétrage
+#: déguisée.
+_ENTIER_PRECISION_AUTORISE: int = 2
+
+
+def _verifier_aucune_constante_fiscale_en_dur(chemin: Path) -> None:
+    """Aucune constante ``Decimal`` ni ``int`` en dur hors plancher/précision.
+
+    Parcourt l'arbre AST du module et signale :
+
+    - tout appel ``Decimal("...")`` dont le contenu de la chaîne ne
+      figure pas dans :data:`_DECIMAUX_AUTORISES` (``"0.00"``
+      plancher/valeur neutre, ``"0.01"`` précision d'arrondissement —
+      Req 12.4) ;
+    - tout littéral entier nu (``ast.Constant`` de type ``int``, hors
+      ``bool``) différent de ``2`` (précision d'arrondissement, Req 12.4).
+
+    Motif identique à :class:`TestGainsBrutsNoHardcodedFiscalValues`
+    (design §Testing Strategy « Détail des tests de garde »), simplifié
+    ici : aucun des trois modules de cette spec ne porte de défense en
+    profondeur nécessitant une liste blanche supplémentaire (contrairement
+    à ``gains_bruts.py`` et son whitelist de taux de vacances).
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+
+    for noeud in ast.walk(arbre):
+        if (
+            isinstance(noeud, ast.Call)
+            and isinstance(noeud.func, ast.Name)
+            and noeud.func.id == "Decimal"
+        ):
+            for argument in noeud.args:
+                if isinstance(argument, ast.Constant) and isinstance(
+                    argument.value, str
+                ):
+                    if argument.value not in _DECIMAUX_AUTORISES:
+                        violations.append(
+                            f"ligne {noeud.lineno} — Decimal({argument.value!r})"
+                        )
+        elif (
+            isinstance(noeud, ast.Constant)
+            and isinstance(noeud.value, int)
+            and not isinstance(noeud.value, bool)
+            and noeud.value != _ENTIER_PRECISION_AUTORISE
+        ):
+            violations.append(f"ligne {noeud.lineno} — {noeud.value!r} (int nu)")
+
+    assert not violations, (
+        "Constante fiscale codée en dur détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (règle 05, Req 12.4). "
+        "Seuls ``Decimal(\"0.00\")`` (plancher/valeur neutre), "
+        "``Decimal(\"0.01\")`` (précision d'arrondissement) et l'entier "
+        "``2`` (précision d'arrondissement) sont autorisés en dur — tout "
+        "autre taux, plafond ou exemption DOIT être lu depuis "
+        "``parametres_annee``. Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_aucun_motif_fiscal_partage_en_dur(chemin: Path) -> None:
+    """Aucun motif fiscal partagé du domaine en dur, en défense complémentaire.
+
+    Réutilise :data:`_MOTIFS_FISCAUX_INTERDITS` et
+    :data:`_MONTANTS_BRUTS_INTERDITS_REGEX` (partagés avec
+    :class:`TestNoHardcodedFiscalValues`), étendus pour couvrir les taux
+    RRQ/RQAP/AE 2026 propres à cette spec (Req 12.4).
+    """
+    if not chemin.exists():
+        pytest.fail(
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} n'existe pas "
+            "encore. Ce test de garde précède l'implémentation (tâches "
+            "9.1/10.1/11.1 de la spec cotisations-sociales-qc, règle 06) "
+            "et DOIT rester rouge jusqu'à la création du module."
+        )
+
+    violations: list[str] = []
+    for numero_ligne, ligne in enumerate(
+        chemin.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        for motif in _MOTIFS_FISCAUX_INTERDITS:
+            if motif in ligne:
+                violations.append(
+                    f"ligne {numero_ligne} — {motif!r} : {ligne.strip()}"
+                )
+        for regex in _MONTANTS_BRUTS_INTERDITS_REGEX:
+            if regex.search(ligne):
+                violations.append(
+                    f"ligne {numero_ligne} — {regex.pattern!r} : {ligne.strip()}"
+                )
+
+    assert not violations, (
+        "Valeur fiscale codée en dur détectée (motif partagé, règle 05, "
+        f"Req 12.4) dans {chemin.relative_to(_REPO_ROOT).as_posix()}. "
+        "Déplacer chaque valeur dans ``parameters/2026/quebec.json`` ou "
+        "``canada.json`` et lire via ``parametres_annee``. Occurrences :\n"
+        + "\n".join(violations)
+    )
+
+
+class TestRrqNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/rrq.py`` (Req 12.4).
+
+    Ferme la règle 05 côté module RRQ, par deux gardes complémentaires :
+
+    1. Introspection AST (:func:`_verifier_aucune_constante_fiscale_en_dur`) :
+       aucune constante ``Decimal`` autre que ``Decimal("0.00")``
+       (plancher/valeur neutre) ou ``Decimal("0.01")`` (précision
+       d'arrondissement, ``_PRECISION_MONNAIE``) et aucun littéral
+       entier nu autre que ``2`` (précision d'arrondissement).
+    2. Lecture ligne à ligne contre les motifs fiscaux partagés du
+       domaine, étendus pour couvrir les taux RRQ 2026 (``0.063``,
+       ``129.63``, ``4479.30``).
+
+    Motif identique à :class:`TestGainsBrutsNoHardcodedFiscalValues`
+    (design §Testing Strategy « Détail des tests de garde »), simplifié
+    car ``rrq.py`` ne porte aucune défense en profondeur nécessitant une
+    liste blanche supplémentaire.
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 12.4)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_RRQ)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 12.4)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_RRQ)
+
+
+class TestRqapNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/rqap.py`` (Req 12.4).
+
+    Ferme la règle 05 côté module RQAP, par les deux mêmes gardes
+    complémentaires que :class:`TestRrqNoHardcodedFiscalValues`, motifs
+    fiscaux partagés étendus pour couvrir les taux RQAP 2026
+    (``0.0043`` employé, ``0.00602`` employeur).
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 12.4)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_RQAP)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 12.4)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_RQAP)
+
+
+class TestAssuranceEmploiNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/assurance_emploi.py``
+    (Req 12.4).
+
+    Ferme la règle 05 côté module AE, par les deux mêmes gardes
+    complémentaires que :class:`TestRrqNoHardcodedFiscalValues`, motifs
+    fiscaux partagés étendus pour couvrir les taux AE 2026 (``0.0130``
+    employé, ``1.4`` multiplicateur employeur).
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 12.4)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 12.4)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_ASSURANCE_EMPLOI)
+
+
+# ===========================================================================
+# 7.3 (spec cotisations-sociales-qc) — Absence d'appel à
+#     ``load_parameters`` et de toute source de non-déterminisme dans
+#     ``payroll_engine/rrq.py``, ``rqap.py``, ``assurance_emploi.py``
+#     (Req 1.5)
+# ===========================================================================
+#
+# Spec de référence : ``cotisations-sociales-qc`` — tâche 7.3. Même
+# discipline que :class:`TestGainsBrutsNoLoadParametersCall` (règle 06,
+# TDD) : ces tests de garde sont écrits AVANT ``payroll_engine/rrq.py``,
+# ``rqap.py`` et ``assurance_emploi.py`` (tâches 9.1/10.1/11.1, non
+# réalisées à ce stade). Tant que ces fichiers n'existent pas, chaque test
+# échoue explicitement via ``pytest.fail`` — même comportement rouge que
+# :class:`TestRrqNoFloat` et consorts, via :func:`_parser_module_cotisation`
+# et :func:`_lire_lignes_cotisation`.
+
+
+def _lire_lignes_cotisation(chemin: Path) -> list[str]:
+    """Retourne les lignes d'un des trois modules de cotisations sociales.
+
+    Échoue explicitement (``pytest.fail``) si le fichier n'existe pas
+    encore — même état rouge attendu que :func:`_parser_module_cotisation`
+    avant les tâches 9.1/10.1/11.1 de la spec ``cotisations-sociales-qc``
+    (règle 06).
+    """
+    if not chemin.exists():
+        pytest.fail(
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} n'existe pas "
+            "encore. Ce test de garde précède l'implémentation (tâches "
+            "9.1/10.1/11.1 de la spec cotisations-sociales-qc, règle 06) "
+            "et DOIT rester rouge jusqu'à la création du module."
+        )
+    return chemin.read_text(encoding="utf-8").splitlines()
+
+
+def _verifier_aucun_token_load_parameters(chemin: Path) -> None:
+    """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+    violations: list[str] = []
+    for numero_ligne, ligne in enumerate(_lire_lignes_cotisation(chemin), start=1):
+        if "load_parameters" in ligne:
+            violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+    assert not violations, (
+        "Occurrence du token ``load_parameters`` détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 1.5). La "
+        "fonction de calcul DOIT recevoir ``parametres_annee`` déjà "
+        "matérialisé par l'appelant — jamais charger elle-même les "
+        "paramètres. Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_aucune_ouverture_fichier_cotisation(chemin: Path) -> None:
+    """Aucun ``open(...)``, ``Path(...).read_text()``/``read_bytes()``,
+    ``json.load(...)``/``json.loads(...)`` (Req 1.5).
+
+    La fonction reçoit ``parametres_annee`` déjà matérialisé — aucune
+    lecture de fichier ne doit avoir lieu dans ces modules.
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if not isinstance(noeud, ast.Call):
+            continue
+        fonction = noeud.func
+        if isinstance(fonction, ast.Name) and fonction.id == "open":
+            violations.append(f"ligne {noeud.lineno} — open(...)")
+        elif isinstance(fonction, ast.Attribute):
+            if fonction.attr in _ATTRIBUTS_OUVERTURE_FICHIER_INTERDITS:
+                violations.append(
+                    f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                )
+            elif fonction.attr in _ATTRIBUTS_JSON_INTERDITS:
+                base = ast.unparse(fonction.value)
+                if "json" in base.lower():
+                    violations.append(
+                        f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                    )
+
+    assert not violations, (
+        "Ouverture ou désérialisation de fichier détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 1.5). La "
+        "fonction reçoit ``parametres_annee`` déjà matérialisé par "
+        "l'appelant — aucune lecture de fichier ne doit avoir lieu ici. "
+        "Occurrences :\n" + "\n".join(violations)
+    )
+
+
+def _verifier_aucune_source_non_determinisme_cotisation(chemin: Path) -> None:
+    """Aucun ``datetime.now()``/``datetime.today()``, ``random.*``,
+    ``os.environ`` (Req 1.5).
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if isinstance(noeud, ast.Call) and isinstance(noeud.func, ast.Attribute):
+            fonction = noeud.func
+            if fonction.attr in _ATTRIBUTS_DATETIME_NON_DETERMINISTES:
+                base = ast.unparse(fonction.value)
+                if "datetime" in base.lower():
+                    violations.append(
+                        f"ligne {noeud.lineno} — {ast.unparse(fonction)}(...)"
+                    )
+        if isinstance(noeud, ast.Attribute):
+            base = ast.unparse(noeud.value)
+            premier_segment = base.split(".")[0]
+            if premier_segment == "random":
+                violations.append(f"ligne {noeud.lineno} — {ast.unparse(noeud)}")
+            if noeud.attr == "environ" and base == "os":
+                violations.append(f"ligne {noeud.lineno} — os.environ")
+
+    assert not violations, (
+        "Source de non-déterminisme détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 1.5). "
+        "``datetime.now()``/``datetime.today()``, ``random.*`` et "
+        "``os.environ`` sont proscrits — toute donnée variable doit "
+        "provenir explicitement des paramètres reçus. Occurrences :\n"
+        + "\n".join(violations)
+    )
+
+
+def _verifier_aucune_variable_module_mutable_cotisation(chemin: Path) -> None:
+    """Aucune variable de module mutable (``_cache = {}``,
+    ``logging.getLogger(...)`` au niveau module, etc.) (Req 1.5).
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in arbre.body:
+        if not isinstance(noeud, ast.Assign):
+            continue
+        valeur = noeud.value
+        noms_cibles = [
+            cible.id for cible in noeud.targets if isinstance(cible, ast.Name)
+        ]
+        if not noms_cibles:
+            continue
+
+        est_litterale_mutable = isinstance(valeur, (ast.Dict, ast.List, ast.Set))
+        est_appel_mutable = False
+        if isinstance(valeur, ast.Call):
+            appelee = valeur.func
+            if (
+                isinstance(appelee, ast.Name)
+                and appelee.id in _APPELS_CONSTRUCTEURS_MUTABLES_INTERDITS
+            ):
+                est_appel_mutable = True
+            elif isinstance(appelee, ast.Attribute) and appelee.attr == "getLogger":
+                est_appel_mutable = True
+
+        if est_litterale_mutable or est_appel_mutable:
+            violations.append(
+                f"ligne {noeud.lineno} — {', '.join(noms_cibles)} = "
+                f"{ast.unparse(valeur)}"
+            )
+
+    assert not violations, (
+        "Variable de module mutable détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 1.5). Un "
+        "module de calcul pur ne doit exposer aucun état mutable "
+        "partagé entre appels (cache, logger, etc.) au niveau module. "
+        "Occurrences :\n" + "\n".join(violations)
+    )
+
+
+class TestRrqNoLoadParametersCall:
+    """``payroll_engine/rrq.py`` n'appelle jamais ``load_parameters`` et ne
+    recourt à aucune source de non-déterminisme (Req 1.5).
+
+    Ferme la contrainte de pureté du module RRQ (design §Architecture
+    « Contrainte de pureté » ; design §Testing Strategy « Détail des
+    tests de garde »), motif identique à
+    :class:`TestGainsBrutsNoLoadParametersCall`. Quatre gardes
+    complémentaires, par introspection AST et lecture ligne à ligne du
+    fichier source :
+
+    1. Absence stricte du token ``load_parameters`` (import ou appel).
+    2. Absence d'ouverture de fichier (``open(...)``,
+       ``Path(...).read_text()``/``read_bytes()``,
+       ``json.load(...)``/``json.loads(...)``).
+    3. Absence d'appel à ``datetime.now()``/``datetime.today()``,
+       ``random.*`` ou ``os.environ`` — sources de non-déterminisme
+       proscrites.
+    4. Absence de variable de module mutable.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_RRQ)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.5)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_RRQ)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.5)."""
+        _verifier_aucune_source_non_determinisme_cotisation(_CHEMIN_RRQ)
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (Req 1.5)."""
+        _verifier_aucune_variable_module_mutable_cotisation(_CHEMIN_RRQ)
+
+
+class TestRqapNoLoadParametersCall:
+    """``payroll_engine/rqap.py`` n'appelle jamais ``load_parameters`` et ne
+    recourt à aucune source de non-déterminisme (Req 1.5).
+
+    Ferme la contrainte de pureté du module RQAP, motif identique à
+    :class:`TestRrqNoLoadParametersCall`. Quatre gardes complémentaires
+    identiques, appliquées à ``payroll_engine/rqap.py``.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_RQAP)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.5)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_RQAP)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.5)."""
+        _verifier_aucune_source_non_determinisme_cotisation(_CHEMIN_RQAP)
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (Req 1.5)."""
+        _verifier_aucune_variable_module_mutable_cotisation(_CHEMIN_RQAP)
+
+
+class TestAssuranceEmploiNoLoadParametersCall:
+    """``payroll_engine/assurance_emploi.py`` n'appelle jamais
+    ``load_parameters`` et ne recourt à aucune source de non-déterminisme
+    (Req 1.5).
+
+    Ferme la contrainte de pureté du module AE, motif identique à
+    :class:`TestRrqNoLoadParametersCall`. Quatre gardes complémentaires
+    identiques, appliquées à ``payroll_engine/assurance_emploi.py``.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.5)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.5)."""
+        _verifier_aucune_source_non_determinisme_cotisation(_CHEMIN_ASSURANCE_EMPLOI)
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (Req 1.5)."""
+        _verifier_aucune_variable_module_mutable_cotisation(_CHEMIN_ASSURANCE_EMPLOI)
+
+
+# ===========================================================================
+# 7.4 — Aucun nouveau garde-fou ``UnsupportedPayrollCase`` (Req 8.1, 8.2, 9.3)
+# ===========================================================================
+
+
+#: Les trois modules cibles de cette spec, regroupés pour la classe de
+#: garde transversale ci-dessous.
+_MODULES_COTISATIONS_SOCIALES: tuple[Path, ...] = (
+    _CHEMIN_RRQ,
+    _CHEMIN_RQAP,
+    _CHEMIN_ASSURANCE_EMPLOI,
+)
+
+
+class TestCotisationsSocialesNoUnsupportedPayrollCase:
+    """Aucun nouveau garde-fou ``UnsupportedPayrollCase`` dans les trois
+    modules de cotisations sociales (Req 8.1, 8.2, 9.3).
+
+    Cette spec **délègue intégralement** aux garde-fous déjà en place
+    dans ``models/payroll_input.py`` et ``models/payroll_result.py``
+    (validateurs de la spec ``moteur-paie-contrats``) : la province de
+    travail, la fréquence de paie et le taux de vacances sont déjà
+    validés en amont, avant que ``PayrollInput``/``GainsDecomposes`` ne
+    parviennent aux fonctions de calcul RRQ/RQAP/AE. Aucune des six
+    fonctions livrées par cette spec ne DOIT donc importer ni lever
+    ``UnsupportedPayrollCase`` (design §Error Handling « Aucun nouveau
+    garde-fou »).
+
+    Contrairement aux classes de garde des tâches 7.1 à 7.3 (une classe
+    par module), cette classe est **transversale** : un seul test
+    paramétré couvre les trois modules, motif cohérent avec le
+    caractère strictement identique de la garde sur les trois fichiers.
+    """
+
+    @pytest.mark.parametrize(
+        "chemin",
+        _MODULES_COTISATIONS_SOCIALES,
+        ids=lambda c: c.name,
+    )
+    def test_aucun_token_unsupported_payroll_case(self, chemin: Path) -> None:
+        """Grep : aucune occurrence du token ``UnsupportedPayrollCase``
+        (Req 8.1, 8.2, 9.3).
+        """
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(chemin), start=1
+        ):
+            if "UnsupportedPayrollCase" in ligne:
+                violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+        assert not violations, (
+            "Occurrence du token ``UnsupportedPayrollCase`` détectée dans "
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 8.1, 8.2, "
+            "9.3). Cette spec délègue intégralement aux garde-fous "
+            "existants de ``PayrollInput``/``GainsDecomposes`` — aucun "
+            "nouveau garde-fou ne doit être introduit ici. Occurrences :\n"
+            + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 5.1 (spec impots-retenues-source) — Absence de ``float`` dans
+#     ``payroll_engine/impot_qc.py`` et ``payroll_engine/impot_federal.py``
+#     (Req 2.6, 3.5, 4.7, 5.5)
+# ===========================================================================
+#
+# Spec de référence : ``impots-retenues-source`` — tâche 5.1. Même
+# discipline TDD (règle 06) que :class:`TestRrqNoFloat` et consorts : ces
+# tests de garde sont écrits AVANT ``payroll_engine/impot_qc.py`` et
+# ``payroll_engine/impot_federal.py`` (tâches d'implémentation non encore
+# réalisées). Tant que ces fichiers n'existent pas, chaque test échoue
+# explicitement via :func:`_parser_module_cotisation` (``pytest.fail`` —
+# et non par une erreur de collection), ce qui est le comportement rouge
+# attendu.
+#
+# Les quatre helpers partagés réutilisés ci-dessous
+# (:func:`_verifier_aucune_litterale_flottante`,
+# :func:`_verifier_aucun_appel_decimal_depuis_non_str`,
+# :func:`_verifier_aucune_fonction_arrondissement_interdite`,
+# :func:`_verifier_signatures_retournent_tuple_decimal_trace`) sont
+# strictement génériques (introspection AST paramétrée par un chemin) et
+# s'appliquent tels quels aux modules d'impôt. En particulier,
+# :func:`_verifier_aucun_appel_decimal_depuis_non_str` admet déjà
+# ``Decimal(str(...))`` — motif requis par les modules d'impôt pour
+# convertir ``nb_periodes_annuelles`` (entier) en ``Decimal`` sans passer
+# par ``float`` ni ``Decimal(int)``.
+
+
+#: Chemins des deux modules cibles de cette spec, relatifs à la racine du
+#: dépôt.
+_CHEMIN_IMPOT_QC: Path = _REPO_ROOT / "payroll_engine" / "impot_qc.py"
+_CHEMIN_IMPOT_FEDERAL: Path = _REPO_ROOT / "payroll_engine" / "impot_federal.py"
+
+
+class TestImpotQCNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/impot_qc.py`` (Req 2.6, 3.5).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module impôt QC,
+    par introspection statique de l'AST — sans dépendre d'une exécution ni
+    d'un import du module. Motif identique à :class:`TestRrqNoFloat`
+    (design §Testing Strategy « Détail des tests de garde »).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)`` — ``Decimal("...")`` et
+       ``Decimal(str(...))`` (conversion ``nb_periodes_annuelles``) admis.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Les signatures de ``calcul_impot_qc_formule`` et
+       ``calcul_impot_qc_retenu`` retournent l'annotation exacte
+       ``tuple[Decimal, CalculationTrace]`` et n'acceptent aucun
+       paramètre par défaut.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 2.6)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_IMPOT_QC)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — ``Decimal("...")``/``Decimal(str(...))`` admis (Req 2.6)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_IMPOT_QC)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 2.6)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_IMPOT_QC)
+
+    def test_signatures_retournent_tuple_decimal_trace(self) -> None:
+        """``calcul_impot_qc_formule``/``calcul_impot_qc_retenu`` annotent leur
+        retour ``tuple[Decimal, CalculationTrace]`` sans paramètre par défaut (Req 3.5).
+        """
+        _verifier_signatures_retournent_tuple_decimal_trace(
+            _CHEMIN_IMPOT_QC,
+            ("calcul_impot_qc_formule", "calcul_impot_qc_retenu"),
+        )
+
+
+class TestImpotFederalNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/impot_federal.py`` (Req 4.7, 5.5).
+
+    Ferme la règle 01 côté module impôt fédéral, par introspection
+    statique de l'AST. Motif identique à :class:`TestRrqNoFloat` (design
+    §Testing Strategy « Détail des tests de garde »).
+
+    Quatre gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)`` — ``Decimal("...")`` et
+       ``Decimal(str(...))`` (conversion ``nb_periodes_annuelles``) admis.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Les signatures de ``calcul_impot_federal_formule`` et
+       ``calcul_impot_federal_retenu`` retournent l'annotation exacte
+       ``tuple[Decimal, CalculationTrace]`` et n'acceptent aucun
+       paramètre par défaut.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 4.7)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — ``Decimal("...")``/``Decimal(str(...))`` admis (Req 4.7)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 4.7)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_signatures_retournent_tuple_decimal_trace(self) -> None:
+        """``calcul_impot_federal_formule``/``calcul_impot_federal_retenu`` annotent
+        leur retour ``tuple[Decimal, CalculationTrace]`` sans paramètre par défaut (Req 5.5).
+        """
+        _verifier_signatures_retournent_tuple_decimal_trace(
+            _CHEMIN_IMPOT_FEDERAL,
+            ("calcul_impot_federal_formule", "calcul_impot_federal_retenu"),
+        )
+
+
+# ===========================================================================
+# 5.2 (spec impots-retenues-source) — Aucune valeur fiscale codée en dur
+#      dans ``impot_qc.py`` ni ``impot_federal.py`` (règle 05, Req 10.4)
+# ===========================================================================
+#
+# Ces deux classes réutilisent telles quelles les gardes partagées de la
+# spec ``cotisations-sociales-qc`` (tâche 7.2) :
+#
+# - :func:`_verifier_aucune_constante_fiscale_en_dur` (AST) — garde
+#   *primaire*, **value-agnostic** : interdit tout littéral
+#   ``Decimal("...")`` autre que ``Decimal("0.00")`` (plancher/valeur
+#   neutre) et ``Decimal("0.01")`` (précision d'arrondissement), ainsi que
+#   tout littéral entier nu autre que ``2`` (précision). Comme elle ne
+#   dépend d'aucune valeur numérique connue, elle enforce pleinement le
+#   Req 10.4 (aucun taux/palier/crédit/déduction/abattement en dur) sans
+#   avoir besoin de connaître les valeurs officielles 2026.
+# - :func:`_verifier_aucun_motif_fiscal_partage_en_dur` — garde
+#   *complémentaire* (défense en profondeur) contre les motifs fiscaux
+#   partagés déjà listés dans :data:`_MOTIFS_FISCAUX_INTERDITS`.
+#
+# NOTE (extension future de ``_MOTIFS_FISCAUX_INTERDITS``) : la tâche 5.2
+# prévoit d'étendre optionnellement les motifs partagés pour couvrir les
+# paliers, crédits convertibles, déduction pour travailleur et abattement
+# du Québec 2026. Ces valeurs ne sont toutefois confirmées qu'en tâche 6
+# (remplissage de ``parameters/2026/quebec.json`` et ``canada.json`` depuis
+# le TP-1015.F 2026 / T4127 2026). Ajouter dès maintenant des littéraux
+# 2026 *non confirmés* serait contre-productif (motifs erronés). La garde
+# AST value-agnostic ci-dessus étant déjà suffisante pour le Req 10.4,
+# aucun littéral spéculatif n'est ajouté ici ; ``_MOTIFS_FISCAUX_INTERDITS``
+# pourra être étendu une fois la tâche 6 close et les valeurs officielles
+# établies.
+
+
+class TestImpotQCNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/impot_qc.py`` (Req 10.4).
+
+    Ferme la règle 05 côté module impôt QC, par les deux mêmes gardes
+    complémentaires que :class:`TestRrqNoHardcodedFiscalValues` :
+
+    1. Introspection AST (:func:`_verifier_aucune_constante_fiscale_en_dur`) :
+       aucune constante ``Decimal`` autre que ``Decimal("0.00")``
+       (plancher/valeur neutre) ou ``Decimal("0.01")`` (précision
+       d'arrondissement) et aucun littéral entier nu autre que ``2``
+       (précision d'arrondissement). Garde *value-agnostic* : tout palier,
+       taux, crédit convertible, déduction pour travailleur ou abattement
+       DOIT être lu depuis ``parametres_annee.impot_quebec`` — jamais codé
+       en dur.
+    2. Lecture ligne à ligne contre les motifs fiscaux partagés du domaine
+       (:func:`_verifier_aucun_motif_fiscal_partage_en_dur`), en défense
+       complémentaire.
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 10.4)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_IMPOT_QC)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 10.4)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_IMPOT_QC)
+
+
+class TestImpotFederalNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/impot_federal.py``
+    (Req 10.4).
+
+    Ferme la règle 05 côté module impôt fédéral, par les deux mêmes gardes
+    complémentaires que :class:`TestRrqNoHardcodedFiscalValues`. La garde
+    AST *value-agnostic* interdit tout palier, taux, crédit convertible,
+    montant canadien pour emploi, plafond de cotisation de base RRQ ou
+    abattement du Québec codé en dur ; ces valeurs DOIVENT provenir de
+    ``parametres_annee.impot_federal`` (et des sections ``rrq``/``rqap``/
+    ``assurance_emploi`` pour le crédit K2Q).
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 10.4)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 10.4)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_IMPOT_FEDERAL)
+
+
+# ===========================================================================
+# 5.3 (spec impots-retenues-source) — Contrainte de pureté : aucun appel à
+#      ``load_parameters`` ni source de non-déterminisme dans ``impot_qc.py``
+#      et ``impot_federal.py`` (Req 1.5)
+# ===========================================================================
+#
+# Ces deux classes réutilisent telles quelles les quatre gardes partagées de
+# la spec ``cotisations-sociales-qc`` (tâche 7.3), motif identique à
+# :class:`TestRrqNoLoadParametersCall` (design §Testing Strategy « Détail des
+# tests de garde ») :
+#
+# - :func:`_verifier_aucun_token_load_parameters` — grep du token
+#   ``load_parameters`` (ni import, ni appel).
+# - :func:`_verifier_aucune_ouverture_fichier_cotisation` — absence
+#   d'ouverture de fichier (``open(...)``, ``json.load(...)``/``json.loads``,
+#   ``Path(...).read_text()``/``read_bytes()``).
+# - :func:`_verifier_aucune_source_non_determinisme_cotisation` — absence de
+#   ``datetime.now()``/``datetime.today()``, ``random.*``, ``os.environ``.
+# - :func:`_verifier_aucune_variable_module_mutable_cotisation` — absence de
+#   variable de module mutable.
+#
+# La contrainte de pureté impose que ``impot_qc.py`` et ``impot_federal.py``
+# reçoivent leurs paramètres en argument (``parametres_annee``) et ne les
+# chargent jamais eux-mêmes : le chargement reste la responsabilité exclusive
+# de l'orchestrateur (design §Architecture « Contrainte de pureté »).
+
+
+class TestImpotQCNoLoadParametersCall:
+    """``payroll_engine/impot_qc.py`` n'appelle jamais ``load_parameters`` et
+    ne recourt à aucune source de non-déterminisme (Req 1.5).
+
+    Ferme la contrainte de pureté du module impôt QC (design §Architecture
+    « Contrainte de pureté » ; design §Testing Strategy « Détail des tests de
+    garde »), motif identique à :class:`TestRrqNoLoadParametersCall`. Quatre
+    gardes complémentaires, par introspection AST et lecture ligne à ligne du
+    fichier source :
+
+    1. Absence stricte du token ``load_parameters`` (import ou appel).
+    2. Absence d'ouverture de fichier (``open(...)``,
+       ``Path(...).read_text()``/``read_bytes()``,
+       ``json.load(...)``/``json.loads(...)``).
+    3. Absence d'appel à ``datetime.now()``/``datetime.today()``,
+       ``random.*`` ou ``os.environ`` — sources de non-déterminisme
+       proscrites.
+    4. Absence de variable de module mutable.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_IMPOT_QC)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.5)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_IMPOT_QC)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.5)."""
+        _verifier_aucune_source_non_determinisme_cotisation(_CHEMIN_IMPOT_QC)
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (Req 1.5)."""
+        _verifier_aucune_variable_module_mutable_cotisation(_CHEMIN_IMPOT_QC)
+
+
+class TestImpotFederalNoLoadParametersCall:
+    """``payroll_engine/impot_federal.py`` n'appelle jamais ``load_parameters``
+    et ne recourt à aucune source de non-déterminisme (Req 1.5).
+
+    Ferme la contrainte de pureté du module impôt fédéral, motif identique à
+    :class:`TestRrqNoLoadParametersCall`. Quatre gardes complémentaires
+    identiques, appliquées à ``payroll_engine/impot_federal.py``.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.5)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.5)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.5)."""
+        _verifier_aucune_source_non_determinisme_cotisation(_CHEMIN_IMPOT_FEDERAL)
+
+    def test_aucune_variable_module_mutable(self) -> None:
+        """Aucune variable de module mutable (Req 1.5)."""
+        _verifier_aucune_variable_module_mutable_cotisation(_CHEMIN_IMPOT_FEDERAL)
+
+
+# ===========================================================================
+# 5.4 (spec impots-retenues-source) — Indépendance de ``impot_federal.py``
+#      vis-à-vis des fonctions de cotisations sociales (Req 6.3)
+# ===========================================================================
+#
+# Le mécanisme K2Q de ``calcul_impot_federal_formule`` recompose LOCALEMENT
+# les projections annualisées des cotisations RRQ (taux de base), AE et RQAP
+# à partir de ``gains.brut_total``, ``nb_periodes_annuelles`` et des sections
+# de paramètres ``parametres_annee.rrq``/``.rqap``/``.assurance_emploi``. Il
+# ne DOIT jamais appeler les fonctions réelles ``calcul_rrq_employe``,
+# ``calcul_rqap_employe`` ou ``calcul_ae_employe`` de la spec
+# ``cotisations-sociales-qc``, ni importer les modules qui les hébergent
+# (design §Error Handling « Ce que les quatre fonctions NE font PAS » ;
+# §Séparation exonération / cotisations sociales).
+#
+# NUANCE IMPORTANTE : la LECTURE des sections de paramètres
+# (``parametres_annee.rrq``/``.rqap``/``.assurance_emploi`` — simple accès
+# d'attribut sur l'objet paramètres) reste AUTORISÉE et ne DOIT pas être
+# signalée. Seuls sont proscrits :
+#   - les tokens de fonction ``calcul_rrq_employe``/``calcul_rqap_employe``/
+#     ``calcul_ae_employe`` (appel ou import) ;
+#   - les imports des modules ``payroll_engine.rrq``/``payroll_engine.rqap``/
+#     ``payroll_engine.assurance_emploi``.
+# La garde matche donc sur ces noms de fonction précis et sur les
+# statements d'import, JAMAIS sur les sous-chaînes génériques
+# ``rrq``/``rqap``/``assurance_emploi``.
+
+
+#: Noms de fonction des cotisations sociales interdits dans
+#: ``impot_federal.py`` — appel ou import (Req 6.3).
+_FONCTIONS_COTISATION_INTERDITES: tuple[str, ...] = (
+    "calcul_rrq_employe",
+    "calcul_rqap_employe",
+    "calcul_ae_employe",
+)
+
+#: Modules de cotisations sociales dont l'import est interdit dans
+#: ``impot_federal.py`` (Req 6.3).
+_MODULES_COTISATION_INTERDITS: tuple[str, ...] = (
+    "payroll_engine.rrq",
+    "payroll_engine.rqap",
+    "payroll_engine.assurance_emploi",
+)
+
+
+def _ligne_importe_module(ligne: str, module: str) -> bool:
+    """Vrai si ``ligne`` importe ``module`` (``from <module> import ...`` ou
+    ``import <module>``), tolérant les espaces multiples et un alias ``as``.
+
+    Ne matche que des statements d'import — un simple accès d'attribut
+    ``parametres_annee.rrq`` ne contient pas le préfixe ``payroll_engine.``
+    et n'est donc jamais capté.
+    """
+    ligne_nettoyee = ligne.strip()
+    return (
+        ligne_nettoyee.startswith(f"from {module} import")
+        or ligne_nettoyee.startswith(f"from {module}.")
+        or ligne_nettoyee == f"import {module}"
+        or ligne_nettoyee.startswith(f"import {module} ")
+        or ligne_nettoyee.startswith(f"import {module} as ")
+        or ligne_nettoyee.startswith(f"import {module}.")
+    )
+
+
+class TestImpotFederalNoRrqRqapAeFunctionCalls:
+    """``payroll_engine/impot_federal.py`` n'appelle jamais — et n'importe
+    jamais — les fonctions de cotisations sociales (Req 6.3).
+
+    Le crédit K2Q est recomposé localement depuis
+    ``parametres_annee.rrq``/``.rqap``/``.assurance_emploi`` ; les fonctions
+    réelles ``calcul_rrq_employe``/``calcul_rqap_employe``/``calcul_ae_employe``
+    de la spec ``cotisations-sociales-qc`` ne DOIVENT jamais être invoquées,
+    et leurs modules d'accueil ne DOIVENT jamais être importés (design
+    §Testing Strategy « Détail des tests de garde » ; §Error Handling « Ce que
+    les quatre fonctions NE font PAS »).
+
+    La LECTURE des sections de paramètres reste autorisée : la garde ne
+    matche que les noms de fonction précis et les statements d'import, jamais
+    les sous-chaînes ``rrq``/``rqap``/``assurance_emploi`` en général.
+
+    Réutilise le helper de lecture ligne à ligne :func:`_lire_lignes_cotisation`
+    (même état rouge « module inexistant » attendu avant la tâche 9.x, règle 06).
+    """
+
+    def test_aucun_appel_fonction_cotisation(self) -> None:
+        """Grep : aucun token ``calcul_rrq_employe``/``calcul_rqap_employe``/
+        ``calcul_ae_employe`` dans le module (Req 6.3)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(_CHEMIN_IMPOT_FEDERAL), start=1
+        ):
+            for fonction in _FONCTIONS_COTISATION_INTERDITES:
+                if fonction in ligne:
+                    violations.append(
+                        f"ligne {numero_ligne} — {fonction} : {ligne.strip()}"
+                    )
+
+        assert not violations, (
+            "Appel/import d'une fonction de cotisations sociales détecté dans "
+            f"{_CHEMIN_IMPOT_FEDERAL.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 6.3). Le crédit K2Q DOIT être recomposé localement depuis "
+            "``parametres_annee.rrq``/``.rqap``/``.assurance_emploi`` — jamais "
+            "via ``calcul_rrq_employe``/``calcul_rqap_employe``/"
+            "``calcul_ae_employe``. Occurrences :\n" + "\n".join(violations)
+        )
+
+    def test_aucun_import_module_cotisation(self) -> None:
+        """Grep : aucun import de ``payroll_engine.rrq``/``.rqap``/
+        ``.assurance_emploi`` (Req 6.3)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(_CHEMIN_IMPOT_FEDERAL), start=1
+        ):
+            for module in _MODULES_COTISATION_INTERDITS:
+                if _ligne_importe_module(ligne, module):
+                    violations.append(
+                        f"ligne {numero_ligne} — {module} : {ligne.strip()}"
+                    )
+
+        assert not violations, (
+            "Import d'un module de cotisations sociales détecté dans "
+            f"{_CHEMIN_IMPOT_FEDERAL.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 6.3). ``impot_federal.py`` ne DOIT importer ni "
+            "``payroll_engine.rrq``, ni ``payroll_engine.rqap``, ni "
+            "``payroll_engine.assurance_emploi`` : le mécanisme K2Q est "
+            "indépendant de ces modules. Occurrences :\n" + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 5.5 (spec impots-retenues-source) — Aucun nouveau garde-fou
+#      ``UnsupportedPayrollCase`` dans ``impot_qc.py`` ni ``impot_federal.py``
+#      (Req 13.1, 13.2, 13.3)
+# ===========================================================================
+#
+# Miroir strict de :class:`TestCotisationsSocialesNoUnsupportedPayrollCase`
+# (spec ``cotisations-sociales-qc`` tâche 7.4) appliqué aux deux modules
+# d'impôt. Cette spec **délègue intégralement** aux garde-fous déjà en place
+# dans ``models/payroll_input.py`` et ``models/payroll_result.py``
+# (validateurs de la spec ``moteur-paie-contrats``) : province de travail,
+# fréquence de paie et taux de vacances sont validés en amont, avant que
+# ``PayrollInput``/``GainsDecomposes`` ne parviennent aux quatre fonctions
+# de calcul d'impôt. Aucune de ces fonctions ne DOIT donc importer ni lever
+# ``UnsupportedPayrollCase`` (design §Error Handling « Aucun nouveau
+# garde-fou », Req 13.1, 13.2, 13.3).
+
+
+#: Les deux modules cibles de cette spec, regroupés pour la classe de garde
+#: transversale ci-dessous.
+_MODULES_IMPOT: tuple[Path, ...] = (
+    _CHEMIN_IMPOT_QC,
+    _CHEMIN_IMPOT_FEDERAL,
+)
+
+
+class TestImpotNoUnsupportedPayrollCase:
+    """Aucun nouveau garde-fou ``UnsupportedPayrollCase`` dans les deux
+    modules d'impôt (Req 13.1, 13.2, 13.3).
+
+    Cette spec **délègue intégralement** aux garde-fous déjà portés à la
+    construction par ``PayrollInput``/``GainsDecomposes`` (validateurs de la
+    spec ``moteur-paie-contrats``) : la province de travail, la fréquence de
+    paie et le taux de vacances sont déjà validés en amont, avant que ces
+    modèles ne parviennent aux fonctions ``calcul_impot_qc_formule``/
+    ``calcul_impot_qc_retenu``/``calcul_impot_federal_formule``/
+    ``calcul_impot_federal_retenu``. Aucune de ces quatre fonctions ne DOIT
+    donc importer ni lever ``UnsupportedPayrollCase`` (design §Error Handling
+    « Aucun nouveau garde-fou »).
+
+    Contrairement aux classes de garde des tâches 5.1 à 5.4 (une classe par
+    module, ou spécifique à ``impot_federal.py``), cette classe est
+    **transversale** : un seul test paramétré couvre les deux modules, motif
+    cohérent avec le caractère strictement identique de la garde sur les deux
+    fichiers — miroir de
+    :class:`TestCotisationsSocialesNoUnsupportedPayrollCase`.
+
+    Réutilise le helper de lecture ligne à ligne
+    :func:`_lire_lignes_cotisation` (même état rouge « module inexistant »
+    attendu avant la tâche 9.x, règle 06).
+    """
+
+    @pytest.mark.parametrize(
+        "chemin",
+        _MODULES_IMPOT,
+        ids=lambda c: c.name,
+    )
+    def test_aucun_token_unsupported_payroll_case(self, chemin: Path) -> None:
+        """Grep : aucune occurrence du token ``UnsupportedPayrollCase``
+        (Req 13.1, 13.2, 13.3).
+        """
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(chemin), start=1
+        ):
+            if "UnsupportedPayrollCase" in ligne:
+                violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+        assert not violations, (
+            "Occurrence du token ``UnsupportedPayrollCase`` détectée dans "
+            f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 13.1, 13.2, "
+            "13.3). Cette spec délègue intégralement aux garde-fous "
+            "existants de ``PayrollInput``/``GainsDecomposes`` — aucun "
+            "nouveau garde-fou ne doit être introduit ici. Occurrences :\n"
+            + "\n".join(violations)
         )

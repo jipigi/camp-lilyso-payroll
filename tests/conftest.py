@@ -25,10 +25,49 @@ Règles applicables (voir ``.kiro/steering/``) :
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Final
 
 import pytest
+from hypothesis import HealthCheck, settings
+
+
+# ---------------------------------------------------------------------------
+# Profils Hypothesis (vitesse des runs property-based).
+# ---------------------------------------------------------------------------
+#
+# Runs locaux rapides par défaut (profil dev, 15 exemples) ; validation
+# complète via HYPOTHESIS_PROFILE=ci (>=100, conforme design
+# §Testing Strategy « minimum 100 itérations par propriété »).
+#
+# conftest.py est importé par pytest AVANT la collecte des tests, donc le
+# profil est chargé avant l'évaluation des objets ``settings(...)`` définis
+# au niveau module dans ``tests/payroll_engine/*.py``. Ces objets omettent
+# volontairement ``max_examples`` : ils héritent alors du ``max_examples``
+# du profil actif (dev=15, ci=100).
+
+_SUPPRESS_HEALTH_CHECK: Final = [
+    HealthCheck.too_slow,
+    HealthCheck.filter_too_much,
+    HealthCheck.function_scoped_fixture,
+]
+
+settings.register_profile(
+    "dev",
+    max_examples=15,
+    deadline=None,
+    suppress_health_check=_SUPPRESS_HEALTH_CHECK,
+)
+
+settings.register_profile(
+    "ci",
+    max_examples=100,
+    deadline=None,
+    suppress_health_check=_SUPPRESS_HEALTH_CHECK,
+)
+
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
 
 # ---------------------------------------------------------------------------

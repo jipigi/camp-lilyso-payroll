@@ -100,6 +100,8 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
   - Support de la retenue additionnelle
 - Séparation stricte, commune aux deux modules : exonération d'impôt ≠ exemption des cotisations sociales (RRQ/RQAP/AE restent dus même si l'impôt est exonéré)
 
+> **Note (2026-08-03) — noms de modules définitifs** : les modules livrés sont `payroll_engine/impot_qc.py` et `payroll_engine/impot_federal.py` (quatre fonctions : `calcul_impot_qc_formule`, `calcul_impot_qc_retenu`, `calcul_impot_federal_formule`, `calcul_impot_federal_retenu`). Les noms `quebec_tax.py` / `federal_tax.py` mentionnés plus haut dans ce plan antérieur sont abandonnés au profit de cette convention francophone alignée sur `rrq.py` / `rqap.py` / `assurance_emploi.py`. Déviation déjà actée dans la spec `impots-retenues-source`.
+
 **Tests** :
 
 - Golden test QC001 : impôt QC = 104,56 $ ; impôt fédéral à compléter via PDOC

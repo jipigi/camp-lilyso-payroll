@@ -85,6 +85,33 @@ Utiliser WebRAS (revenuquebec.ca/webras) et le calculateur PDOC (canada.ca/pdoc)
 pour cette paie exceptionnelle, puis reporter manuellement au registre.
 ```
 
+## RRQ2 — Deuxième cotisation supplémentaire au RRQ (hors périmètre)
+
+La **deuxième cotisation supplémentaire au RRQ** (« RRQ2 »), soit un taux de
+4 % appliqué aux gains admissibles compris entre le Maximum des gains
+admissibles (MGA) et le Maximum supplémentaire des gains admissibles
+(MSGA), est **hors périmètre** de l'application Camp LilySO. Aucune
+fonction du moteur de cotisations sociales (`payroll_engine/rrq.py`) ne
+calcule, n'expose ni ne lit les champs
+`taux_deuxieme_cotisation_supplementaire_employe` et
+`taux_deuxieme_cotisation_supplementaire_employeur` de `RRQParametres` —
+ces champs restent réservés à une spec future si le périmètre Camp
+LilySO devait un jour couvrir des salaires atteignant le MGA.
+
+**Pourquoi aucun garde-fou `UnsupportedPayrollCase` supplémentaire n'est
+nécessaire pour ce cas précis** : le `Plafond_Annuel_RRQ_Employe`
+(`cotisation_max_annuelle_employe = 4 479,30 $`) correspond exactement au
+seuil où l'Assiette_Cotisable_RRQ atteint le MGA
+(`74 600 $ − 3 500 $ = 71 100 $`, et `71 100 $ × 6,30 % = 4 479,30 $`). La
+cotisation RRQ employé cesse donc naturellement de croître à ce seuil,
+plafonnée par le cumul annuel déjà en place (voir la fonction
+`calcul_rrq_employe`) : un salarié du Camp LilySO n'atteint jamais, en
+pratique, la portion de gains située au-delà du MGA où la RRQ2
+s'appliquerait.
+
+Ce comportement est documentaire uniquement — aucun test automatisé n'est
+associé à cette note (revue manuelle, conformément à la règle 06).
+
 ## Procédure d'ajout d'un cas supporté
 
 Si un cas listé ici devient nécessaire :

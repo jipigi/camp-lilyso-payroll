@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
@@ -372,3 +373,406 @@ def test_calcul_gains_reproduit_fixture(
         f"[{scenario_id}] trace.source ({trace.source!r}) ne matche pas "
         f"^TP-1015\\.G 2026(, section .+)?$ (Req 11.7)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Golden test — cotisations sociales RRQ, RQAP, AE (spec
+# cotisations-sociales-qc, tâche 6.1).
+#
+# ``payroll_engine.rrq``, ``payroll_engine.rqap`` et
+# ``payroll_engine.assurance_emploi`` n'existent pas encore à ce stade de
+# la règle 06 (« tests avant code » — livrés par les tâches 9.1/10.1/11.1).
+# L'import des six fonctions est donc effectué **localement**, à
+# l'intérieur du test, afin qu'un ``ModuleNotFoundError`` sur ces trois
+# modules ne fasse pas échouer la collecte de tout ce fichier (les golden
+# tests ci-dessus, portant sur des modules déjà livrés, doivent continuer à
+# passer) — même patron que ``test_calcul_gains_reproduit_fixture``.
+# ---------------------------------------------------------------------------
+
+SCENARIOS_COTISATIONS: Final[tuple[str, ...]] = (
+    "QC001",
+    "QC002",
+    "QC003",
+    "QC004",
+    "QC005",
+    "QC006",
+)
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize("scenario_id", SCENARIOS_COTISATIONS)
+def test_cotisations_sociales_reproduisent_fixture(
+    scenario_id: str,
+    fixtures_inputs_dir: Path,
+    fixtures_outputs_dir: Path,
+) -> None:
+    """Reproduit les six champs de cotisation sociale au cent près.
+
+    **Limitation connue du corpus** (Introduction des requirements de la
+    spec ``cotisations-sociales-qc`` et design §Testing Strategy
+    « Limitation héritée du corpus golden ») : les six scénarios
+    QC001–QC006 sont tous des paies n° 1 de la saison (``cumul_ytd`` de
+    départ nul pour les six catégories). Ce golden test ne valide donc
+    **pas directement** le comportement de plafonnement en cours de
+    saison (cumul YTD non nul) — ce comportement reste néanmoins
+    spécifié (Requirements 2 à 7) et couvert par les property tests des
+    tâches 2 à 4 (Property 4 et 5, stratégie ``st_cumuls_ytd_non_nuls``),
+    pas par ce corpus golden.
+
+    QC004 confirme en particulier ``rqap_employeur == Decimal("1.77")``
+    (résolution de l'anomalie — voir Introduction des requirements et
+    Property 18). QC001 confirme ``rrq_employe == Decimal("87.36")``
+    (valeur corrigée après ré-exécution WebRAS en 27 périodes, Req 13.6).
+
+    Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5, 13.6
+    """
+    # Import local — voir le commentaire de section ci-dessus : les
+    # modules n'existent pas encore (tâches 9.1/10.1/11.1), l'échec
+    # attendu à ce stade est un ``ModuleNotFoundError`` propre, pas un
+    # crash de collecte pour le reste du fichier.
+    from payroll_engine.assurance_emploi import (
+        calcul_ae_employe,
+        calcul_ae_employeur,
+    )
+    from payroll_engine.rqap import calcul_rqap_employe, calcul_rqap_employeur
+    from payroll_engine.rrq import calcul_rrq_employe, calcul_rrq_employeur
+
+    scenario_fichier = scenario_id.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Chargement de la fixture d'entrée → ``PayrollInput``.
+    # ------------------------------------------------------------------
+    fixture_input_path = fixtures_inputs_dir / f"{scenario_fichier}.json"
+    assert fixture_input_path.exists(), (
+        f"Fixture d'entrée manquante : {fixture_input_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    payroll_input = PayrollInput.model_validate_json(
+        fixture_input_path.read_text(encoding="utf-8")
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Chargement de la fixture de sortie → sections ``gains``,
+    #    ``retenues_employe`` et ``cotisations_employeur``.
+    # ------------------------------------------------------------------
+    fixture_output_path = fixtures_outputs_dir / f"{scenario_fichier}.json"
+    assert fixture_output_path.exists(), (
+        f"Fixture de sortie manquante : {fixture_output_path}. Les "
+        f"tâches 14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    fixture_output = json.loads(
+        fixture_output_path.read_text(encoding="utf-8")
+    )
+    gains = GainsDecomposes(**fixture_output["gains"])
+
+    # ------------------------------------------------------------------
+    # 3. Chargement des paramètres annuels versionnés (règle 05) — fusion
+    #    Québec/Canada pour que ``parametres.assurance_emploi`` soit
+    #    disponible en plus de ``parametres.rrq``/``.rqap`` (patron
+    #    identique à ``tests/strategies.py::_charger_parametres_annee_2026_qc_ca``,
+    #    aucune mutation — ``model_copy``).
+    # ------------------------------------------------------------------
+    parametres_qc = load_parameters(2026, Juridiction.QUEBEC)
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    parametres = parametres_qc.model_copy(
+        update={"assurance_emploi": parametres_ca.assurance_emploi}
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Appel des six fonctions.
+    # ------------------------------------------------------------------
+    rrq_employe, trace_rrq_employe = calcul_rrq_employe(
+        payroll_input, gains, parametres
+    )
+    rrq_employeur, _ = calcul_rrq_employeur(payroll_input, gains, parametres)
+    rqap_employe, _ = calcul_rqap_employe(payroll_input, gains, parametres)
+    rqap_employeur, _ = calcul_rqap_employeur(
+        payroll_input, gains, parametres
+    )
+    ae_employe, _ = calcul_ae_employe(payroll_input, gains, parametres)
+    ae_employeur, _ = calcul_ae_employeur(payroll_input, gains, parametres)
+
+    # ------------------------------------------------------------------
+    # 5. Assertions golden (Req 13.1–13.6) — égalité stricte, tolérance
+    #    nulle (règle 01).
+    # ------------------------------------------------------------------
+    retenues = fixture_output["retenues_employe"]
+    cotisations = fixture_output["cotisations_employeur"]
+
+    assert rrq_employe == Decimal(retenues["rrq"]["montant"]), (
+        f"[{scenario_id}] rrq_employe ({rrq_employe}) != fixture "
+        f"({retenues['rrq']['montant']}) (Req 13.1)."
+    )
+    assert rrq_employeur == Decimal(cotisations["rrq_employeur"]["montant"]), (
+        f"[{scenario_id}] rrq_employeur ({rrq_employeur}) != fixture "
+        f"({cotisations['rrq_employeur']['montant']}) (Req 13.2)."
+    )
+    assert rqap_employe == Decimal(retenues["rqap"]["montant"]), (
+        f"[{scenario_id}] rqap_employe ({rqap_employe}) != fixture "
+        f"({retenues['rqap']['montant']}) (Req 13.3)."
+    )
+    assert rqap_employeur == Decimal(
+        cotisations["rqap_employeur"]["montant"]
+    ), (
+        f"[{scenario_id}] rqap_employeur ({rqap_employeur}) != fixture "
+        f"({cotisations['rqap_employeur']['montant']}) (Req 13.3)."
+    )
+    assert ae_employe == Decimal(retenues["ae"]["montant"]), (
+        f"[{scenario_id}] ae_employe ({ae_employe}) != fixture "
+        f"({retenues['ae']['montant']}) (Req 13.4)."
+    )
+    assert ae_employeur == Decimal(cotisations["ae_employeur"]["montant"]), (
+        f"[{scenario_id}] ae_employeur ({ae_employeur}) != fixture "
+        f"({cotisations['ae_employeur']['montant']}) (Req 13.4)."
+    )
+
+    # (f) Cohérence trace/montant pour au moins ``rrq_employe`` (Req 13.5).
+    assert trace_rrq_employe.resultat == rrq_employe, (
+        f"[{scenario_id}] trace_rrq_employe.resultat "
+        f"({trace_rrq_employe.resultat}) != rrq_employe ({rrq_employe}) "
+        f"(Req 13.5)."
+    )
+
+    # (g) Assertion dédiée QC004 — résolution de l'anomalie RQAP employeur
+    #     (Req 5.8, 13.3, Property 18).
+    if scenario_id == "QC004":
+        assert rqap_employeur == Decimal("1.77"), (
+            f"[QC004] rqap_employeur ({rqap_employeur}) != Decimal('1.77') "
+            f"— anomalie non résolue (Req 5.8, 13.3)."
+        )
+
+    # (h) Assertion dédiée QC001 — valeur corrigée à 27 périodes
+    #     (Req 13.6).
+    if scenario_id == "QC001":
+        assert rrq_employe == Decimal("87.36"), (
+            f"[QC001] rrq_employe ({rrq_employe}) != Decimal('87.36') "
+            f"— valeur corrigée à 27 périodes attendue (Req 13.6)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Golden test — retenues d'impôt à la source QC et fédérale (spec
+# impots-retenues-source, tâche 4.1).
+#
+# ``payroll_engine.impot_qc`` et ``payroll_engine.impot_federal`` n'existent
+# pas encore à ce stade de la règle 06 (« tests avant code » — implémentés
+# par les tâches 9.1/10.1). L'import des quatre fonctions est donc effectué
+# **localement**, à l'intérieur du test, afin qu'un ``ModuleNotFoundError``
+# sur ces deux modules ne fasse pas échouer la collecte de tout ce fichier
+# (les golden tests ci-dessus, portant sur des modules déjà livrés, doivent
+# continuer à passer) — même patron que
+# ``test_cotisations_sociales_reproduisent_fixture``.
+# ---------------------------------------------------------------------------
+
+SCENARIOS_IMPOTS: Final[tuple[str, ...]] = (
+    "QC001",
+    "QC002",
+    "QC003",
+    "QC004",
+    "QC005",
+    "QC006",
+)
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize("scenario_id", SCENARIOS_IMPOTS)
+def test_impots_reproduisent_fixture(
+    scenario_id: str,
+    fixtures_inputs_dir: Path,
+    fixtures_outputs_dir: Path,
+) -> None:
+    """Reproduit les quatre champs d'impôt au cent près (Requirement 11).
+
+    Vérifie, pour chacun des six scénarios QC001–QC006, que les quatre
+    fonctions livrées par la spec ``impots-retenues-source``
+    (``calcul_impot_qc_formule``, ``calcul_impot_qc_retenu``,
+    ``calcul_impot_federal_formule``, ``calcul_impot_federal_retenu``)
+    reproduisent au cent près les quatre champs
+    ``retenues_employe.{impot_qc_formule, impot_qc_retenu,
+    impot_federal_formule, impot_federal_retenu}.montant`` des fixtures de
+    sortie (Req 11.1–11.4).
+
+    **Comportement sous le seuil d'imposition** (Requirement 7) : QC004 et
+    QC006 produisent ``impot_qc_formule == Decimal("0.00")`` et
+    ``impot_federal_formule == Decimal("0.00")`` **par la formule
+    elle-même** — le revenu annualisé net de crédit personnel est négatif
+    ou nul, ce qui est un comportement normal et attendu de la formule à
+    paliers progressifs, et non un cas d'erreur ni une variante du
+    court-circuit d'exonération. QC004 valide ce comportement
+    indépendamment de tout mécanisme d'exonération (Req 11.7).
+
+    QC001 est le seul scénario sans exonération active où la formule
+    produit un impôt strictement positif pour les deux juridictions :
+    ``impot_qc_formule == Decimal("104.56")`` et ``impot_federal_formule
+    == Decimal("86.25")`` (Req 11.6).
+
+    **Limitation connue** : ce test nécessite que les paramètres 2026
+    soient intégralement renseignés (paliers, crédits convertibles,
+    déduction pour travailleur, montant canadien pour emploi, plafond de
+    cotisation de base RRQ, abattement du Québec) — voir tâche 6. Tant que
+    ces champs portent la sentinelle ``"TO_FILL"``, ce test échoue par
+    ``MissingParameterError`` (et non par écart de logique), et tant que
+    les tâches 9.1/10.1 n'ont pas livré les modules, il échoue par
+    ``ModuleNotFoundError`` à l'exécution (la collecte reste saine grâce à
+    l'import local).
+
+    Validates: Requirements 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7
+    """
+    # Import local — voir le commentaire de section ci-dessus : les
+    # modules n'existent pas encore (tâches 9.1/10.1), l'échec attendu à
+    # ce stade est un ``ModuleNotFoundError`` propre, pas un crash de
+    # collecte pour le reste du fichier.
+    from payroll_engine.impot_federal import (
+        calcul_impot_federal_formule,
+        calcul_impot_federal_retenu,
+    )
+    from payroll_engine.impot_qc import (
+        calcul_impot_qc_formule,
+        calcul_impot_qc_retenu,
+    )
+
+    scenario_fichier = scenario_id.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Chargement de la fixture d'entrée → ``PayrollInput``.
+    # ------------------------------------------------------------------
+    fixture_input_path = fixtures_inputs_dir / f"{scenario_fichier}.json"
+    assert fixture_input_path.exists(), (
+        f"Fixture d'entrée manquante : {fixture_input_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    payroll_input = PayrollInput.model_validate_json(
+        fixture_input_path.read_text(encoding="utf-8")
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Chargement de la fixture de sortie → sections ``gains`` et
+    #    ``retenues_employe``.
+    # ------------------------------------------------------------------
+    fixture_output_path = fixtures_outputs_dir / f"{scenario_fichier}.json"
+    assert fixture_output_path.exists(), (
+        f"Fixture de sortie manquante : {fixture_output_path}. Les "
+        f"tâches 14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    fixture_output = json.loads(
+        fixture_output_path.read_text(encoding="utf-8")
+    )
+    gains = GainsDecomposes(**fixture_output["gains"])
+
+    # ------------------------------------------------------------------
+    # 3. Chargement des paramètres annuels versionnés (règle 05) — fusion
+    #    Québec/Canada. La racine Québec porte ``rrq``/``rqap``/
+    #    ``impot_quebec`` ; on y greffe ``assurance_emploi`` et
+    #    ``impot_federal`` de la racine Canada. ``calcul_impot_federal_formule``
+    #    a besoin **à la fois** de ``rrq``/``rqap``/``assurance_emploi``
+    #    (mécanisme K2Q, design §Components §4) et de ``impot_federal``
+    #    (paliers, crédits, montant emploi canadien, plafond cotisation
+    #    base RRQ, abattement du Québec). Aucune mutation — ``model_copy``
+    #    (patron identique à
+    #    ``test_cotisations_sociales_reproduisent_fixture`` et à la fixture
+    #    ``parametres_2026_qc_ca_federal`` de ``test_impot_federal.py``).
+    # ------------------------------------------------------------------
+    parametres_qc = load_parameters(2026, Juridiction.QUEBEC)
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    parametres = parametres_qc.model_copy(
+        update={
+            "assurance_emploi": parametres_ca.assurance_emploi,
+            "impot_federal": parametres_ca.impot_federal,
+        }
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Appel des quatre fonctions.
+    # ------------------------------------------------------------------
+    impot_qc_formule, trace_impot_qc_formule = calcul_impot_qc_formule(
+        payroll_input, gains, parametres
+    )
+    impot_qc_retenu, _ = calcul_impot_qc_retenu(
+        payroll_input, gains, parametres
+    )
+    impot_federal_formule, _ = calcul_impot_federal_formule(
+        payroll_input, gains, parametres
+    )
+    impot_federal_retenu, _ = calcul_impot_federal_retenu(
+        payroll_input, gains, parametres
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Assertions golden (Req 11.1–11.4) — égalité stricte des quatre
+    #    champs ``montant``, tolérance nulle (règle 01).
+    # ------------------------------------------------------------------
+    retenues = fixture_output["retenues_employe"]
+
+    assert impot_qc_formule == Decimal(
+        str(retenues["impot_qc_formule"]["montant"])
+    ), (
+        f"[{scenario_id}] impot_qc_formule ({impot_qc_formule}) != fixture "
+        f"({retenues['impot_qc_formule']['montant']}) (Req 11.1)."
+    )
+    assert impot_qc_retenu == Decimal(
+        str(retenues["impot_qc_retenu"]["montant"])
+    ), (
+        f"[{scenario_id}] impot_qc_retenu ({impot_qc_retenu}) != fixture "
+        f"({retenues['impot_qc_retenu']['montant']}) (Req 11.2)."
+    )
+    assert impot_federal_formule == Decimal(
+        str(retenues["impot_federal_formule"]["montant"])
+    ), (
+        f"[{scenario_id}] impot_federal_formule ({impot_federal_formule}) "
+        f"!= fixture ({retenues['impot_federal_formule']['montant']}) "
+        f"(Req 11.3)."
+    )
+    assert impot_federal_retenu == Decimal(
+        str(retenues["impot_federal_retenu"]["montant"])
+    ), (
+        f"[{scenario_id}] impot_federal_retenu ({impot_federal_retenu}) != "
+        f"fixture ({retenues['impot_federal_retenu']['montant']}) "
+        f"(Req 11.4)."
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Cohérence trace/montant pour au moins ``impot_qc_formule``
+    #    (Req 11.5).
+    # ------------------------------------------------------------------
+    assert trace_impot_qc_formule.resultat == impot_qc_formule, (
+        f"[{scenario_id}] trace_impot_qc_formule.resultat "
+        f"({trace_impot_qc_formule.resultat}) != impot_qc_formule "
+        f"({impot_qc_formule}) (Req 11.5)."
+    )
+
+    # ------------------------------------------------------------------
+    # 7. Assertion dédiée QC001 — seul scénario sans exonération où la
+    #    formule produit un impôt strictement positif pour les deux
+    #    juridictions (Req 11.6).
+    # ------------------------------------------------------------------
+    if scenario_id == "QC001":
+        assert impot_qc_formule == Decimal("104.56"), (
+            f"[QC001] impot_qc_formule ({impot_qc_formule}) != "
+            f"Decimal('104.56') (Req 11.6)."
+        )
+        assert impot_federal_formule == Decimal("86.25"), (
+            f"[QC001] impot_federal_formule ({impot_federal_formule}) != "
+            f"Decimal('86.25') (Req 11.6)."
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Assertion dédiée QC004 et QC006 — comportement sous le seuil
+    #    d'imposition : la formule elle-même produit un impôt nul
+    #    (Req 7, Req 11.7). QC004 valide ce comportement indépendamment
+    #    de tout mécanisme d'exonération.
+    # ------------------------------------------------------------------
+    if scenario_id in ("QC004", "QC006"):
+        assert impot_qc_formule == Decimal("0.00"), (
+            f"[{scenario_id}] impot_qc_formule ({impot_qc_formule}) != "
+            f"Decimal('0.00') — comportement sous le seuil d'imposition "
+            f"attendu (Req 7, Req 11.7)."
+        )
+        assert impot_federal_formule == Decimal("0.00"), (
+            f"[{scenario_id}] impot_federal_formule "
+            f"({impot_federal_formule}) != Decimal('0.00') — comportement "
+            f"sous le seuil d'imposition attendu (Req 7, Req 11.7)."
+        )

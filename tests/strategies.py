@@ -5,7 +5,9 @@ Les tâches 2 à 14 de cette spec ont finalement implémenté leurs stratégies
 Hypothesis localement dans chaque fichier de test (``tests/models/*.py``),
 laissant ce module inutilisé. La spec ``gains-bruts-vacances-hs`` (tâche 1.1)
 est la première à le peupler réellement, avec les stratégies dédiées au
-calcul des gains bruts, décrites ci-dessous.
+calcul des gains bruts, décrites ci-dessous. La spec ``cotisations-sociales-qc``
+(tâche 1.1) étend ce module avec quatre stratégies supplémentaires dédiées
+aux cumuls YTD plafonnés et aux paramètres RRQ/RQAP/AE.
 
 Stratégies dédiées « gains bruts, vacances et heures supplémentaires »
 (design.md §Testing Strategy « Stratégies Hypothesis », spec
@@ -21,12 +23,55 @@ Stratégies dédiées « gains bruts, vacances et heures supplémentaires »
 - ``st_parametres_annee_2026_qc()`` — ``ParametresAnnee`` réel 2026 Québec,
   chargé une seule fois via ``load_parameters`` et mémorisé au niveau module.
 
+Stratégies dédiées « cotisations sociales RRQ, RQAP, AE »
+(design.md §Testing Strategy « Stratégies Hypothesis », spec
+``cotisations-sociales-qc``, tâche 1.1) :
+
+- ``st_cumuls_ytd_non_nuls()``        — ``CumulsYTD`` où au moins une des six
+  catégories de cotisation est strictement positive, biaisé vers ``[0, plafond]``
+  et vers le plafond exact (exerce le plafonnement en cours de saison).
+- ``st_brut_total_avec_zero()``       — ``Decimal`` ∈ [0.00, 5000.00], biaisé vers 0.
+- ``st_parametres_annee_2026_qc_ca()`` — ``ParametresAnnee`` réel 2026 fusionné
+  Québec + Canada (RRQ, RQAP, AE tous accessibles depuis le même objet),
+  chargé une seule fois et mémorisé au niveau module.
+- ``st_parametres_annee_avec_to_fill(champ)`` — variante du ``ParametresAnnee``
+  ci-dessus où un champ ciblé porte la sentinelle ``"TO_FILL"`` (Property 17).
+
+Stratégies dédiées « impôt retenu à la source QC et fédéral »
+(design.md §Testing Strategy « Stratégies Hypothesis », spec
+``impots-retenues-source``, tâche 1.1) :
+
+- ``st_credit_personnel_eleve()``   — ``Decimal`` biaisé vers des montants
+  très élevés (plusieurs centaines de milliers de dollars, jusqu'à des
+  bornes dépassant le revenu annualisé maximal généré par
+  ``st_payroll_input``), pour ``montant_total_TP1015_3_effectif`` /
+  ``montant_total_TD1_effectif`` — exerce le comportement sous le seuil
+  d'imposition (Property 8) et la défense en profondeur du Requirement
+  12.5 sans dépendre du corpus golden.
+- ``st_parametres_annee_impot_avec_to_fill(champ)`` — variante du
+  ``ParametresAnnee`` réel 2026 (fusion QC + CA, incluant la section
+  ``impot_federal``) où un champ ciblé côté impôt — scalaire
+  (``impot_quebec.taux_credits_convertibles``, …) ou imbriqué dans un
+  palier (``impot_quebec.paliers[i].taux``, …) — porte la sentinelle
+  ``"TO_FILL"`` (Property 13).
+
+Note d'ordonnancement (règle 06) : ``st_parametres_annee_impot_avec_to_fill``
+cible des champs typés (sous-modèle ``Palier`` et attributs ``*_brut`` des
+sections ``impot_quebec`` / ``impot_federal``) qui ne deviennent des
+propriétés matérialisées qu'à partir de la tâche 7.2. Cette stratégie est
+donc écrite **avant** le code qu'elle exercera (tests avant implémentation) :
+son corps s'exécute paresseusement (à l'appel, jamais à l'import), de sorte
+que l'import de ce module reste sûr. Son invocation effective peut lever
+``AttributeError`` tant que la tâche 7.2 n'a pas matérialisé les champs
+typés — comportement attendu et correct au titre de la règle 06.
+
 Règle 01 : chaque stratégie manipulant un montant fiscal ou une durée
 d'heures DOIT retourner un ``Decimal`` (jamais un ``float``).
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -38,7 +83,11 @@ from models.employee import Employee
 from models.enums import FrequencePaie, Juridiction
 from models.pay_period import PayPeriod, WeekSegment
 from models.payroll_input import HeuresParSemaine, PayrollInput
-from payroll_engine.parameters_loader import ParametresAnnee, load_parameters
+from payroll_engine.parameters_loader import (
+    SENTINEL_TO_FILL,
+    ParametresAnnee,
+    load_parameters,
+)
 
 __all__ = [
     "st_taux_horaire",
@@ -47,6 +96,12 @@ __all__ = [
     "st_jours_feries_manuels",
     "st_payroll_input",
     "st_parametres_annee_2026_qc",
+    "st_cumuls_ytd_non_nuls",
+    "st_brut_total_avec_zero",
+    "st_parametres_annee_2026_qc_ca",
+    "st_parametres_annee_avec_to_fill",
+    "st_credit_personnel_eleve",
+    "st_parametres_annee_impot_avec_to_fill",
 ]
 
 
@@ -363,3 +418,411 @@ def st_parametres_annee_2026_qc() -> st.SearchStrategy[ParametresAnnee]:
     ``parameters/2026/quebec.json``).
     """
     return st.just(_charger_parametres_annee_2026_qc())
+
+
+# ===========================================================================
+# Paramètres annuels réels fusionnés Québec + Canada — mémorisation
+# module-scoped (spec cotisations-sociales-qc, tâche 1.1)
+# ===========================================================================
+
+
+@lru_cache(maxsize=1)
+def _charger_parametres_annee_2026_qc_ca() -> ParametresAnnee:
+    """Charge et fusionne ``load_parameters(2026, QUEBEC | CANADA)`` une seule fois.
+
+    Les six fonctions de la spec ``cotisations-sociales-qc`` (RRQ, RQAP —
+    sections du fichier ``quebec.json`` — et AE — section du fichier
+    ``canada.json``) consomment un unique argument ``parametres_annee``
+    (design §Components §1 : ``ParametresAnnee``). Pour permettre à
+    ``calcul_ae_employe``/``calcul_ae_employeur`` d'accéder à
+    ``parametres_annee.assurance_emploi`` tout en gardant
+    ``parametres_annee.rrq``/``.rqap`` disponibles pour les deux autres
+    modules, cette fabrique fusionne les deux instances réelles chargées
+    séparément : la racine Québec (``rrq``, ``rqap``) reçoit la section
+    ``assurance_emploi`` de la racine Canada, via
+    ``model_copy(update=...)`` (aucune mutation — règle 06, immuabilité).
+
+    ``functools.lru_cache(maxsize=1)`` mémorise le résultat au niveau
+    module, cohérent avec ``_charger_parametres_annee_2026_qc`` déjà
+    existant (design §Testing Strategy « Stratégies Hypothesis ») : les
+    fichiers ``parameters/2026/{quebec,canada}.json`` ne sont lus qu'une
+    seule fois par processus de test. ``ParametresAnnee`` est
+    ``frozen=True`` — l'instance partagée ne peut pas être mutée par un
+    test, ce qui rend le partage thread-safe.
+    """
+    parametres_qc = load_parameters(2026, Juridiction.QUEBEC)
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    return parametres_qc.model_copy(
+        update={
+            "assurance_emploi": parametres_ca.assurance_emploi,
+            "impot_federal": parametres_ca.impot_federal,
+        }
+    )
+
+
+def st_parametres_annee_2026_qc_ca() -> st.SearchStrategy[ParametresAnnee]:
+    """``ParametresAnnee`` réel 2026, fusion Québec (RRQ, RQAP) + Canada (AE).
+
+    Design (§Testing Strategy « Stratégies Hypothesis ») : retourne
+    toujours la même instance mémorisée au niveau module via
+    ``load_parameters(2026, Juridiction.QUEBEC)`` fusionné avec
+    ``load_parameters(2026, Juridiction.CANADA)`` (règle 05 — aucun taux,
+    seuil ou multiplicateur fiscal codé en dur dans les tests ; les
+    valeurs proviennent exclusivement de ``parameters/2026/quebec.json``
+    et ``parameters/2026/canada.json``). Réutilisable par les trois
+    fichiers de tests de la spec ``cotisations-sociales-qc``
+    (``test_rrq.py``, ``test_rqap.py``, ``test_assurance_emploi.py``).
+    """
+    return st.just(_charger_parametres_annee_2026_qc_ca())
+
+
+# ===========================================================================
+# Stratégies dédiées cotisations sociales RRQ, RQAP, AE
+# (design.md §Testing Strategy « Stratégies Hypothesis »,
+#  spec cotisations-sociales-qc, tâche 1.1)
+# ===========================================================================
+
+#: Association catégorie ``CumulsYTD`` -> chemin ``(section, champ)`` du
+#: plafond annuel correspondant dans ``ParametresAnnee`` (design
+#: §Correctness Properties 4, 5 ; §Components §2 à §7). La RRQ employeur
+#: n'a pas de plafond distinct dans ``parameters/2026/quebec.json``
+#: (``calcul_rrq_employeur`` délègue strictement à ``calcul_rrq_employe``,
+#: §Components §3) : elle réutilise le même plafond que la RRQ employé,
+#: ce qui reste un biais de génération raisonnable pour exercer le
+#: plafonnement en cours de saison sans jamais coder ce montant en dur
+#: dans ``payroll_engine/`` (règle 05 — seul ce module de test lit la
+#: valeur, via l'objet ``ParametresAnnee`` réel).
+_CATEGORIES_COTISATION_VERS_PLAFOND: tuple[tuple[str, str, str], ...] = (
+    ("rrq_employe", "rrq", "cotisation_max_annuelle_employe"),
+    ("rrq_employeur", "rrq", "cotisation_max_annuelle_employe"),
+    ("rqap_employe", "rqap", "cotisation_max_employe"),
+    ("rqap_employeur", "rqap", "cotisation_max_employeur"),
+    ("ae_employe", "assurance_emploi", "cotisation_max_employe"),
+    ("ae_employeur", "assurance_emploi", "cotisation_max_employeur"),
+)
+
+
+def _st_montant_ytd_biaise_plafond(plafond: Decimal) -> st.SearchStrategy[Decimal]:
+    """``Decimal`` dans ``[0, plafond]``, biaisé vers ``plafond`` exactement.
+
+    Helper interne de ``st_cumuls_ytd_non_nuls`` : ``st.one_of`` incluant
+    ``st.just(plafond)`` (design §Testing Strategy « Stratégies
+    Hypothesis ») garantit qu'Hypothesis explore régulièrement le cas
+    limite où le cumul YTD atteint exactement le plafond annuel — cas
+    non couvert par le corpus golden (Introduction des requirements,
+    toutes les fixtures QC001–QC006 étant des paies n° 1, cumul nul).
+    """
+    return st.one_of(
+        st.just(plafond),
+        st.decimals(
+            min_value=Decimal("0.00"),
+            max_value=plafond,
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    )
+
+
+@st.composite
+def st_cumuls_ytd_non_nuls(draw: st.DrawFn) -> CumulsYTD:
+    """``CumulsYTD`` où au moins une des six catégories de cotisation est > 0.
+
+    Design (§Testing Strategy « Stratégies Hypothesis ») : génère les six
+    catégories ``rrq_employe``, ``rrq_employeur``, ``rqap_employe``,
+    ``rqap_employeur``, ``ae_employe``, ``ae_employeur`` avec un biais
+    explicite vers ``[0, plafond]`` et vers ``plafond`` exactement (voir
+    ``_st_montant_ytd_biaise_plafond``), où chaque ``plafond`` est lu
+    depuis le ``ParametresAnnee`` réel 2026 fusionné
+    (``st_parametres_annee_2026_qc_ca``) — jamais codé en dur (règle 05).
+    Si le tirage produit six zéros (cas improbable mais possible), une
+    catégorie choisie au hasard est forcée à son plafond pour garantir
+    l'invariant « au moins une catégorie strictement positive » promis
+    par le nom de cette stratégie.
+
+    Cette stratégie exerce le plafonnement en cours de saison (Property
+    4, Property 5) qui n'est **pas** couvert par le corpus golden
+    QC001–QC006 (Introduction des requirements : toutes les fixtures
+    sont des paies n° 1, cumul YTD nul).
+
+    Les catégories non fiscales (``brut``, ``vacances``,
+    ``impot_qc_retenu``, ``impot_federal_retenu``, ``net``) sont
+    générées avec des bornes larges mais indépendantes du plafonnement
+    testé — règle 01 : ``Decimal`` exclusivement pour les onze
+    catégories de ``CumulsYTD``.
+    """
+    parametres = _charger_parametres_annee_2026_qc_ca()
+
+    valeurs_cotisation: dict[str, Decimal] = {}
+    for categorie, nom_section, nom_champ in _CATEGORIES_COTISATION_VERS_PLAFOND:
+        section = getattr(parametres, nom_section)
+        plafond = getattr(section, nom_champ)
+        valeurs_cotisation[categorie] = draw(_st_montant_ytd_biaise_plafond(plafond))
+
+    if all(valeur == Decimal("0.00") for valeur in valeurs_cotisation.values()):
+        categorie_forcee, nom_section, nom_champ = draw(
+            st.sampled_from(_CATEGORIES_COTISATION_VERS_PLAFOND)
+        )
+        section = getattr(parametres, nom_section)
+        valeurs_cotisation[categorie_forcee] = getattr(section, nom_champ)
+
+    return CumulsYTD(
+        employe_id=draw(_st_employe_id()),
+        annee_civile=draw(_st_annee_fiscale()),
+        brut=draw(_st_decimal_monetaire(max_value=Decimal("50000.00"))),
+        vacances=draw(_st_decimal_monetaire(max_value=Decimal("3000.00"))),
+        impot_qc_retenu=draw(_st_decimal_monetaire(max_value=Decimal("10000.00"))),
+        impot_federal_retenu=draw(
+            _st_decimal_monetaire(max_value=Decimal("10000.00"))
+        ),
+        net=draw(_st_decimal_monetaire(max_value=Decimal("50000.00"))),
+        **valeurs_cotisation,
+    )
+
+
+def st_brut_total_avec_zero() -> st.SearchStrategy[Decimal]:
+    """``Decimal`` dans ``[0.00, 5000.00]``, biaisé vers ``Decimal("0.00")``.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 6) :
+    ``st.one_of(st.just(Decimal("0.00")), st.decimals(...))`` — poids
+    fort sur le cas limite « salaire admissible nul », qui doit produire
+    ``Decimal("0.00")`` sans exception pour chacune des six fonctions de
+    cotisation (Property 6). Alimente ``GainsDecomposes.brut_total``
+    dans les tests de cette spec (règle 01 : ``Decimal`` exclusivement).
+    """
+    return st.one_of(
+        st.just(Decimal("0.00")),
+        st.decimals(
+            min_value=Decimal("0.00"),
+            max_value=Decimal("5000.00"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    )
+
+
+def st_parametres_annee_avec_to_fill(champ: str) -> st.SearchStrategy[ParametresAnnee]:
+    """``ParametresAnnee`` réel 2026 (fusion QC/CA) avec un champ à ``"TO_FILL"``.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 17) :
+    construit une variante du ``ParametresAnnee`` réel retourné par
+    ``st_parametres_annee_2026_qc_ca()`` où un champ ciblé porte la
+    sentinelle ``SENTINEL_TO_FILL`` (``"TO_FILL"``), pour vérifier que
+    l'accès à la propriété correspondante lève ``MissingParameterError``
+    sans être interceptée (Requirements 1.9, 12.5).
+
+    ``champ`` : chemin ``"<section>.<nom_du_champ>"`` désignant l'un des
+    champs consommés par les Requirements 12.1 à 12.3, par exemple :
+
+    - ``"rrq.taux_cotisation_totale_employe"``,
+      ``"rrq.exemption_par_periode_aux_deux_semaines_2026"``,
+      ``"rrq.cotisation_max_annuelle_employe"`` ;
+    - ``"rqap.taux_employe"``, ``"rqap.taux_employeur"``,
+      ``"rqap.cotisation_max_employe"``, ``"rqap.cotisation_max_employeur"`` ;
+    - ``"assurance_emploi.taux_employe_quebec"``,
+      ``"assurance_emploi.multiplicateur_employeur"``,
+      ``"assurance_emploi.cotisation_max_employe"``,
+      ``"assurance_emploi.cotisation_max_employeur"``.
+
+    Le chemin ``"<section>.<champ>"`` désambiguïse les noms de champs
+    partagés entre sections (``cotisation_max_employe``/``_employeur``
+    existent à la fois sur ``RQAPParametres`` et ``AEParametres``).
+
+    Seuls la section ciblée puis la racine sont recopiées via
+    ``model_copy(update=...)`` (aucune mutation de l'instance mémorisée
+    par ``st_parametres_annee_2026_qc_ca`` — règle 06, immuabilité) :
+    le champ brut ``"<champ>_brut"`` est celui réellement stocké par les
+    sous-modèles de ``payroll_engine.parameters_loader`` (voir
+    ``_ParametresSectionBase`` — chaque champ public est une propriété
+    qui matérialise ``"<champ>_brut"``, alias JSON identique au nom
+    public).
+    """
+    nom_section, nom_champ = champ.split(".", maxsplit=1)
+    parametres_base = _charger_parametres_annee_2026_qc_ca()
+    section_base = getattr(parametres_base, nom_section)
+    section_modifiee = section_base.model_copy(
+        update={f"{nom_champ}_brut": SENTINEL_TO_FILL}
+    )
+    parametres_modifies = parametres_base.model_copy(
+        update={nom_section: section_modifiee}
+    )
+    return st.just(parametres_modifies)
+
+
+# ===========================================================================
+# Stratégies dédiées impôt retenu à la source QC et fédéral
+# (design.md §Testing Strategy « Stratégies Hypothesis »,
+#  spec impots-retenues-source, tâche 1.1)
+# ===========================================================================
+
+#: Bornes de génération (NON fiscales — règle 05) du crédit personnel
+#: « élevé ». Ces valeurs ne sont ni un taux, ni un seuil, ni un plafond
+#: officiel : ce sont de simples bornes de génération choisies pour
+#: dépasser largement le revenu imposable annualisé maximal que
+#: ``st_payroll_input`` peut produire (taux horaire ≤ 50 $, heures ≤ 60 h
+#: par semaine, ≤ 27 périodes ⇒ revenu annualisé de l'ordre de quelques
+#: centaines de milliers de dollars). En générant un crédit personnel
+#: pouvant atteindre ``1 000 000,00 $``, on garantit qu'Hypothesis
+#: explore régulièrement le cas où le crédit effectif dépasse le revenu
+#: imposable annualisé — condition du comportement sous le seuil
+#: d'imposition (Property 8) et de la défense en profondeur du
+#: Requirement 12.5.
+_CREDIT_PERSONNEL_ELEVE_MIN = Decimal("100000.00")
+_CREDIT_PERSONNEL_ELEVE_MAX = Decimal("1000000.00")
+
+#: Chemin d'un champ imbriqué dans un palier :
+#: ``"<section>.paliers[<index>].<champ>"`` (ex. ``impot_quebec.paliers[2].taux``).
+#: Le second cas de figure — un champ scalaire de section
+#: (``"<section>.<champ>"``) — est traité par ``str.split`` de repli.
+_PALIER_CHAMP_RE = re.compile(
+    r"^(?P<section>[^.]+)\.paliers\[(?P<index>\d+)\]\.(?P<champ>[^.]+)$"
+)
+
+
+def st_credit_personnel_eleve() -> st.SearchStrategy[Decimal]:
+    """``Decimal`` biaisé vers des crédits personnels très élevés.
+
+    Design (§Testing Strategy « Stratégies Hypothesis ») : génère des
+    valeurs destinées à ``montant_total_TP1015_3_effectif`` /
+    ``montant_total_TD1_effectif`` biaisées vers des montants très élevés
+    (jusqu'à plusieurs centaines de milliers de dollars), pour exercer le
+    comportement sous le seuil d'imposition (Property 8) et la défense en
+    profondeur du Requirement 12.5 sans dépendre du corpus golden — ce
+    dernier ne couvrant que des crédits proches du montant personnel de
+    base 2026.
+
+    L'usage de ``st.one_of`` inclut explicitement les deux bornes exactes
+    (``500 000,00 $`` et ``1 000 000,00 $``, voir
+    ``_CREDIT_PERSONNEL_ELEVE_MAX``) afin qu'Hypothesis échantillonne
+    régulièrement des crédits proches ou au-delà du revenu imposable
+    annualisé maximal généré par ``st_payroll_input`` — c'est-à-dire des
+    crédits qui garantissent une retenue nulle par la seule formule,
+    indépendamment de l'exonération (Property 8 / Requirement 12.5).
+
+    Règle 01 : retourne exclusivement des ``Decimal`` à deux décimales
+    (``allow_nan=False``, ``allow_infinity=False``) — jamais un ``float``.
+    Règle 05 : les bornes sont de simples bornes de génération, ce ne sont
+    ni des taux, ni des seuils, ni des plafonds fiscaux officiels.
+    """
+    return st.one_of(
+        st.just(_CREDIT_PERSONNEL_ELEVE_MAX),
+        st.just(Decimal("500000.00")),
+        st.decimals(
+            min_value=_CREDIT_PERSONNEL_ELEVE_MIN,
+            max_value=_CREDIT_PERSONNEL_ELEVE_MAX,
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def _charger_parametres_annee_2026_impot() -> ParametresAnnee:
+    """Charge un ``ParametresAnnee`` 2026 fusionné incluant ``impot_federal``.
+
+    Point de départ : l'instance mémorisée par
+    ``_charger_parametres_annee_2026_qc_ca`` (racine Québec — ``rrq``,
+    ``rqap``, ``impot_quebec`` — enrichie de la section
+    ``assurance_emploi`` du fichier Canada). Cette fabrique y ajoute en
+    plus la section ``impot_federal`` chargée depuis
+    ``parameters/2026/canada.json`` via ``model_copy(update=...)`` (aucune
+    mutation — règle 06, immuabilité), de sorte que l'objet résultant
+    porte **à la fois** ``impot_quebec`` et ``impot_federal`` : c'est le
+    socle commun requis par les variantes QC **et** fédérale de la
+    Property 13.
+
+    ``functools.lru_cache(maxsize=1)`` mémorise le résultat au niveau
+    module (cohérent avec les autres fabriques de ce module) : les
+    fichiers ``parameters/2026/{quebec,canada}.json`` ne sont relus qu'une
+    seule fois par processus de test. ``ParametresAnnee`` est
+    ``frozen=True`` — l'instance partagée ne peut pas être mutée par un
+    test, ce qui rend le partage thread-safe.
+    """
+    parametres_qc_ca = _charger_parametres_annee_2026_qc_ca()
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    return parametres_qc_ca.model_copy(
+        update={"impot_federal": parametres_ca.impot_federal}
+    )
+
+
+def st_parametres_annee_impot_avec_to_fill(
+    champ: str,
+) -> st.SearchStrategy[ParametresAnnee]:
+    """``ParametresAnnee`` réel 2026 (fusion QC/CA) avec un champ impôt à ``"TO_FILL"``.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 13) :
+    construit une variante du ``ParametresAnnee`` réel retourné par
+    ``_charger_parametres_annee_2026_impot()`` (qui porte à la fois
+    ``impot_quebec`` et ``impot_federal``) où un champ ciblé côté impôt
+    porte la sentinelle ``SENTINEL_TO_FILL`` (``"TO_FILL"``), pour
+    vérifier que l'accès à la propriété correspondante lève
+    ``MissingParameterError`` non interceptée (Requirements 1.8, 10.5).
+
+    ``champ`` accepte deux formes :
+
+    - **champ scalaire de section** — ``"<section>.<champ>"``, par
+      exemple ``"impot_quebec.taux_credits_convertibles"``,
+      ``"impot_quebec.deduction_pour_travailleur_annuelle"``,
+      ``"impot_federal.taux_credits_convertibles"``,
+      ``"impot_federal.montant_emploi_canadien_annuel"``,
+      ``"impot_federal.plafond_cotisation_base_rrq_annuel"``,
+      ``"impot_federal.taux_abattement_quebec"`` ;
+    - **champ imbriqué dans un palier** —
+      ``"<section>.paliers[<index>].<champ>"``, par exemple
+      ``"impot_quebec.paliers[0].taux"``,
+      ``"impot_quebec.paliers[1].constante_k"``,
+      ``"impot_federal.paliers[0].taux"``.
+
+    Mécanisme (identique à ``st_parametres_annee_avec_to_fill`` pour le
+    cas scalaire) : le champ réellement stocké par les sous-modèles de
+    ``payroll_engine.parameters_loader`` est ``"<champ>_brut"`` (chaque
+    propriété publique matérialise son ``"<champ>_brut"``). Pour un champ
+    de palier, le ``Palier`` ciblé est recopié via
+    ``model_copy(update={f"{champ}_brut": SENTINEL_TO_FILL})``, la liste
+    ``paliers`` reconstruite, puis la section et enfin la racine recopiées
+    — aucune mutation de l'instance mémorisée (règle 06, immuabilité).
+
+    Ordonnancement (règle 06 — tests avant code) : les propriétés typées
+    ``Palier.taux`` / ``.constante_k`` / ``.seuil_bas_annuel`` et les
+    attributs ``*_brut`` des sections impôt ne sont matérialisés qu'à
+    partir de la tâche 7.2. Cette stratégie est écrite en amont, contre la
+    structure cible décrite dans le design (§Data Models « Nouveau
+    sous-modèle partagé Palier », « Extension de ImpotQCParametres /
+    ImpotFederalParametres »). Son corps ne s'exécute qu'à l'appel (jamais
+    à l'import) : l'import de ce module reste donc sûr, et l'invocation de
+    cette stratégie peut légitimement lever ``AttributeError`` tant que la
+    tâche 7.2 n'a pas typé les paliers — comportement attendu.
+
+    Règle 01 : la sentinelle ``"TO_FILL"`` reste une chaîne ; aucune
+    valeur monétaire ``float`` n'est introduite.
+    """
+    parametres_base = _charger_parametres_annee_2026_impot()
+
+    match_palier = _PALIER_CHAMP_RE.match(champ)
+    if match_palier is not None:
+        nom_section = match_palier.group("section")
+        index = int(match_palier.group("index"))
+        nom_champ = match_palier.group("champ")
+        section_base = getattr(parametres_base, nom_section)
+        paliers = list(section_base.paliers)
+        palier_cible = paliers[index]
+        palier_modifie = palier_cible.model_copy(
+            update={f"{nom_champ}_brut": SENTINEL_TO_FILL}
+        )
+        paliers[index] = palier_modifie
+        section_modifiee = section_base.model_copy(
+            update={"paliers": tuple(paliers)}
+        )
+    else:
+        nom_section, nom_champ = champ.split(".", maxsplit=1)
+        section_base = getattr(parametres_base, nom_section)
+        section_modifiee = section_base.model_copy(
+            update={f"{nom_champ}_brut": SENTINEL_TO_FILL}
+        )
+
+    parametres_modifies = parametres_base.model_copy(
+        update={nom_section: section_modifiee}
+    )
+    return st.just(parametres_modifies)

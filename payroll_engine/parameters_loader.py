@@ -584,22 +584,109 @@ class AEParametres(_ParametresSectionBase):
 
 
 
+class Palier(_ParametresSectionBase):
+    """Un palier d'imposition progressif, avec constante de rebasage (« méthode K »).
+
+    ``impot_annuel_base = taux × revenu_annuel − constante_k`` pour tout
+    revenu_annuel appartenant à ce palier (``seuil_bas_annuel <= revenu_annuel``,
+    jusqu'au ``seuil_bas_annuel`` du palier suivant, exclu). Cette
+    représentation évite une sommation explicite par tranche et
+    correspond à la convention native du T4127 (Table 8.1) — généralisée
+    ici à la formule québécoise pour une structure symétrique.
+
+    ``Palier`` hérite de :class:`_ParametresSectionBase` (mêmes
+    :class:`PrivateAttr` de contexte que les sections existantes) afin que
+    :class:`~models.exceptions.MissingParameterError` cite un chemin JSON
+    actionnable (ex. ``"impot_quebec.paliers[2].taux"``). Le contexte des
+    ``Palier`` imbriqués est propagé par
+    :meth:`ParametresAnnee._propager_contexte`.
+
+    Le champ documentaire ``seuil_haut_annuel`` présent dans les fichiers
+    JSON (borne supérieure de tranche, ``null`` pour le palier terminal)
+    n'est **pas** un champ requis de ``Palier`` : il n'est pas consommé par
+    le calcul (seul ``seuil_bas_annuel`` l'est). Il est absorbé par
+    ``extra="allow"`` (hérité de la base) sans être typé.
+    """
+
+    seuil_bas_annuel_brut: ValeurBrute = Field(..., alias="seuil_bas_annuel")
+    taux_brut: ValeurBrute = Field(..., alias="taux")
+    constante_k_brut: ValeurBrute = Field(..., alias="constante_k")
+
+    @field_validator(
+        "seuil_bas_annuel_brut", "taux_brut", "constante_k_brut", mode="before"
+    )
+    @classmethod
+    def _valider_brut(cls, v: Any) -> Any:
+        return _valider_decimal_ou_to_fill(v)
+
+    @property
+    def seuil_bas_annuel(self) -> Decimal:
+        return self._materialiser("seuil_bas_annuel", self.seuil_bas_annuel_brut)
+
+    @property
+    def taux(self) -> Decimal:
+        return self._materialiser("taux", self.taux_brut)
+
+    @property
+    def constante_k(self) -> Decimal:
+        return self._materialiser("constante_k", self.constante_k_brut)
+
+
 class ImpotQCParametres(_ParametresSectionBase):
     """Impôt du Québec — TP-1015.F 2026, section impôt.
 
-    Le seul champ scalaire ``Decimal`` typé ici est le montant personnel de
-    base. Les structures complexes (``paliers``, ``taux_credits_convertibles``,
-    ``regles_arrondissement``, ``deduction_pour_travailleur_annuelle``) sont
-    absorbées par ``extra="allow"`` : elles seront typées finement dans une
-    spec dédiée au module ``impot-quebec`` où elles seront réellement
-    consommées.
+    Champs scalaires ``Decimal`` matérialisés :
+
+    - ``montant_personnel_base`` — inchangé (déjà typé avant cette spec, non
+      consommé par le module ``impot-quebec`` — voir décision de périmètre
+      des requirements) ;
+    - ``taux_credits_convertibles`` — taux de conversion du crédit personnel
+      en réduction d'impôt (premier palier QC) ;
+    - ``deduction_pour_travailleur_annuelle`` — plafond annuel officiel de la
+      déduction pour travailleur (TP-1015.F 2026 : 1 450 $) ;
+    - ``taux_deduction_pour_travailleur`` — taux officiel de la déduction pour
+      travailleur (0,06). La déduction de période est
+      ``H = arrondir(min(taux_deduction_pour_travailleur × D ;
+      deduction_pour_travailleur_annuelle ÷ P))``.
+
+    Champs structurels :
+
+    - ``paliers`` — ``tuple[Palier, ...]`` des paliers progressifs QC 2026
+      (TP-1015.F). L'ordre croissant par ``seuil_bas_annuel`` est un
+      invariant documenté (design §Architecture), **non vérifié** par le
+      modèle : une liste désordonnée est acceptée telle quelle.
+    - ``regles_arrondissement`` — champ documentaire (``str``), non consommé
+      par le calcul (le mode/précision réels sont fixés par le contrat
+      ``ModeArrondissement.ROUND_HALF_UP``/``2``).
+
+    Extension strictement additive (spec ``impots-retenues-source``, tâche
+    7.2) : ``montant_personnel_base`` est inchangé et les nouveaux champs
+    matérialisés portent un ``default=SENTINEL_TO_FILL`` pour ne pas rompre
+    la construction d'une section isolée dans les tests unitaires.
     """
 
     montant_personnel_base_brut: ValeurBrute = Field(
         ..., alias="montant_personnel_base"
     )
+    paliers: tuple[Palier, ...] = ()
+    taux_credits_convertibles_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="taux_credits_convertibles"
+    )
+    deduction_pour_travailleur_annuelle_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="deduction_pour_travailleur_annuelle"
+    )
+    taux_deduction_pour_travailleur_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="taux_deduction_pour_travailleur"
+    )
+    regles_arrondissement: str = ""
 
-    @field_validator("montant_personnel_base_brut", mode="before")
+    @field_validator(
+        "montant_personnel_base_brut",
+        "taux_credits_convertibles_brut",
+        "deduction_pour_travailleur_annuelle_brut",
+        "taux_deduction_pour_travailleur_brut",
+        mode="before",
+    )
     @classmethod
     def _valider_brut(cls, v: Any) -> Any:
         return _valider_decimal_ou_to_fill(v)
@@ -610,14 +697,52 @@ class ImpotQCParametres(_ParametresSectionBase):
             "montant_personnel_base", self.montant_personnel_base_brut
         )
 
+    @property
+    def taux_credits_convertibles(self) -> Decimal:
+        return self._materialiser(
+            "taux_credits_convertibles", self.taux_credits_convertibles_brut
+        )
+
+    @property
+    def deduction_pour_travailleur_annuelle(self) -> Decimal:
+        return self._materialiser(
+            "deduction_pour_travailleur_annuelle",
+            self.deduction_pour_travailleur_annuelle_brut,
+        )
+
+    @property
+    def taux_deduction_pour_travailleur(self) -> Decimal:
+        return self._materialiser(
+            "taux_deduction_pour_travailleur",
+            self.taux_deduction_pour_travailleur_brut,
+        )
+
 
 class ImpotFederalParametres(_ParametresSectionBase):
     """Impôt fédéral — T4127 2026.
 
-    Comme pour ``ImpotQCParametres``, les structures complexes (paliers,
-    règles d'arrondissement, déduction RRQ supplémentaire imbriquée) sont
-    laissées en ``extra="allow"`` et seront typées par la spec
-    ``impot-federal``.
+    Champs scalaires ``Decimal`` matérialisés :
+
+    - ``montant_personnel_base`` — inchangé (déjà typé avant cette spec) ;
+    - ``montant_emploi_canadien_annuel`` — CEA (Canada Employment Amount),
+      plafond de K4 (déjà typé avant cette spec) ;
+    - ``taux_credits_convertibles`` — taux de conversion K1/K2Q/K4 (premier
+      palier fédéral) ;
+    - ``plafond_cotisation_base_rrq_annuel`` (**nouveau**) — plafond annuel
+      de la cotisation RRQ *au taux de base seul* (T4127 Table 8.4, ligne
+      QPP), distinct de ``rrq.cotisation_max_annuelle_employe`` ;
+    - ``taux_abattement_quebec`` (**nouveau**) — abattement du Québec sur
+      l'impôt fédéral de base (T4127 Table 8.2, ligne QC).
+
+    Champs structurels :
+
+    - ``paliers`` — ``tuple[Palier, ...]`` des paliers progressifs fédéraux
+      2026 (T4127 Table 8.1) ;
+    - ``regles_arrondissement`` — champ documentaire (``str``), non consommé.
+
+    Extension strictement additive (spec ``impots-retenues-source``, tâche
+    7.2) : les champs préexistants sont inchangés ; les nouveaux champs
+    matérialisés portent un ``default=SENTINEL_TO_FILL``.
     """
 
     montant_personnel_base_brut: ValeurBrute = Field(
@@ -626,10 +751,24 @@ class ImpotFederalParametres(_ParametresSectionBase):
     montant_emploi_canadien_annuel_brut: ValeurBrute = Field(
         default=SENTINEL_TO_FILL, alias="montant_emploi_canadien_annuel"
     )
+    paliers: tuple[Palier, ...] = ()
+    taux_credits_convertibles_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="taux_credits_convertibles"
+    )
+    plafond_cotisation_base_rrq_annuel_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="plafond_cotisation_base_rrq_annuel"
+    )
+    taux_abattement_quebec_brut: ValeurBrute = Field(
+        default=SENTINEL_TO_FILL, alias="taux_abattement_quebec"
+    )
+    regles_arrondissement: str = ""
 
     @field_validator(
         "montant_personnel_base_brut",
         "montant_emploi_canadien_annuel_brut",
+        "taux_credits_convertibles_brut",
+        "plafond_cotisation_base_rrq_annuel_brut",
+        "taux_abattement_quebec_brut",
         mode="before",
     )
     @classmethod
@@ -647,6 +786,25 @@ class ImpotFederalParametres(_ParametresSectionBase):
         return self._materialiser(
             "montant_emploi_canadien_annuel",
             self.montant_emploi_canadien_annuel_brut,
+        )
+
+    @property
+    def taux_credits_convertibles(self) -> Decimal:
+        return self._materialiser(
+            "taux_credits_convertibles", self.taux_credits_convertibles_brut
+        )
+
+    @property
+    def plafond_cotisation_base_rrq_annuel(self) -> Decimal:
+        return self._materialiser(
+            "plafond_cotisation_base_rrq_annuel",
+            self.plafond_cotisation_base_rrq_annuel_brut,
+        )
+
+    @property
+    def taux_abattement_quebec(self) -> Decimal:
+        return self._materialiser(
+            "taux_abattement_quebec", self.taux_abattement_quebec_brut
         )
 
 
@@ -1057,6 +1215,27 @@ class ParametresAnnee(BaseModel):
             object.__setattr__(section, "_contexte_juridiction", juridiction_str)
             object.__setattr__(section, "_contexte_fichier", fichier)
             object.__setattr__(section, "_contexte_section", nom_section)
+
+            # Extension (spec impots-retenues-source, tâche 7.2) : propagation
+            # du contexte aux ``Palier`` imbriqués. Bloc strictement additif —
+            # il ne s'exécute que si la section porte un attribut ``paliers``
+            # non vide (absent pour les sections autres que ``impot_quebec`` et
+            # ``impot_federal``). Le comportement des 13 sections existantes est
+            # inchangé. Le ``_contexte_section`` du palier prend la forme
+            # ``"<section>.paliers[<index>]"`` pour un chemin JSON actionnable.
+            paliers = getattr(section, "paliers", None)
+            if paliers:
+                for index, palier in enumerate(paliers):
+                    object.__setattr__(palier, "_contexte_annee", self.annee)
+                    object.__setattr__(
+                        palier, "_contexte_juridiction", juridiction_str
+                    )
+                    object.__setattr__(palier, "_contexte_fichier", fichier)
+                    object.__setattr__(
+                        palier,
+                        "_contexte_section",
+                        f"{nom_section}.paliers[{index}]",
+                    )
 
         return self
 

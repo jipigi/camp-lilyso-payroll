@@ -400,6 +400,27 @@ class TestValidationDiffereeALImport:
     l'énonce explicitement en re-important le module via ``importlib.reload``.
     """
 
+    @pytest.fixture(autouse=True)
+    def _restaurer_module_apres_reload(self):
+        # Isolation de test. ``importlib.reload`` ré-exécute le module dans son
+        # ``__dict__`` existant : les classes (``Palier``, ``ImpotQCParametres``,
+        # ...) sont remplacées par de nouveaux objets. Comme
+        # ``load_parameters.__globals__`` EST ce ``__dict__``, la fonction
+        # ``load_parameters`` importée en tête de ce fichier construirait
+        # ensuite des instances des classes rechargées, distinctes des classes
+        # importées au niveau module — cassant les ``isinstance(..., Palier)``
+        # des tests d'extension exécutés plus tard. On restaure donc l'état
+        # d'origine du module après chaque test de reload (les assertions du
+        # test elles-mêmes restent inchangées).
+        import payroll_engine.parameters_loader as loader_module
+
+        snapshot = dict(loader_module.__dict__)
+        try:
+            yield
+        finally:
+            loader_module.__dict__.clear()
+            loader_module.__dict__.update(snapshot)
+
     def test_import_du_module_ne_leve_pas_dexception(self) -> None:
         # Le seul fait que ce fichier de test soit chargé (import au niveau
         # module en tête) démontre déjà que l'import n'échoue pas malgré la
@@ -686,3 +707,340 @@ class TestReplNbPeriodesAnnuellesBrancheC:
 
         assert valeur == 26
         assert source_effective == "valeur_par_defaut"
+
+
+# ===========================================================================
+# Extension ``impots-retenues-source`` — tâche 7.1
+# ===========================================================================
+#
+# Tests d'exemple du nouveau sous-modèle partagé ``Palier`` et de l'extension
+# des sections ``ImpotQCParametres`` / ``ImpotFederalParametres``.
+#
+# Spec de référence : ``impots-retenues-source`` — tâche 7.1.
+# Design de référence : ``design.md`` §Data Models « Nouveau sous-modèle
+# partagé : Palier » et « Extension de ParametresAnnee._propager_contexte ».
+#
+# Discipline TDD (règle 06) : ces tests sont écrits **avant** l'extension du
+# chargeur (tâche 7.2). Tant que ``payroll_engine/parameters_loader.py`` n'a
+# pas ajouté la classe ``Palier`` ni étendu les deux sections d'impôt, l'import
+# ci-dessous échoue avec ``ImportError`` (``Palier`` introuvable) : la collection
+# pytest de ce module devient rouge. C'est le comportement ATTENDU (règle 06,
+# règle 06 §« tests avant code ») — la tâche 7.2 rétablira le vert.
+#
+# Règles applicables :
+# - Règle 01 — ``Decimal`` exclusivement ; aucun ``float`` (les ``!= Decimal(0.x)``
+#   testent précisément l'absence de passage par ``float``).
+# - Règle 05 — aucune valeur fiscale codée en dur au-delà des valeurs
+#   illustratives strictement nécessaires à la construction d'un ``Palier``
+#   d'exemple ; les vérifications sur les fichiers réels passent par
+#   ``load_parameters(2026, ...)``.
+
+from payroll_engine.parameters_loader import (  # noqa: E402
+    ImpotFederalParametres,
+    ImpotQCParametres,
+    Palier,
+)
+
+
+class TestPalierMaterialisation:
+    """Design §Data Models « Nouveau sous-modèle partagé : Palier » —
+    un ``Palier`` construit avec ``seuil_bas_annuel``, ``taux`` et
+    ``constante_k`` valides matérialise chaque propriété en ``Decimal``
+    exact, sans passage par ``float`` (règle 01). Un champ ``"TO_FILL"``
+    lève ``MissingParameterError`` à la matérialisation (Req 10.5).
+
+    Les valeurs numériques utilisées ici sont **illustratives** (fixtures de
+    test), pas des paramètres fiscaux officiels : elles servent uniquement à
+    exercer la mécanique de conversion et de matérialisation du sous-modèle
+    (règle 05 — les valeurs officielles vivent dans les fichiers JSON).
+    """
+
+    def test_palier_valide_materialise_chaque_propriete_en_decimal(self) -> None:
+        # Construction via les alias JSON (``populate_by_name=True`` hérité de
+        # ``_ParametresSectionBase``). Le ``field_validator`` convertit chaque
+        # chaîne en ``Decimal`` via ``Decimal(str)``.
+        palier = Palier(seuil_bas_annuel="54345.00", taux="0.19", constante_k="2717.25")
+
+        assert isinstance(palier.seuil_bas_annuel, Decimal)
+        assert isinstance(palier.taux, Decimal)
+        assert isinstance(palier.constante_k, Decimal)
+
+        # Égalité stricte avec le ``Decimal(str)`` correspondant.
+        assert palier.seuil_bas_annuel == Decimal("54345.00")
+        assert palier.taux == Decimal("0.19")
+        assert palier.constante_k == Decimal("2717.25")
+
+        # La précision de la chaîne source est préservée (aucun artefact).
+        assert str(palier.seuil_bas_annuel) == "54345.00"
+        assert str(palier.taux) == "0.19"
+        assert str(palier.constante_k) == "2717.25"
+
+    def test_palier_ne_passe_pas_par_float(self) -> None:
+        # Contre-exemple règle 01 : la valeur matérialisée NE DOIT PAS être
+        # égale au ``Decimal`` construit depuis un ``float`` (artefacts
+        # binaires « 0.190000000000000002... »).
+        palier = Palier(seuil_bas_annuel="0", taux="0.19", constante_k="0")
+
+        assert palier.taux != Decimal(0.19)  # noqa: PLR2004
+        assert str(palier.taux) == "0.19"
+
+    def test_palier_champ_to_fill_leve_missing_parameter_error(self) -> None:
+        # Un ``Palier`` isolé (contexte non propagé) dont un champ porte
+        # ``"TO_FILL"`` DOIT lever ``MissingParameterError`` à l'accès de la
+        # propriété correspondante. Hors contexte, le chemin JSON se réduit au
+        # nom du champ (``taux``) ; la forme complète ``impot_quebec.paliers[i].taux``
+        # est vérifiée par ``TestPropagationContextePalier``.
+        palier = Palier(seuil_bas_annuel="0", taux="TO_FILL", constante_k="0")
+
+        with pytest.raises(MissingParameterError) as exc_info:
+            _ = palier.taux
+
+        assert "taux" in str(exc_info.value)
+
+
+class TestPropagationContextePalier:
+    """Design §Data Models « Extension de ParametresAnnee._propager_contexte » —
+    ``ParametresAnnee._propager_contexte`` injecte le contexte
+    (``_contexte_annee`` / ``_contexte_juridiction`` / ``_contexte_fichier`` /
+    ``_contexte_section``) sur chaque ``Palier`` imbriqué de
+    ``impot_quebec.paliers`` et ``impot_federal.paliers``, avec un
+    ``_contexte_section`` de la forme ``"<section>.paliers[<index>]"``.
+
+    Test de non-régression : la propagation des **13 sections existantes**
+    (déjà couverte par ``moteur-paie-contrats`` tâche 12.2) n'est pas altérée
+    par le nouveau bloc additif.
+    """
+
+    def test_contexte_propage_sur_paliers_impot_quebec(self) -> None:
+        parametres = ParametresAnnee(
+            annee=2026,
+            juridiction=Juridiction.QUEBEC,
+            source="Test — impots-retenues-source tâche 7.1",
+            date_publication="TEST",
+            impot_quebec=ImpotQCParametres(
+                montant_personnel_base="18952.00",
+                paliers=[
+                    Palier(seuil_bas_annuel="0", taux="0.14", constante_k="0"),
+                    Palier(
+                        seuil_bas_annuel="54345.00",
+                        taux="0.19",
+                        constante_k="2717.25",
+                    ),
+                ],
+                taux_credits_convertibles="0.14",
+                deduction_pour_travailleur_annuelle="1000.00",
+                regles_arrondissement="TEST",
+            ),
+        )
+
+        paliers = parametres.impot_quebec.paliers
+        for index, palier in enumerate(paliers):
+            assert palier._contexte_annee == 2026
+            assert palier._contexte_juridiction == Juridiction.QUEBEC.value
+            assert palier._contexte_fichier == "parameters/2026/quebec.json"
+            assert palier._contexte_section == f"impot_quebec.paliers[{index}]"
+
+    def test_contexte_propage_sur_paliers_impot_federal(self) -> None:
+        parametres = ParametresAnnee(
+            annee=2026,
+            juridiction=Juridiction.CANADA,
+            source="Test — impots-retenues-source tâche 7.1",
+            date_publication="TEST",
+            impot_federal=ImpotFederalParametres(
+                montant_personnel_base="16452.00",
+                paliers=[
+                    Palier(seuil_bas_annuel="0", taux="0.14", constante_k="0"),
+                    Palier(
+                        seuil_bas_annuel="58523.00",
+                        taux="0.205",
+                        constante_k="3804.00",
+                    ),
+                ],
+                taux_credits_convertibles="0.14",
+                montant_emploi_canadien_annuel="1501.00",
+                plafond_cotisation_base_rrq_annuel="3768.30",
+                taux_abattement_quebec="0.165",
+                regles_arrondissement="TEST",
+            ),
+        )
+
+        paliers = parametres.impot_federal.paliers
+        for index, palier in enumerate(paliers):
+            assert palier._contexte_annee == 2026
+            assert palier._contexte_juridiction == Juridiction.CANADA.value
+            assert palier._contexte_fichier == "parameters/2026/canada.json"
+            assert palier._contexte_section == f"impot_federal.paliers[{index}]"
+
+    def test_palier_to_fill_expose_chemin_json_actionnable(self) -> None:
+        # Req 10.5 — un ``Palier`` imbriqué dont un champ porte ``"TO_FILL"``
+        # DOIT, après propagation du contexte, produire un chemin JSON
+        # actionnable de la forme ``impot_quebec.paliers[<index>].<champ>``.
+        # Le ``"TO_FILL"`` est placé à l'index 1 pour vérifier le formatage de
+        # l'index dans le chemin.
+        parametres = ParametresAnnee(
+            annee=2026,
+            juridiction=Juridiction.QUEBEC,
+            source="Test — impots-retenues-source tâche 7.1",
+            date_publication="TEST",
+            impot_quebec=ImpotQCParametres(
+                montant_personnel_base="18952.00",
+                paliers=[
+                    Palier(seuil_bas_annuel="0", taux="0.14", constante_k="0"),
+                    Palier(
+                        seuil_bas_annuel="54345.00",
+                        taux="TO_FILL",
+                        constante_k="2717.25",
+                    ),
+                ],
+                taux_credits_convertibles="0.14",
+                deduction_pour_travailleur_annuelle="1000.00",
+                regles_arrondissement="TEST",
+            ),
+        )
+
+        with pytest.raises(MissingParameterError) as exc_info:
+            _ = parametres.impot_quebec.paliers[1].taux
+
+        message = str(exc_info.value)
+        # Chemin JSON actionnable complet (section + index + champ).
+        assert "impot_quebec.paliers[1].taux" in message
+        # Le message conserve le contexte année / juridiction (Req 8.6).
+        assert "2026" in message
+        assert "quebec" in message.lower()
+
+    def test_non_regression_propagation_13_sections_existantes(self) -> None:
+        # Non-régression (moteur-paie-contrats tâche 12.2) — le nouveau bloc
+        # additif de ``_propager_contexte`` ne DOIT PAS altérer la propagation
+        # du contexte sur les 13 sections déjà en place :
+        # ``frequence_paie``, ``rrq``, ``rqap``, ``impot_quebec``,
+        # ``impot_federal``, ``assurance_emploi``, ``td_1015_3``, ``td1``,
+        # ``fss``, ``cnesst``, ``cnt``, ``vacances``, ``heures_supplementaires``.
+        #
+        # On charge les deux fichiers réels 2026 et on vérifie que chaque
+        # section présente (non-``None``) porte bien un ``_contexte_section``
+        # égal à son nom de section, ainsi que l'année, la juridiction et le
+        # fichier attendus.
+        assert len(ParametresAnnee._NOMS_SECTIONS) == 13
+
+        for juridiction, fichier in (
+            (Juridiction.QUEBEC, "parameters/2026/quebec.json"),
+            (Juridiction.CANADA, "parameters/2026/canada.json"),
+        ):
+            parametres = load_parameters(2026, juridiction)
+            for nom_section in ParametresAnnee._NOMS_SECTIONS:
+                section = getattr(parametres, nom_section, None)
+                if section is None:
+                    continue
+                assert section._contexte_annee == 2026
+                assert section._contexte_juridiction == juridiction.value
+                assert section._contexte_fichier == fichier
+                assert section._contexte_section == nom_section
+
+
+class TestExtensionImpotQCParametres:
+    """Design §Data Models « Extension de ImpotQCParametres » —
+    ``ImpotQCParametres.paliers`` accepte une liste de plusieurs ``Palier``.
+    L'ordre croissant par ``seuil_bas_annuel`` est un **invariant documenté**
+    (design §Architecture), **non vérifié** par le code : une liste
+    désordonnée DOIT être acceptée sans exception ni réordonnancement
+    implicite.
+    """
+
+    def test_paliers_liste_de_plusieurs_palier_tries_croissants(self) -> None:
+        # Chargement du fichier réel (règle 05 — pas de valeur fiscale en dur).
+        parametres = load_parameters(2026, Juridiction.QUEBEC)
+        paliers = parametres.impot_quebec.paliers
+
+        assert isinstance(paliers, tuple)
+        assert len(paliers) > 1
+        assert all(isinstance(p, Palier) for p in paliers)
+
+        # Chaque palier matérialise ses trois propriétés en ``Decimal``.
+        for palier in paliers:
+            assert isinstance(palier.seuil_bas_annuel, Decimal)
+            assert isinstance(palier.taux, Decimal)
+            assert isinstance(palier.constante_k, Decimal)
+
+        # Les seuils du fichier officiel sont triés croissants.
+        seuils = [p.seuil_bas_annuel for p in paliers]
+        assert seuils == sorted(seuils)
+
+    def test_paliers_desordonnes_acceptes_sans_validation_ordre(self) -> None:
+        # Invariant documenté, pas vérifié : une liste non triée DOIT être
+        # acceptée telle quelle (aucune ``ValidationError``, aucun tri
+        # implicite). Valeurs illustratives (règle 05).
+        section = ImpotQCParametres(
+            montant_personnel_base="18952.00",
+            paliers=[
+                Palier(seuil_bas_annuel="54345.00", taux="0.19", constante_k="2717.25"),
+                Palier(seuil_bas_annuel="0", taux="0.14", constante_k="0"),
+            ],
+            taux_credits_convertibles="0.14",
+            deduction_pour_travailleur_annuelle="1000.00",
+            regles_arrondissement="TEST",
+        )
+
+        # L'ordre fourni est conservé (pas de réordonnancement par le code).
+        assert section.paliers[0].seuil_bas_annuel == Decimal("54345.00")
+        assert section.paliers[1].seuil_bas_annuel == Decimal("0")
+
+    def test_taux_credits_convertibles_materialise_en_decimal(self) -> None:
+        parametres = load_parameters(2026, Juridiction.QUEBEC)
+        valeur = parametres.impot_quebec.taux_credits_convertibles
+
+        assert isinstance(valeur, Decimal)
+        assert valeur.is_finite()
+
+
+class TestExtensionImpotFederalParametres:
+    """Design §Data Models « Extension de ImpotFederalParametres » —
+    ``ImpotFederalParametres.paliers`` accepte une liste de plusieurs
+    ``Palier`` triés croissants, et les deux **nouveaux** champs
+    ``plafond_cotisation_base_rrq_annuel`` et ``taux_abattement_quebec``
+    matérialisent correctement en ``Decimal`` depuis
+    ``parameters/2026/canada.json`` (Req 10.2, 10.3).
+    """
+
+    def test_paliers_liste_de_plusieurs_palier_tries_croissants(self) -> None:
+        parametres = load_parameters(2026, Juridiction.CANADA)
+        paliers = parametres.impot_federal.paliers
+
+        assert isinstance(paliers, tuple)
+        assert len(paliers) > 1
+        assert all(isinstance(p, Palier) for p in paliers)
+
+        for palier in paliers:
+            assert isinstance(palier.seuil_bas_annuel, Decimal)
+            assert isinstance(palier.taux, Decimal)
+            assert isinstance(palier.constante_k, Decimal)
+
+        seuils = [p.seuil_bas_annuel for p in paliers]
+        assert seuils == sorted(seuils)
+
+    def test_plafond_cotisation_base_rrq_annuel_materialise_en_decimal(self) -> None:
+        # Nouveau champ (Req 10.3). Chargement depuis le fichier réel
+        # (règle 05 — aucune valeur fiscale codée en dur dans le test).
+        parametres = load_parameters(2026, Juridiction.CANADA)
+        valeur = parametres.impot_federal.plafond_cotisation_base_rrq_annuel
+
+        assert isinstance(valeur, Decimal)
+        assert valeur.is_finite()
+        # Absence d'artefact binaire : la valeur est strictement égale à sa
+        # propre reconstruction ``Decimal(str)`` (jamais passée par ``float``).
+        assert valeur == Decimal(str(valeur))
+
+    def test_taux_abattement_quebec_materialise_en_decimal(self) -> None:
+        # Nouveau champ (Req 10.2). Même discipline que ci-dessus.
+        parametres = load_parameters(2026, Juridiction.CANADA)
+        valeur = parametres.impot_federal.taux_abattement_quebec
+
+        assert isinstance(valeur, Decimal)
+        assert valeur.is_finite()
+        assert valeur == Decimal(str(valeur))
+
+    def test_taux_credits_convertibles_materialise_en_decimal(self) -> None:
+        parametres = load_parameters(2026, Juridiction.CANADA)
+        valeur = parametres.impot_federal.taux_credits_convertibles
+
+        assert isinstance(valeur, Decimal)
+        assert valeur.is_finite()

@@ -143,3 +143,21 @@ Chaque entrée comprend :
 - **Vérification** : `pytest tests/` → 649 passed, 1 skipped (aucune régression). Aucun `float` introduit ; tous les montants restent des chaînes JSON converties en `Decimal` au chargement.
 - **Références** : TP-1015.F (2026-01), p.7 « Cotisations au RRQ » et « Cotisations au RQAP » ; T4127(F) Rév. 26 (26/06) ; https://www.canada.ca/fr/emploi-developpement-social/programmes/assurance-emploi/ae-liste/assurance-emploi-employeurs/reduction-taux-cotisation/maximum-remuneration-assurable-2026.html
 - **Fichiers modifiés** : `parameters/2026/quebec.json`, `parameters/2026/canada.json`, `tests/test_guards.py`, `tests/payroll_engine/test_parameters_loader.py`, `docs/journal-validation.md`.
+
+### 2026-08-03 — Validation de `impot_federal.py` contre PDOC (crédit RRQ K2Q) et correction des fixtures QC002/003/005
+
+- **Type** : regression
+- **Description** : validation du module `impot_federal.py` contre PDOC (calculateur officiel de l'ARC, référence absolue). PDOC a été ré-exécuté avec l'option « Montant cumulatif annuel », en incluant le crédit fédéral pour la cotisation de base au RRQ (K2Q), sur le brut incluant les vacances 4 %. Les moniteurs du Camp LilySO ont tous 18 ans et plus : ils cotisent au RRQ, donc le calcul fédéral DOIT inclure le crédit K2Q.
+- **Résultat** : OK
+- **Points de validation de la formule d'impôt fédéral** (avec crédit RRQ K2Q, valeurs PDOC correspondant exactement à `impot_federal.py`) :
+  - QC001 : brut 1 516,32 → **86,25 $**
+  - QC002 : brut 2 861,04 → **268,06 $**
+  - QC003 : brut 2 179,84 → **157,59 $**
+  - QC005 : brut 1 739,92 → **110,29 $**
+- **Correction des fixtures** : les valeurs `impot_federal_formule` des fixtures QC002/QC003/QC005 (`tests/fixtures/outputs/qc00{2,3,5}.json`) ont été corrigées de 289,05/173,35/112,66 vers **268,06/157,59/110,29**. Les valeurs antérieures provenaient d'un run PDOC réalisé par erreur avec l'option « Exemption au RRQ », qui retire le crédit K2Q. Ces anciennes valeurs étaient incohérentes avec la ligne RRQ effectivement payée dans les mêmes fixtures et avec le mécanisme K2Q officiel décrit au T4127 chapitre 4. Le champ `impot_federal_retenu` reste 0,00 $ pour ces trois scénarios (employés exonérés TD1) — inchangé. QC001 (86,25 $), QC004 et QC006 (0,00 $, sous seuil) étaient déjà corrects — non modifiés.
+- **Validation des paramètres officiels 2026** déposés dans `tests/fixtures/official/` (TP-1015.F 2026 et T4127 2026) :
+  - Québec : déduction pour travailleur 1 450 $ + taux 0,06, constantes K entières confirmées (0 / 2 717 / 8 151 / 10 465).
+  - Fédéral : paliers, constantes K, crédit canadien pour emploi (CEA 1 501 $) et abattement du Québec (0,165) confirmés.
+- **Note** : la structure interne complète de la `trace` (clés `entrees`/`sous_totaux`) des `impot_federal_formule` sera réalignée par la tâche 11.1 ; cette entrée ne concerne que la correction du `montant` (et du `resultat` de trace) pour refléter la valeur PDOC validée.
+- **Références** : PDOC (option « Montant cumulatif annuel », crédit RRQ K2Q) ; T4127 2026 chapitre 4 (facteur K2Q) ; TP-1015.F 2026 ; `tests/fixtures/official/`.
+- **Fichiers modifiés** : `tests/fixtures/outputs/qc002.json`, `tests/fixtures/outputs/qc003.json`, `tests/fixtures/outputs/qc005.json`, `docs/journal-validation.md`.

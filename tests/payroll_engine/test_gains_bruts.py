@@ -121,14 +121,15 @@ def parametres_2026_qc() -> ParametresAnnee:
 # Configuration Hypothesis partagée
 # ---------------------------------------------------------------------------
 
-# Design (§Testing Strategy « Configuration Hypothesis ») : 100 itérations
-# minimum (défaut Hypothesis), pas de deadline (les modèles Pydantic
-# peuvent dépasser 200 ms/exemple sous charge), et suppression du health
-# check "too_slow" pour les propriétés à surface d'entrée large (composition
-# de plusieurs sous-modèles via ``st_payroll_input()``). Réutilisable en
-# ``@settings_large_input`` sur chaque test property de ce fichier.
+# Design (§Testing Strategy « Configuration Hypothesis ») : pas de deadline
+# (les modèles Pydantic peuvent dépasser 200 ms/exemple sous charge), et
+# suppression du health check "too_slow" pour les propriétés à surface
+# d'entrée large (composition de plusieurs sous-modèles via
+# ``st_payroll_input()``). Réutilisable en ``@settings_large_input`` sur
+# chaque test property de ce fichier. Le nombre d'exemples est piloté par
+# le profil Hypothesis actif (voir ``tests/conftest.py`` : dev=15 par
+# défaut, ci=100).
 settings_large_input = settings(
-    max_examples=100,
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
 )

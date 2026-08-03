@@ -43,9 +43,19 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "3.2 — RRQ",
-        "parametres_utilises": {"taux_base_employe": "0.0630", "exemption_generale_annuelle": "3500.00"},
-        "entrees": {"salaire_periode": "1516.32", "nb_periodes_annuelles": "27", "cumul_ytd": "0.00"},
-        "sous_totaux": {"exemption_periode": "129.63", "assiette_cotisable": "1386.69"},
+        "parametres_utilises": {
+          "taux_base_employe": "0.0630",
+          "exemption_generale_annuelle": "3500.00"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32",
+          "nb_periodes_annuelles": "27",
+          "cumul_ytd": "0.00"
+        },
+        "sous_totaux": {
+          "exemption_periode": "129.63",
+          "assiette_cotisable": "1386.69"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "87.36"
@@ -58,9 +68,15 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "3.3 — RQAP employé",
-        "parametres_utilises": {"taux_employe": "0.00430"},
-        "entrees": {"salaire_periode": "1516.32"},
-        "sous_totaux": {"cotisation_brute": "6.52"},
+        "parametres_utilises": {
+          "taux_employe": "0.00430"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32"
+        },
+        "sous_totaux": {
+          "cotisation_brute": "6.52"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "6.52"
@@ -73,9 +89,15 @@
         "annee": 2026,
         "juridiction": "canada",
         "section": "4 — AE employé (taux Québec)",
-        "parametres_utilises": {"taux_employe_quebec": "0.01300"},
-        "entrees": {"salaire_periode": "1516.32"},
-        "sous_totaux": {"cotisation_brute": "19.71"},
+        "parametres_utilises": {
+          "taux_employe_quebec": "0.01300"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32"
+        },
+        "sous_totaux": {
+          "cotisation_brute": "19.71"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "19.71"
@@ -88,9 +110,29 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "4 — Retenue d'impôt du Québec (formule)",
-        "parametres_utilises": {"montant_personnel_base": "18952.00"},
-        "entrees": {"salaire_periode": "1516.32", "nb_periodes_annuelles": "27", "exoneration_tp1015_3": "0"},
-        "sous_totaux": {"revenu_imposable_periode": "1448.75"},
+        "parametres_utilises": {
+          "deduction_pour_travailleur_annuelle": "1450.00",
+          "taux_deduction_pour_travailleur": "0.06",
+          "taux_credits_convertibles": "0.14",
+          "taux_palier": "0.14",
+          "constante_k": "0.00",
+          "taux_rrq_supp": "0.010",
+          "exemption_rrq_periode": "129.63"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32",
+          "nb_periodes_annuelles": "27",
+          "montant_total_tp1015_3": "18952.00"
+        },
+        "sous_totaux": {
+          "deduction_travailleur_periode": "53.70",
+          "deduction_rrq_supp_periode": "13.87",
+          "revenu_imposable_periode": "1448.75",
+          "revenu_imposable_annuel": "39116.33",
+          "impot_annuel_base": "5476.29",
+          "credit_personnel_annuel": "2653.28",
+          "impot_annuel_net": "2823.01"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "104.56"
@@ -103,9 +145,16 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "4 — Retenue d'impôt du Québec (retenu)",
-        "parametres_utilises": {"exoneration_active": "0"},
-        "entrees": {"impot_qc_formule": "104.56"},
-        "sous_totaux": {"retenue_effective": "104.56"},
+        "parametres_utilises": {
+          "exoneration_active": "0"
+        },
+        "entrees": {
+          "impot_qc_formule": "104.56",
+          "retenue_additionnelle_qc": "0.00"
+        },
+        "sous_totaux": {
+          "retenue_effective": "104.56"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "104.56"
@@ -118,9 +167,29 @@
         "annee": 2026,
         "juridiction": "canada",
         "section": "3 — Retenue d'impôt fédéral (formule)",
-        "parametres_utilises": {"montant_personnel_base": "16452.00"},
-        "entrees": {"salaire_periode": "1516.32", "nb_periodes_annuelles": "27", "deduction_rrq_supp": "13.87"},
-        "sous_totaux": {"revenu_imposable_periode": "1502.45"},
+        "parametres_utilises": {
+          "taux_credits_convertibles": "0.14",
+          "taux_palier": "0.14",
+          "constante_k": "0",
+          "montant_emploi_canadien_annuel": "1501.00",
+          "taux_abattement_quebec": "0.165"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32",
+          "nb_periodes_annuelles": "27",
+          "deduction_rrq_supp": "13.87",
+          "montant_total_td1": "16452.00"
+        },
+        "sous_totaux": {
+          "revenu_imposable_periode": "1502.45",
+          "revenu_imposable_annuel": "40566.23",
+          "impot_avant_credits": "5679.27",
+          "k1": "2303.28",
+          "k2q": "376.97",
+          "k4": "210.14",
+          "impot_annuel_base": "2788.89",
+          "impot_annuel_net": "2328.72"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "86.25"
@@ -133,9 +202,16 @@
         "annee": 2026,
         "juridiction": "canada",
         "section": "3 — Retenue d'impôt fédéral (retenu)",
-        "parametres_utilises": {"exoneration_active": "0"},
-        "entrees": {"impot_federal_formule": "86.25"},
-        "sous_totaux": {"retenue_effective": "86.25"},
+        "parametres_utilises": {
+          "exoneration_active": "0"
+        },
+        "entrees": {
+          "impot_federal_formule": "86.25",
+          "retenue_additionnelle_federale": "0.00"
+        },
+        "sous_totaux": {
+          "retenue_effective": "86.25"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "86.25"
@@ -151,9 +227,16 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "3.2 — RRQ employeur",
-        "parametres_utilises": {"taux_base_employeur": "0.0630"},
-        "entrees": {"salaire_periode": "1516.32", "assiette_cotisable": "1386.69"},
-        "sous_totaux": {"cotisation_employeur": "87.36"},
+        "parametres_utilises": {
+          "taux_base_employeur": "0.0630"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32",
+          "assiette_cotisable": "1386.69"
+        },
+        "sous_totaux": {
+          "cotisation_employeur": "87.36"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "87.36"
@@ -166,9 +249,15 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "3.3 — RQAP employeur",
-        "parametres_utilises": {"taux_employeur": "0.00602"},
-        "entrees": {"salaire_periode": "1516.32"},
-        "sous_totaux": {"cotisation_employeur": "9.13"},
+        "parametres_utilises": {
+          "taux_employeur": "0.00602"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32"
+        },
+        "sous_totaux": {
+          "cotisation_employeur": "9.13"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "9.13"
@@ -181,9 +270,15 @@
         "annee": 2026,
         "juridiction": "canada",
         "section": "4 — AE employeur (multiplicateur 1.4)",
-        "parametres_utilises": {"multiplicateur_employeur": "1.4"},
-        "entrees": {"ae_employe": "19.71"},
-        "sous_totaux": {"cotisation_employeur": "27.594"},
+        "parametres_utilises": {
+          "multiplicateur_employeur": "1.4"
+        },
+        "entrees": {
+          "ae_employe": "19.71"
+        },
+        "sous_totaux": {
+          "cotisation_employeur": "27.594"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "27.59"
@@ -196,9 +291,16 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "5 — Fonds des services de santé",
-        "parametres_utilises": {"taux_fss": "0.0165"},
-        "entrees": {"salaire_periode": "1516.32", "masse_salariale_annuelle_employeur": "14861.60"},
-        "sous_totaux": {"cotisation_brute": "25.02"},
+        "parametres_utilises": {
+          "taux_fss": "0.0165"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32",
+          "masse_salariale_annuelle_employeur": "14861.60"
+        },
+        "sous_totaux": {
+          "cotisation_brute": "25.02"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "25.02"
@@ -211,9 +313,15 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "6 — CNESST (unité 57020)",
-        "parametres_utilises": {"taux_cnesst_provisoire": "0.0112"},
-        "entrees": {"salaire_periode": "1516.32"},
-        "sous_totaux": {"cotisation_brute": "16.98"},
+        "parametres_utilises": {
+          "taux_cnesst_provisoire": "0.0112"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32"
+        },
+        "sous_totaux": {
+          "cotisation_brute": "16.98"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "16.98"
@@ -227,9 +335,15 @@
         "annee": 2026,
         "juridiction": "quebec",
         "section": "7 — Commission des normes du travail",
-        "parametres_utilises": {"taux_cnt": "0.0000"},
-        "entrees": {"salaire_periode": "1516.32"},
-        "sous_totaux": {"cotisation_brute": "0.00"},
+        "parametres_utilises": {
+          "taux_cnt": "0.0000"
+        },
+        "entrees": {
+          "salaire_periode": "1516.32"
+        },
+        "sous_totaux": {
+          "cotisation_brute": "0.00"
+        },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
         "resultat": "0.00"
