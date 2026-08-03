@@ -605,3 +605,108 @@ class TestOrdreInsertionSousTotauxApresRoundTrip:
         assert list(reconstituee_1.sous_totaux.keys()) == list(
             reconstituee_2.sous_totaux.keys()
         )
+
+
+# ===========================================================================
+# Extension de la liste blanche : motif ``LE-39.0.2 <année>`` (CNT)
+# ===========================================================================
+#
+# Portée : spec ``charges-patronales`` — tâche 4.1.
+# Design de référence : ``charges-patronales/design.md`` §Data Models
+# « Extension de la liste blanche ``CalculationTrace`` ».
+#
+# La cotisation relative aux normes du travail (CNT) est tracée avec la
+# source officielle ``"LE-39.0.2 <année>"`` (formulaire Revenu Québec, source
+# réelle du Taux_CNT). Ce motif n'est **pas encore** admis par
+# ``_SOURCES_OFFICIELLES_REGEX`` : son ajout — strictement additif — est une
+# dépendance de contrat (Req 5.7, Req 12.3) réalisée par la tâche 8.1.
+#
+# Discipline TDD (règle 06) : la classe ci-dessous est écrite **avant** que la
+# tâche 8.1 n'étende la liste blanche. Tant que le motif
+# ``r"^LE-39\.0\.2 \d{4}(, .+)?$"`` n'est pas ajouté à ``models/trace.py``, le
+# test d'acceptation ``test_source_le_39_est_acceptee`` échoue avec
+# ``pydantic.ValidationError`` — c'est le comportement rouge attendu. Les
+# tests de non-régression, eux, doivent passer immédiatement (aucun motif
+# existant n'est retiré ni modifié par cette extension).
+# ===========================================================================
+
+
+class TestListeBlancheLE39:
+    """Req 5.7, 12.3 — extension additive de la liste blanche pour ``LE-39.0.2``.
+
+    Trois garanties sont vérifiées :
+
+    1. **Acceptation** — après extension, ``source="LE-39.0.2 2026"`` construit
+       une ``CalculationTrace`` sans erreur (test rouge jusqu'à la tâche 8.1).
+    2. **Non-régression des sources déjà admises** — la source FSS
+       ``"TP-1015.F 2026, section 5 — FSS"`` et une URL CNESST
+       ``www.cnesst.gouv.qc.ca`` restent acceptées.
+    3. **Non-régression du refus** — une source non officielle
+       (``"blog interne"``) reste rejetée avec un message renvoyant à la
+       règle 02.
+    """
+
+    # --- 1. Acceptation du nouveau motif (rouge jusqu'à la tâche 8.1) ------
+
+    @pytest.mark.parametrize(
+        "source_cnt",
+        [
+            "LE-39.0.2 2026",
+            "LE-39.0.2 2027",
+            "LE-39.0.2 2026, ligne 35 — CNT",
+        ],
+    )
+    def test_source_le_39_est_acceptee(self, source_cnt: str) -> None:
+        """Req 5.7, 12.3 — le motif ``LE-39.0.2 <année>`` passe la validation.
+
+        Comportement attendu **avant** la tâche 8.1 : ``pydantic.ValidationError``
+        (motif absent de la liste blanche). **Après** l'extension additive :
+        construction réussie et ``trace.source == source_cnt``.
+        """
+        trace = _trace_valide_minimale(source=source_cnt)
+        assert trace.source == source_cnt
+
+    # --- 2. Non-régression : sources déjà admises restent acceptées -------
+
+    @pytest.mark.parametrize(
+        "source_deja_admise",
+        [
+            # FSS — formulaire TP-1015.F avec sous-section (Req 5.1 charges).
+            "TP-1015.F 2026, section 5 — FSS",
+            # CNESST — URL officielle .gouv.qc.ca (motif URL déjà présent).
+            "https://www.cnesst.gouv.qc.ca/fr/organisation/documentation/taux-cotisation",
+            "http://www.cnesst.gouv.qc.ca/fr/demarches-formulaires/classification",
+        ],
+    )
+    def test_sources_officielles_existantes_restent_acceptees(
+        self, source_deja_admise: str
+    ) -> None:
+        """Req 5.7 — l'extension est additive : aucune source déjà admise ne casse."""
+        trace = _trace_valide_minimale(source=source_deja_admise)
+        assert trace.source == source_deja_admise
+
+    # --- 3. Non-régression : sources non officielles restent rejetées -----
+
+    @pytest.mark.parametrize(
+        "source_non_officielle",
+        [
+            "blog interne",
+            "LE-39.0.2",  # année manquante — ne matche pas le nouveau motif
+            "LE-39 2026",  # sous-formulaire incomplet
+        ],
+    )
+    def test_sources_non_officielles_restent_rejetees(
+        self, source_non_officielle: str
+    ) -> None:
+        """Req 5.7 — une source hors liste blanche est refusée (règle 02).
+
+        L'extension n'assouplit pas la validation : toute source non conforme,
+        y compris un ``LE-39.0.2`` mal formé (année manquante), doit lever
+        ``pydantic.ValidationError`` avec un message renvoyant à la règle 02.
+        """
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            _trace_valide_minimale(source=source_non_officielle)
+        assert _message_mentionne_regle_02(exc_info.value), (
+            f"Le refus de la source '{source_non_officielle}' doit renvoyer "
+            f"explicitement à la règle 02. Reçu :\n{exc_info.value}"
+        )

@@ -112,6 +112,39 @@ s'appliquerait.
 Ce comportement est documentaire uniquement — aucun test automatisé n'est
 associé à cette note (revue manuelle, conformément à la règle 06).
 
+## Plafonds annuels CNESST / CNT et table FSS par masse salariale (hors périmètre)
+
+Les charges patronales du Camp LilySO (spec `charges-patronales`, étape 5) sont
+calculées par le patron proportionnel simple `montant = arrondir(taux × brut_total)`,
+sans plafond ni table de taux. Trois mécanismes des guides officiels sont
+**explicitement hors périmètre** (décisions requirements n° 3 et n° 4 de la spec
+`charges-patronales`, Req 7.2 / 7.3) :
+
+- **Plafond annuel de salaire assujetti CNESST** — le maximum assurable par
+  employé (**103 000 $** pour 2026) n'est **jamais** appliqué comme plafond.
+  `payroll_engine/charges_patronales.py::calcul_cnesst` calcule
+  `Taux_Total_CNESST × Salaire_Assujetti` sans borner l'assiette.
+- **Plafond de base admissible CNT** — le maximum de rémunération assujettie par
+  employé (**103 000 $** pour 2026, LE-39.0.2 (2026-01), ligne 29) est renseigné
+  dans `parameters/2026/quebec.json` (`cnt.base_admissible`) **à titre
+  documentaire et de trace uniquement** ; il n'est **jamais** appliqué comme
+  plafond par `calcul_cnt`.
+- **Table FSS par tranche de masse salariale** — la
+  `fss.table_taux_par_masse_salariale` (`TO_FILL`) n'est **jamais** consultée.
+  Seul le taux unique `fss.taux_camp_lilyso_2026 = 0,0165` (1,65 %) est appliqué,
+  la masse salariale du Camp LilySO (≈ 14 861,60 $) restant très en deçà du
+  premier seuil de changement de taux FSS (1 000 000 $).
+
+Ces trois maximums ne sont jamais atteints par les rémunérations saisonnières du
+Camp LilySO, au même titre que la deuxième cotisation supplémentaire au RRQ
+(RRQ2) documentée ci-dessus.
+
+**Procédure d'activation future** : si une extension du périmètre exige un
+plafond annuel CNESST/CNT ou la table FSS par masse salariale, le mécanisme DOIT
+être documenté ici, retiré de la présente note, et accompagné d'au moins un
+golden test dédié avant activation (règle 03, Req 7.3). Comportement documentaire
+uniquement — aucun test automatisé associé (revue manuelle, règle 06).
+
 ## Procédure d'ajout d'un cas supporté
 
 Si un cas listé ici devient nécessaire :

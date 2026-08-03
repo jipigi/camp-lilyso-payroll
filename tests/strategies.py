@@ -65,6 +65,33 @@ que l'import de ce module reste sûr. Son invocation effective peut lever
 ``AttributeError`` tant que la tâche 7.2 n'a pas matérialisé les champs
 typés — comportement attendu et correct au titre de la règle 06.
 
+Stratégies dédiées « charges patronales FSS, CNESST, CNT »
+(design.md §Testing Strategy « Stratégies Hypothesis », spec
+``charges-patronales``, tâche 1.1) :
+
+- ``st_brut_total_avec_zero_et_grands()`` — ``Decimal`` ∈ [0.00, 200000.00],
+  deux décimales, biaisé vers ``Decimal("0.00")`` (Property 4) **et** vers de
+  grandes valeurs supérieures à ``103 000 $`` (Property 8, absence de
+  plafond). Destiné à alimenter ``GainsDecomposes.brut_total`` dans les tests
+  des trois fonctions de charges.
+- ``st_parametres_annee_variantes_non_consommees()`` — variantes du
+  ``ParametresAnnee`` réel 2026 Québec différant **uniquement** sur les
+  champs non consommés par le calcul de période (``fss.masse_salariale_``
+  ``utilisee_webras_2026``, ``fss.table_taux_par_masse_salariale``,
+  ``cnt.base_admissible``, ``cnesst.en_attente_classification`` et les
+  sous-taux CNESST ``taux_unite`` / ``taux_cni``), pour Property 8
+  (insensibilité + absence de plafond) et Property 11 (report du drapeau
+  CNESST sans effet sur le total).
+
+Les stratégies ``st_parametres_annee_2026_qc()`` (``ParametresAnnee`` réel
+2026 Québec, sections ``fss`` / ``cnesst`` / ``cnt`` renseignées) et
+``st_parametres_annee_avec_to_fill(champ)`` (variante où un champ consommé
+porte ``"TO_FILL"``), toutes deux déjà présentes ci-dessus, sont
+**réutilisées telles quelles** par la spec ``charges-patronales`` : la
+première fournit le socle de paramètres commun à toutes les propriétés, la
+seconde couvre la Property 13 pour ``fss.taux_camp_lilyso_2026``,
+``cnesst.taux_total`` et ``cnt.taux``.
+
 Règle 01 : chaque stratégie manipulant un montant fiscal ou une durée
 d'heures DOIT retourner un ``Decimal`` (jamais un ``float``).
 """
@@ -102,6 +129,8 @@ __all__ = [
     "st_parametres_annee_avec_to_fill",
     "st_credit_personnel_eleve",
     "st_parametres_annee_impot_avec_to_fill",
+    "st_brut_total_avec_zero_et_grands",
+    "st_parametres_annee_variantes_non_consommees",
 ]
 
 
@@ -826,3 +855,187 @@ def st_parametres_annee_impot_avec_to_fill(
         update={nom_section: section_modifiee}
     )
     return st.just(parametres_modifies)
+
+
+# ===========================================================================
+# Stratégies dédiées charges patronales FSS, CNESST, CNT
+# (design.md §Testing Strategy « Stratégies Hypothesis »,
+#  spec charges-patronales, tâche 1.1)
+# ===========================================================================
+
+#: Borne haute de ``brut_total`` pour les property tests des charges
+#: patronales. Choisie très au-dessus de la base admissible CNT/CNESST de
+#: ``103 000 $`` afin qu'Hypothesis exerce régulièrement l'absence de
+#: plafond (Property 8) : au-delà de ce seuil, chaque montant doit rester
+#: ``arrondir(taux × brut_total)`` sans plafonnement. Règle 05 : ce n'est ni
+#: un taux, ni un seuil, ni un plafond fiscal officiel — c'est une simple
+#: borne de génération de test.
+_BRUT_TOTAL_CHARGES_MAX = Decimal("200000.00")
+
+#: Seuil « grande valeur » (> base admissible ``103 000 $``) au-delà duquel
+#: on veut biaiser une partie des tirages, pour couvrir l'absence de plafond
+#: (Property 8). Borne de génération de test uniquement (règle 05).
+_BRUT_TOTAL_CHARGES_GRAND_MIN = Decimal("103000.01")
+
+
+def st_brut_total_avec_zero_et_grands() -> st.SearchStrategy[Decimal]:
+    """``Decimal`` ∈ [0.00, 200000.00], biaisé vers 0 et vers de grandes valeurs.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », spec
+    ``charges-patronales``) : ``st.one_of(st.just(Decimal("0.00")),
+    st.decimals(...))`` sur ``[Decimal("0.00"), Decimal("200000.00")]``
+    avec ``places=2``, doublement biaisé :
+
+    - vers ``Decimal("0.00")`` exactement (branche ``st.just``), cas limite
+      « salaire assujetti nul » qui doit produire ``Decimal("0.00")`` sans
+      exception pour chacune des trois fonctions de charges (Property 4) ;
+    - vers de grandes valeurs strictement supérieures à la base admissible
+      de ``103 000 $`` (branche dédiée ``[103000.01, 200000.00]``), pour
+      exercer l'absence de plafond annuel : au-delà du seuil, chaque montant
+      doit rester ``arrondir(taux × brut_total)`` sans plafonnement
+      (Property 8).
+
+    La troisième branche couvre uniformément toute la plage ``[0, 200000]``
+    afin de ne pas laisser de trou entre les deux biais.
+
+    Alimente ``GainsDecomposes.brut_total`` dans les tests de la spec
+    ``charges-patronales`` (le test compose un ``GainsDecomposes`` valide
+    autour de cette valeur). Règle 01 : ``Decimal`` exclusivement
+    (``allow_nan=False``, ``allow_infinity=False``), jamais un ``float``.
+    """
+    return st.one_of(
+        st.just(Decimal("0.00")),
+        st.decimals(
+            min_value=_BRUT_TOTAL_CHARGES_GRAND_MIN,
+            max_value=_BRUT_TOTAL_CHARGES_MAX,
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        st.decimals(
+            min_value=Decimal("0.00"),
+            max_value=_BRUT_TOTAL_CHARGES_MAX,
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    )
+
+
+@st.composite
+def st_parametres_annee_variantes_non_consommees(
+    draw: st.DrawFn,
+) -> ParametresAnnee:
+    """``ParametresAnnee`` 2026 Québec variant sur les seuls champs non consommés.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », spec
+    ``charges-patronales``) : produit une variante du ``ParametresAnnee``
+    réel 2026 Québec (``st_parametres_annee_2026_qc()``) qui diffère
+    **exclusivement** sur les champs que le calcul de période n'utilise
+    jamais, en laissant intacts les seuls champs consommés par les formules
+    (``fss.taux_camp_lilyso_2026``, ``cnesst.taux_total``, ``cnt.taux``).
+    Champs non consommés variés :
+
+    - ``fss.masse_salariale_utilisee_webras_2026`` (documentaire) ;
+    - ``fss.table_taux_par_masse_salariale`` (table hors périmètre, absorbée
+      par ``extra="allow"``) ;
+    - ``cnt.base_admissible`` (portée dans la trace, jamais appliquée comme
+      plafond — Property 8) ;
+    - ``cnesst.en_attente_classification`` (drapeau reporté sans effet sur le
+      total — Property 11) ;
+    - ``cnesst.taux_unite`` / ``cnesst.taux_cni`` (sous-taux documentaires,
+      seul ``taux_total`` est consommé).
+
+    Sert à démontrer, sur une plage de variantes, que le montant FSS ne
+    dépend ni de la masse salariale documentaire ni de la table, que le
+    montant CNESST ne dépend ni du drapeau ni des sous-taux, et que le
+    montant CNT ne dépend pas de la base admissible (Property 8), et que le
+    total des cotisations employeur est identique que le drapeau CNESST
+    vaille ``True`` ou ``False`` (Property 11).
+
+    Immuabilité (règle 06) : l'instance mémorisée par
+    ``st_parametres_annee_2026_qc()`` n'est **jamais** mutée. Chaque section
+    modifiée est reconstruite via ``model_validate`` sur son ``model_dump``
+    (les champs consommés y sont recopiés à l'identique, les champs non
+    consommés remplacés par les valeurs tirées), puis la racine est recopiée
+    via ``model_copy(update=...)``. La reconstruction par ``model_dump`` /
+    ``model_validate`` n'accède à aucune propriété matérialisée : les
+    éventuels champs ``"TO_FILL"`` non consommés restent des chaînes et ne
+    lèvent pas ``MissingParameterError`` à la génération.
+
+    Règle 01 : tous les montants tirés sont des ``Decimal`` (jamais un
+    ``float``). Règle 05 : les valeurs variées sont de simples valeurs de
+    génération de test — aucune ne redéfinit un paramètre fiscal consommé.
+    """
+    base = _charger_parametres_annee_2026_qc()
+
+    # --- Champs FSS non consommés ---
+    nouvelle_masse = draw(
+        st.decimals(
+            min_value=Decimal("0.00"),
+            max_value=Decimal("5000000.00"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+    nouvelle_table = draw(
+        st.sampled_from([SENTINEL_TO_FILL, "table_variante_A", "table_variante_B"])
+    )
+    section_fss = type(base.fss).model_validate(
+        {
+            **base.fss.model_dump(by_alias=True),
+            "masse_salariale_utilisee_webras_2026": nouvelle_masse,
+            "table_taux_par_masse_salariale": nouvelle_table,
+        }
+    )
+
+    # --- Champs CNESST non consommés (drapeau + sous-taux) ---
+    nouveau_drapeau = draw(st.booleans())
+    nouveau_taux_unite = draw(
+        st.decimals(
+            min_value=Decimal("0.0000"),
+            max_value=Decimal("0.0500"),
+            places=4,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+    nouveau_taux_cni = draw(
+        st.decimals(
+            min_value=Decimal("0.0000"),
+            max_value=Decimal("0.0500"),
+            places=4,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+    section_cnesst = type(base.cnesst).model_validate(
+        {
+            **base.cnesst.model_dump(by_alias=True),
+            "en_attente_classification": nouveau_drapeau,
+            "taux_unite": nouveau_taux_unite,
+            "taux_cni": nouveau_taux_cni,
+        }
+    )
+
+    # --- Champ CNT non consommé (base admissible, jamais un plafond) ---
+    nouvelle_base_admissible = draw(
+        st.decimals(
+            min_value=Decimal("0.00"),
+            max_value=Decimal("500000.00"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+    section_cnt = type(base.cnt).model_validate(
+        {
+            **base.cnt.model_dump(by_alias=True),
+            "base_admissible": nouvelle_base_admissible,
+        }
+    )
+
+    return base.model_copy(
+        update={"fss": section_fss, "cnesst": section_cnesst, "cnt": section_cnt}
+    )

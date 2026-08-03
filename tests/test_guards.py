@@ -525,14 +525,22 @@ class TestExceptionMessageContract:
     def test_message_missing_parameter_error(self) -> None:
         """``MissingParameterError`` cite chemin JSON, année, juridiction, fichier.
 
-        On charge les paramètres réels 2026 QC (dont la section CNT —
-        charge annuelle non encore formulée par la spec
-        ``charges-patronales`` — reste marquée ``"TO_FILL"`` dans le JSON
-        versionné même après le remplissage des plafonds RRQ/RQAP 2026)
-        et on déclenche la matérialisation sur un paramètre non renseigné.
+        On charge les paramètres réels 2026 QC et on déclenche la
+        matérialisation sur un paramètre non renseigné. Depuis la spec
+        ``charges-patronales`` (tâche 9.1), la section CNT (``cnt.taux``)
+        est désormais renseignée dans ``parameters/2026/quebec.json``
+        (valeur ``"0.0006"`` issue du formulaire LE-39.0.2 2026) et ne
+        peut donc plus servir de cible ``"TO_FILL"``. La cible actuelle
+        est ``td_1015_3.montant_total_defaut`` : ce champ ``Decimal``
+        matérialisé est absent de la section ``td_1015_3`` du JSON (seul
+        ``retenue_additionnelle_defaut`` y figure), il retombe donc sur
+        la sentinelle ``"TO_FILL"`` par défaut et lève l'exception à
+        l'accès. C'est la même cible de remplacement adoptée pour les
+        tests analogues de ``tests/payroll_engine/test_parameters_loader.py``.
         Le message DOIT (Req 8.6, Property 16) inclure :
 
-        - le **chemin JSON** du paramètre (ex. ``cnt.taux``) ;
+        - le **chemin JSON** du paramètre
+          (ex. ``td_1015_3.montant_total_defaut``) ;
         - l'**année** courante (``2026``) ;
         - la **juridiction** courante (``quebec``) ;
         - le **fichier** à mettre à jour
@@ -541,20 +549,22 @@ class TestExceptionMessageContract:
         parametres = load_parameters(2026, Juridiction.QUEBEC)
 
         with pytest.raises(MissingParameterError) as exc_info:
-            # ``taux`` (section ``cnt``) est ``"TO_FILL"`` dans
-            # ``parameters/2026/quebec.json`` — l'accès à la propriété
-            # déclenche la matérialisation, qui lève l'exception.
-            _ = parametres.cnt.taux
+            # ``montant_total_defaut`` (section ``td_1015_3``) retombe sur
+            # la sentinelle ``"TO_FILL"`` : le champ ``Decimal`` matérialisé
+            # est absent du JSON ``parameters/2026/quebec.json`` (seul
+            # ``retenue_additionnelle_defaut`` y figure). L'accès à la
+            # propriété déclenche la matérialisation, qui lève l'exception.
+            _ = parametres.td_1015_3.montant_total_defaut
 
         message = str(exc_info.value)
 
         # Chemin JSON — au minimum le nom du champ ; idéalement
-        # préfixé par la section (``cnt.<champ>``).
-        assert "taux" in message, (
+        # préfixé par la section (``td_1015_3.<champ>``).
+        assert "montant_total_defaut" in message, (
             "Le message doit contenir le nom du paramètre manquant "
             f"(Req 8.6). Reçu : {message!r}"
         )
-        assert "cnt" in message, (
+        assert "td_1015_3" in message.lower(), (
             "Le message doit contenir la section (chemin JSON, Req 8.6). "
             f"Reçu : {message!r}"
         )
@@ -2738,6 +2748,166 @@ class TestImpotNoUnsupportedPayrollCase:
             "Occurrence du token ``UnsupportedPayrollCase`` détectée dans "
             f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 13.1, 13.2, "
             "13.3). Cette spec délègue intégralement aux garde-fous "
+            "existants de ``PayrollInput``/``GainsDecomposes`` — aucun "
+            "nouveau garde-fou ne doit être introduit ici. Occurrences :\n"
+            + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 6.1 (spec charges-patronales) — Tests de garde statique de
+#     ``payroll_engine/charges_patronales.py`` (Req 1.4, 2.3, 2.6, 3.3, 3.6,
+#     4.3, 4.6, 7.1, 8.3)
+# ===========================================================================
+#
+# Spec de référence : ``charges-patronales`` — tâche 6.1. Même discipline
+# que :class:`TestRrqNoFloat` et consorts (règle 06, TDD) : ces quatre
+# classes de garde sont écrites AVANT ``payroll_engine/charges_patronales.py``
+# (tâche 11.1, non réalisée à ce stade). Tant que ce fichier n'existe pas,
+# chaque test échoue explicitement via ``pytest.fail`` (et non par une
+# erreur de collection) — comportement rouge attendu, via
+# :func:`_parser_module_cotisation` et :func:`_lire_lignes_cotisation`.
+#
+# Les quatre classes réutilisent intégralement les helpers partagés déjà
+# validés pour les modules RRQ/RQAP/AE et impôt (design §Testing Strategy
+# « Détail des tests de garde »), appliqués au module unique de cette spec.
+
+
+#: Chemin du module cible de cette spec, relatif à la racine du dépôt.
+_CHEMIN_CHARGES_PATRONALES: Path = (
+    _REPO_ROOT / "payroll_engine" / "charges_patronales.py"
+)
+
+
+class TestChargesPatronalesNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/charges_patronales.py``
+    (Req 2.6, 3.6, 4.6, 8.3).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module des charges
+    patronales, par introspection statique de l'AST — sans dépendre d'une
+    exécution ni d'un import du module. Motif identique à
+    :class:`TestRrqNoFloat` (design §Testing Strategy « Détail des tests de
+    garde »).
+
+    Trois gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source
+       (``ast.Constant`` de type ``float``).
+    2. Aucun appel ``Decimal(<non-str>)`` — seule ``Decimal("...")`` (ou la
+       conversion mandatée ``Decimal(str(...))``) est admise.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)`` — seul ``Decimal.quantize`` arrondit.
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 2.6, 3.6, 4.6)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_CHARGES_PATRONALES)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal("...")`` est admise (Req 2.6, 3.6, 4.6)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_CHARGES_PATRONALES)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 8.3)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_CHARGES_PATRONALES)
+
+
+class TestChargesPatronalesNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/charges_patronales.py``
+    (Req 2.3, 3.3, 4.3, règle 05).
+
+    Ferme la règle 05 côté module des charges patronales, par les deux
+    mêmes gardes complémentaires que :class:`TestRrqNoHardcodedFiscalValues` :
+
+    1. Introspection AST (:func:`_verifier_aucune_constante_fiscale_en_dur`) :
+       aucune constante ``Decimal`` autre que ``Decimal("0.00")``
+       (plancher/valeur neutre) ou ``Decimal("0.01")`` (précision
+       d'arrondissement, ``_PRECISION_MONNAIE``) et aucun littéral entier
+       nu autre que ``2`` (précision d'arrondissement). Tout taux FSS/CNESST/
+       CNT DOIT être lu depuis ``parametres_annee.fss``/``.cnesst``/``.cnt``.
+    2. Lecture ligne à ligne contre les motifs fiscaux partagés du domaine
+       (:func:`_verifier_aucun_motif_fiscal_partage_en_dur`), qui couvrent
+       déjà les taux FSS (``0.0165``) et CNESST (``0.0112``) du camp LilySO.
+    """
+
+    def test_aucune_constante_fiscale_en_dur(self) -> None:
+        """Seuls ``Decimal("0.00")``, ``Decimal("0.01")`` et l'entier ``2`` sont autorisés (Req 2.3, 3.3, 4.3)."""
+        _verifier_aucune_constante_fiscale_en_dur(_CHEMIN_CHARGES_PATRONALES)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (Req 2.3, 3.3, 4.3)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_CHARGES_PATRONALES)
+
+
+class TestChargesPatronalesNoLoadParametersCall:
+    """``payroll_engine/charges_patronales.py`` n'appelle jamais
+    ``load_parameters`` et ne recourt à aucune source de non-déterminisme
+    (Req 1.4).
+
+    Ferme la contrainte de pureté du module des charges patronales (design
+    §Architecture « Contrainte de pureté » ; §Testing Strategy « Détail des
+    tests de garde »), motif identique à
+    :class:`TestRrqNoLoadParametersCall`. Trois gardes complémentaires, par
+    introspection AST et lecture ligne à ligne du fichier source :
+
+    1. Absence stricte du token ``load_parameters`` (import ou appel) —
+       les fonctions reçoivent ``parametres_annee`` déjà matérialisé.
+    2. Absence d'ouverture de fichier (``open(...)``,
+       ``Path(...).read_text()``/``read_bytes()``,
+       ``json.load(...)``/``json.loads(...)``).
+    3. Absence d'appel à ``datetime.now()``/``datetime.today()``,
+       ``random.*`` ou ``os.environ`` — sources de non-déterminisme
+       proscrites.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.4)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_CHARGES_PATRONALES)
+
+    def test_aucune_ouverture_fichier(self) -> None:
+        """Aucun ``open(...)``/``read_text()``/``json.load(...)`` (Req 1.4)."""
+        _verifier_aucune_ouverture_fichier_cotisation(_CHEMIN_CHARGES_PATRONALES)
+
+    def test_aucune_source_non_determinisme(self) -> None:
+        """Aucun ``datetime.now()``, ``random.*``, ``os.environ`` (Req 1.4)."""
+        _verifier_aucune_source_non_determinisme_cotisation(
+            _CHEMIN_CHARGES_PATRONALES
+        )
+
+
+class TestChargesPatronalesNoUnsupportedPayrollCase:
+    """Aucun nouveau garde-fou ``UnsupportedPayrollCase`` dans
+    ``payroll_engine/charges_patronales.py`` (Req 7.1).
+
+    Cette spec **délègue intégralement** aux garde-fous déjà portés à la
+    construction par ``PayrollInput``/``GainsDecomposes`` (validateurs de la
+    spec ``moteur-paie-contrats``) : la province de travail, la fréquence de
+    paie et le taux de vacances sont déjà validés en amont, avant que ces
+    modèles ne parviennent aux fonctions ``calcul_fss``/``calcul_cnesst``/
+    ``calcul_cnt``/``assembler_cotisations_employeur``. Aucune de ces
+    fonctions ne DOIT donc importer ni lever ``UnsupportedPayrollCase``
+    (design §Error Handling « Hors périmètre » ; miroir de
+    :class:`TestImpotNoUnsupportedPayrollCase` et de
+    :class:`TestCotisationsSocialesNoUnsupportedPayrollCase`).
+
+    Réutilise le helper de lecture ligne à ligne
+    :func:`_lire_lignes_cotisation` (même état rouge « module inexistant »
+    attendu avant la tâche 11.1, règle 06).
+    """
+
+    def test_aucun_token_unsupported_payroll_case(self) -> None:
+        """Grep : aucune occurrence du token ``UnsupportedPayrollCase`` (Req 7.1)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(_CHEMIN_CHARGES_PATRONALES), start=1
+        ):
+            if "UnsupportedPayrollCase" in ligne:
+                violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+        assert not violations, (
+            "Occurrence du token ``UnsupportedPayrollCase`` détectée dans "
+            f"{_CHEMIN_CHARGES_PATRONALES.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 7.1). Cette spec délègue intégralement aux garde-fous "
             "existants de ``PayrollInput``/``GainsDecomposes`` — aucun "
             "nouveau garde-fou ne doit être introduit ici. Occurrences :\n"
             + "\n".join(violations)

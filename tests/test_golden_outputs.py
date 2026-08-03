@@ -776,3 +776,173 @@ def test_impots_reproduisent_fixture(
             f"({impot_federal_formule}) != Decimal('0.00') — comportement "
             f"sous le seuil d'imposition attendu (Req 7, Req 11.7)."
         )
+
+
+# ---------------------------------------------------------------------------
+# Golden test — charges patronales FSS, CNESST, CNT et assemblage
+# ``CotisationsEmployeur`` (spec charges-patronales, tâche 5.1).
+#
+# ``payroll_engine.charges_patronales`` n'existe pas encore à ce stade de la
+# règle 06 (« tests avant code » — le module est livré par la tâche 11.1).
+# L'import des quatre fonctions est donc effectué **localement**, à
+# l'intérieur du test, afin qu'un ``ModuleNotFoundError`` sur ce module ne
+# fasse pas échouer la collecte de tout ce fichier (les golden tests
+# ci-dessus, portant sur des modules déjà livrés, doivent continuer à
+# passer) — même patron que ``test_impots_reproduisent_fixture``.
+# ---------------------------------------------------------------------------
+
+SCENARIOS_CHARGES: Final[tuple[str, ...]] = (
+    "QC001",
+    "QC002",
+    "QC003",
+    "QC004",
+    "QC005",
+    "QC006",
+)
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize("scenario_id", SCENARIOS_CHARGES)
+def test_charges_patronales_reproduisent_fixture(
+    scenario_id: str,
+    fixtures_inputs_dir: Path,
+    fixtures_outputs_dir: Path,
+) -> None:
+    """Reproduit les trois charges patronales et l'assemblage au cent près.
+
+    Vérifie, pour chacun des six scénarios QC001–QC006, que les trois
+    fonctions de calcul livrées par la spec ``charges-patronales``
+    (``calcul_fss``, ``calcul_cnesst``, ``calcul_cnt``) reproduisent au
+    cent près les champs ``cotisations_employeur.{fss, cnesst, cnt}.montant``
+    des fixtures de sortie (Req 11.1–11.3), et que
+    ``assembler_cotisations_employeur`` reporte le drapeau
+    ``cnesst_en_attente_classification`` et le ``total_cotisations_employeur``
+    de la fixture (Req 11.2, identité d'agrégation).
+
+    **Limitation connue** : ce test nécessite que les paramètres ``cnt``
+    2026 soient renseignés (``taux = "0.0006"``, ``base_admissible =
+    "103000.00"`` d'après LE-39.0.2 (2026-01)) — voir tâche 9 — et que les
+    fixtures QC001–QC006 soient régénérées pour porter la CNT calculée (au
+    lieu de ``0,00``), les sources corrigées (CNESST → ``www.cnesst.gouv.qc.ca``,
+    CNT → ``LE-39.0.2``) et les totaux recalculés — voir tâche 10 (Req 11.6).
+    Tant que la section ``cnt`` porte la sentinelle ``"TO_FILL"``, ce test
+    échoue par ``MissingParameterError`` (et non par écart de logique) ; tant
+    que la tâche 11.1 n'a pas livré le module, il échoue par
+    ``ModuleNotFoundError`` à l'exécution (la collecte reste saine grâce à
+    l'import local).
+
+    Validates: Requirements 11.1, 11.2, 11.3, 11.5, 11.6
+    """
+    # Import local — voir le commentaire de section ci-dessus : le module
+    # n'existe pas encore (tâche 11.1), l'échec attendu à ce stade est un
+    # ``ModuleNotFoundError`` propre, pas un crash de collecte pour le reste
+    # du fichier.
+    from payroll_engine.charges_patronales import (
+        assembler_cotisations_employeur,
+        calcul_cnesst,
+        calcul_cnt,
+        calcul_fss,
+    )
+
+    scenario_fichier = scenario_id.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Chargement de la fixture d'entrée → ``PayrollInput``.
+    # ------------------------------------------------------------------
+    fixture_input_path = fixtures_inputs_dir / f"{scenario_fichier}.json"
+    assert fixture_input_path.exists(), (
+        f"Fixture d'entrée manquante : {fixture_input_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    payroll_input = PayrollInput.model_validate_json(
+        fixture_input_path.read_text(encoding="utf-8")
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Chargement de la fixture de sortie → section ``gains`` →
+    #    ``GainsDecomposes`` (seule source du Salaire_Assujetti).
+    # ------------------------------------------------------------------
+    fixture_output_path = fixtures_outputs_dir / f"{scenario_fichier}.json"
+    assert fixture_output_path.exists(), (
+        f"Fixture de sortie manquante : {fixture_output_path}. Les "
+        f"tâches 14.1/14.2 de moteur-paie-contrats doivent produire les "
+        f"fixtures QC001–QC006 avant ce golden test."
+    )
+    fixture_output = json.loads(
+        fixture_output_path.read_text(encoding="utf-8")
+    )
+    gains = GainsDecomposes(**fixture_output["gains"])
+
+    # ------------------------------------------------------------------
+    # 3. Chargement des paramètres annuels versionnés (règle 05) — fusion
+    #    Québec/Canada. La racine Québec porte ``fss``/``cnesst``/``cnt``
+    #    (consommés par les trois fonctions de calcul de charges) ; on y
+    #    greffe ``assurance_emploi`` de la racine Canada car
+    #    ``assembler_cotisations_employeur`` **invoque** ``calcul_ae_employeur``
+    #    (étape 3), qui lit ``parametres.assurance_emploi``. Aucune mutation
+    #    — ``model_copy`` (patron identique à
+    #    ``test_cotisations_sociales_reproduisent_fixture``).
+    # ------------------------------------------------------------------
+    parametres_qc = load_parameters(2026, Juridiction.QUEBEC)
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    parametres = parametres_qc.model_copy(
+        update={"assurance_emploi": parametres_ca.assurance_emploi}
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Appel des trois fonctions de calcul et de l'assemblage.
+    # ------------------------------------------------------------------
+    fss, trace_fss = calcul_fss(payroll_input, gains, parametres)
+    cnesst, _ = calcul_cnesst(payroll_input, gains, parametres)
+    cnt, _ = calcul_cnt(payroll_input, gains, parametres)
+    cot = assembler_cotisations_employeur(payroll_input, gains, parametres)
+
+    # ------------------------------------------------------------------
+    # 5. Assertions golden (Req 11.1–11.3) — égalité stricte des trois
+    #    champs ``montant``, tolérance nulle (règle 01).
+    # ------------------------------------------------------------------
+    cotisations = fixture_output["cotisations_employeur"]
+
+    assert fss == Decimal(cotisations["fss"]["montant"]), (
+        f"[{scenario_id}] fss ({fss}) != fixture "
+        f"({cotisations['fss']['montant']}) (Req 11.1)."
+    )
+    assert cnesst == Decimal(cotisations["cnesst"]["montant"]), (
+        f"[{scenario_id}] cnesst ({cnesst}) != fixture "
+        f"({cotisations['cnesst']['montant']}) (Req 11.2)."
+    )
+    assert cnt == Decimal(cotisations["cnt"]["montant"]), (
+        f"[{scenario_id}] cnt ({cnt}) != fixture "
+        f"({cotisations['cnt']['montant']}) (Req 11.3)."
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Assemblage — report du drapeau CNESST (Req 11.2) et identité
+    #    d'agrégation ``total_cotisations_employeur`` (Req 11.1–11.3). Le
+    #    drapeau ``cnesst_en_attente_classification`` n'a aucun effet sur le
+    #    total : ``cnesst.montant`` (même provisoire) est toujours inclus.
+    # ------------------------------------------------------------------
+    assert (
+        cot.cnesst_en_attente_classification
+        == cotisations["cnesst_en_attente_classification"]
+    ), (
+        f"[{scenario_id}] cnesst_en_attente_classification "
+        f"({cot.cnesst_en_attente_classification}) != fixture "
+        f"({cotisations['cnesst_en_attente_classification']}) (Req 11.2)."
+    )
+    assert cot.total_cotisations_employeur == Decimal(
+        cotisations["total_cotisations_employeur"]
+    ), (
+        f"[{scenario_id}] total_cotisations_employeur "
+        f"({cot.total_cotisations_employeur}) != fixture "
+        f"({cotisations['total_cotisations_employeur']})."
+    )
+
+    # ------------------------------------------------------------------
+    # 7. Cohérence trace/montant pour ``calcul_fss`` (Req 5.5, Req 11.5).
+    # ------------------------------------------------------------------
+    assert trace_fss.resultat == fss, (
+        f"[{scenario_id}] trace_fss.resultat ({trace_fss.resultat}) != "
+        f"fss ({fss}) (Req 5.5)."
+    )

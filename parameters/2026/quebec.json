@@ -98,20 +98,22 @@
   },
 
   "cnesst": {
-    "commentaire": "Classification et taux confirmés officiellement par la CNESST pour Camp LilySO.",
+    "commentaire": "Classification et taux confirmés officiellement par la CNESST pour Camp LilySO. CORRECTION DE TRAÇABILITÉ (règle 02, Req 5.7) : les sous-libellés taux_unite/taux_cni étaient INVERSÉS par rapport à la décision de classification officielle. La décision énonce « taux de l'unité = 0,90 » (donc taux_unite = 0.0090) et « prime/CNI = 0,22 » (donc taux_cni = 0.0022), pour un total de 1,12 %. Le taux_total = 0.0112 était et reste correct (seul le total est utilisé pour le calcul ; les sous-taux sont purement documentaires). Valeurs corrigées le 2026-08-03 : taux_unite et taux_cni ont été permutés pour refléter fidèlement le document officiel.",
     "statut": "VALIDE_OFFICIEL",
     "unite": "57020",
-    "taux_cni": "0.0090",
-    "taux_unite": "0.0022",
+    "taux_unite": "0.0090",
+    "taux_cni": "0.0022",
     "taux_total": "0.0112",
     "en_attente_classification": false
   },
 
   "cnt": {
-    "commentaire": "Cotisation relative aux normes du travail — taux annuel officiel. N'apparaît pas dans WebRAS par paie (charge annuelle).",
-    "taux": "TO_FILL",
-    "base_admissible": "TO_FILL",
-    "statut": "TO_FILL"
+    "commentaire": "Cotisation relative aux normes du travail — taux et maximum annuel officiels lus du formulaire LE-39.0.2 (2026-01) : ligne 35 « Taux de cotisation = 0,06 % » → taux = 0.0006 ; ligne 29 « Montant maximal par employé = 103 000 $ » → base_admissible = 103000.00. La CNT est légalement une cotisation annuelle (payée avec le sommaire RLZ-1.ST) mais elle est répartie par paie au taux 0,06 % (décision requirements n° 2) : cette répartition reproduit exactement la charge annuelle tant que le maximum par employé n'est pas atteint. La base_admissible (103 000 $) n'est JAMAIS appliquée comme plafond au Camp LilySO — elle est renseignée à des fins documentaires et de trace uniquement, jamais atteinte (décision requirements n° 4). N'apparaît pas dans WebRAS par paie (charge annuelle) → validée par calcul direct 0,0006 × salaire assujetti.",
+    "source": "LE-39.0.2 (2026-01)",
+    "date_consultation": "2026-08-03",
+    "taux": "0.0006",
+    "base_admissible": "103000.00",
+    "statut": "VALIDE_LE_39_0_2_2026"
   },
 
   "vacances": {

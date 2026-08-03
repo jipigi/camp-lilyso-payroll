@@ -114,11 +114,19 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 
 **Livrables** :
 
-- `payroll_engine/employer_contributions.py`
+- `payroll_engine/charges_patronales.py`
 - FSS (selon taux annuel)
 - CNESST (taux configurable, provision si en attente de classification)
 - CNT (cotisation normes du travail)
 - RRQ / RQAP / AE employeur (déjà calculés dans les modules précédents, ici agrégés)
+
+> **Note (2026-08-03) — nom de module définitif** : le module livré est
+> `payroll_engine/charges_patronales.py` (fonctions `calcul_fss`,
+> `calcul_cnesst`, `calcul_cnt` et l'assemblage `assembler_cotisations_employeur`).
+> Le nom `employer_contributions.py` mentionné plus haut dans ce plan antérieur
+> est abandonné au profit de cette convention francophone alignée sur `rrq.py` /
+> `rqap.py` / `assurance_emploi.py` / `impot_qc.py` / `impot_federal.py`.
+> Déviation actée dans la spec `charges-patronales` (décision requirements n° 6).
 
 **Tests** :
 

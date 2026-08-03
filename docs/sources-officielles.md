@@ -40,6 +40,19 @@ Registre exhaustif des documents et outils gouvernementaux utilisés comme réf�
 - Case d'exonération de la retenue d'impôt du Québec
 - Retenue additionnelle demandée
 
+### LE-39.0.2 — Déclaration pour la cotisation des normes du travail
+
+**Rôle** : source primaire pour la cotisation relative aux normes du travail (CNT), charge patronale.
+
+**Portée dans le projet** :
+
+- Taux de la cotisation aux normes du travail (ligne 35 : 0,06 % pour l'édition 2026-01)
+- Montant maximal de rémunération assujettie par employé (ligne 29 : 103 000 $ pour l'édition 2026-01, jamais atteint au Camp LilySO)
+
+**Liste blanche `CalculationTrace`** : ajouté à la liste blanche `_SOURCES_OFFICIELLES_REGEX` de `models/trace.py` via le motif `^LE-39\.0\.2 \d{4}(, .+)?$` (extension **strictement additive** — aucun motif existant retiré ni modifié). Ce motif admet une source de la forme `LE-39.0.2 <année>` avec précision optionnelle (ex. `LE-39.0.2 2026, ligne 35 — CNT`). Voir spec `charges-patronales`, tâche 8.1 (Req 5.7, 12.3, règle 02).
+
+**Archivage** : le guide LE-39.0.2 (édition 2026-01) est archivé dans `docs/sources-officielles/2026/` (règle 02). Document officiel de Revenu Québec (`.gouv.qc.ca`).
+
 ### WebRAS
 
 **Rôle** : calculateur officiel en ligne de Revenu Québec, utilisé comme oracle de référence pour les golden tests.

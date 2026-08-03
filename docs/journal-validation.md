@@ -161,3 +161,129 @@ Chaque entrée comprend :
 - **Note** : la structure interne complète de la `trace` (clés `entrees`/`sous_totaux`) des `impot_federal_formule` sera réalignée par la tâche 11.1 ; cette entrée ne concerne que la correction du `montant` (et du `resultat` de trace) pour refléter la valeur PDOC validée.
 - **Références** : PDOC (option « Montant cumulatif annuel », crédit RRQ K2Q) ; T4127 2026 chapitre 4 (facteur K2Q) ; TP-1015.F 2026 ; `tests/fixtures/official/`.
 - **Fichiers modifiés** : `tests/fixtures/outputs/qc002.json`, `tests/fixtures/outputs/qc003.json`, `tests/fixtures/outputs/qc005.json`, `docs/journal-validation.md`.
+
+### 2026-08-03 — Régénération du corpus golden QC001–QC006 (CNT, sources CNESST/CNT, totaux)
+
+- **Type** : scenario
+- **Description** : régénération des six fixtures de sortie `tests/fixtures/outputs/qc00{1..6}.json` dans le cadre de la spec `charges-patronales` (tâche 10.1, Req 11.4/11.5). Trois corrections appliquées à la section `cotisations_employeur` de chaque fixture :
+  1. **CNT désormais non nulle** : `cnt.montant` passe de `0,00` à `arrondir(0,0006 × brut_total)` (ROUND_HALF_UP, 2 décimales), conformément à la LE-39.0.2 (2026-01), ligne 35 (taux 0,06 %).
+  2. **Sources de trace corrigées** (règle 02, Req 5.7) : `cnesst.trace.source` passe de l'attribution erronée `TP-1015.F 2026, section 6 — CNESST` à l'URL officielle CNESST `https://www.cnesst.gouv.qc.ca/fr/demarches-formulaires/employeurs/assurance-sante-securite-travail/tarification/taux-prime` ; `cnt.trace.source` passe de `TP-1015.F 2026, section 7 — CNT` à `LE-39.0.2 2026`. Champs de trace alignés sur le design §Components §2/§3/§4 (sections, `parametres_utilises`, `entrees` avec clé unifiée `salaire_assujetti`).
+  3. **Totaux recalculés** : `total_cotisations_employeur` (somme au cent des six montants) et `cout_employeur` (= `brut_total + total`) recalculés pour intégrer la CNT.
+- **Résultat** : OK
+- **Valeurs de CNT et totaux régénérés** :
+
+| Scénario | brut_total | CNT (0,0006 × brut) | total_cotisations_employeur | cout_employeur |
+|---|---|---|---|---|
+| QC001 | 1 516,32 | 0,91 | 166,99 | 1 683,31 |
+| QC002 | 2 861,04 | 1,72 | 322,34 | 3 183,38 |
+| QC003 | 2 179,84 | 1,31 | 243,65 | 2 423,49 |
+| QC004 | 294,84 | 0,18 | 25,88 | 320,72 |
+| QC005 | 1 739,92 | 1,04 | 192,83 | 1 932,75 |
+| QC006 | 505,44 | 0,30 | 50,22 | 555,66 |
+
+- **Validation** :
+  - **FSS et CNESST** restent exacts au cent près contre WebRAS : les montants `fss.montant` (`0,0165 × brut`) et `cnesst.montant` (`0,0112 × brut`) sont inchangés par cette régénération (vérifiés par assertion lors de la régénération : `montant == arrondir(taux × brut)`).
+  - **CNT** : absente de WebRAS par paie (charge annuelle répartie, décision requirements n° 2), validée par calcul direct `0,0006 × Salaire_Assujetti` de la LE-39.0.2 (2026-01), ligne 35.
+  - Round-trip `PayrollResult` : `pytest tests/test_golden_outputs.py::test_golden_output_scenario` (6 scénarios) passe — les invariants comptables (`cout_employeur == brut + total`, `total == somme des six cotisations`) et la liste blanche des sources (`LE-39.0.2 2026`, URL `www.cnesst.gouv.qc.ca`) sont satisfaits.
+  - Le golden test `test_charges_patronales_reproduisent_fixture` reste rouge par `ModuleNotFoundError` (module `payroll_engine/charges_patronales.py` livré par la tâche 11.1) — comportement attendu (règle 06, tests avant code).
+- **Coordination tâche 11.1** : l'implémentation de `calcul_cnesst` DOIT émettre exactement l'URL `https://www.cnesst.gouv.qc.ca/fr/demarches-formulaires/employeurs/assurance-sante-securite-travail/tarification/taux-prime` comme `trace.source` pour reproduire ces fixtures.
+- **Fichiers modifiés** : `tests/fixtures/outputs/qc001.json`–`qc006.json`, `docs/journal-validation.md`.
+
+### 2026-08-03 — Validation manuelle QC001 des charges patronales (checkpoint final `charges-patronales`, tâche 12)
+
+- **Type** : scenario
+- **Description** : validation manuelle du scénario de référence QC001 pour les
+  trois charges patronales livrées par la spec `charges-patronales` (étape 5),
+  charge par charge, après implémentation de `payroll_engine/charges_patronales.py`
+  (tâche 11.1). Cette entrée complète l'entrée de régénération du corpus du
+  2026-08-03 (« Régénération du corpus golden QC001–QC006 ») en confirmant, au
+  cent, que le moteur reproduit les valeurs de la fixture `qc001.json` (Req 11.1
+  à 11.3, 11.5).
+- **Résultat** : OK
+- **Valeurs QC001 reproduites par le moteur** (brut_total = 1 516,32 $) :
+
+| Charge | Formule | Calcul | Montant reproduit | Source de trace |
+|---|---|---|---|---|
+| FSS | 0,0165 × brut | 0,0165 × 1 516,32 = 25,01928 → ROUND_HALF_UP | **25,02 $** | `TP-1015.F 2026, section 5 — FSS` |
+| CNESST | 0,0112 × brut | 0,0112 × 1 516,32 = 16,982784 → ROUND_HALF_UP | **16,98 $** | `https://www.cnesst.gouv.qc.ca/.../taux-prime` (unité 57020) |
+| CNT | 0,0006 × brut | 0,0006 × 1 516,32 = 0,909792 → ROUND_HALF_UP | **0,91 $** | `LE-39.0.2 2026` (ligne 35) |
+| **total_cotisations_employeur** | somme des six cotisations employeur | RRQ 87,36 + RQAP 9,13 + AE 27,59 + FSS 25,02 + CNESST 16,98 + CNT 0,91 | **166,99 $** | — |
+
+- **Approche de validation** (pas de session WebRAS fabriquée) :
+  - **FSS** et **CNESST** : le moteur reproduit **au cent** les montants de la
+    fixture `qc001.json`, montants eux-mêmes validés au cent contre WebRAS lors
+    des exécutions du corpus (voir entrées « Corpus complet QC001–QC006 » et
+    « Confirmation officielle de la classification CNESST », unité 57020 à 1,12 %).
+    Une **ré-exécution WebRAS en direct de QC001** (FSS et CNESST) reste une
+    **étape manuelle de l'opérateur** à consigner ici lors de la revalidation
+    saisonnière ; elle n'a pas été simulée automatiquement.
+  - **CNT** : absente de WebRAS par paie (charge annuelle répartie, décision
+    requirements n° 2). Validée par **calcul direct** `0,0006 × Salaire_Assujetti`
+    d'après la **LE-39.0.2 (2026-01)**, ligne 35 (taux 0,06 %) → 0,91 $, valeur
+    reproduite par `calcul_cnt`.
+- **Archivage de la source** : le guide **LE-39.0.2 (2026-01)** est référencé dans
+  `docs/sources-officielles.md` (section « LE-39.0.2 », ajout à la liste blanche
+  `_SOURCES_OFFICIELLES_REGEX` déjà effectué en tâche 8.1) et destiné à
+  `docs/sources-officielles/2026/`. **Le dépôt physique du PDF dans ce répertoire
+  reste une action manuelle de l'opérateur** (fichier binaire non ajouté par
+  l'outillage) — la référence documentaire est en place, la copie PDF est à
+  archiver par l'opérateur lors de la validation officielle.
+- **Vérification automatisée** : `pytest --strict-markers -ra` → **882 passed,
+  1 skipped** (le skip est un corps de test réservé à l'étape 6, sans rapport).
+  `test_charges_patronales_reproduisent_fixture` → 6 tests (QC001–QC006) tous au
+  cent ; les quatre classes de garde `charges_patronales` passent ; les 13
+  propriétés du design (dont l'assemblage 10, 11, 12) sont couvertes.
+- **Références** : LE-39.0.2 (2026-01), lignes 29 et 35 ; décision de
+  classification CNESST (unité 57020, taux total 1,12 %) ; TP-1015.F 2026,
+  section 5 — FSS ; `tests/fixtures/outputs/qc001.json`.
+- **Fichiers modifiés** : `docs/cas-non-supportes.md`, `docs/plan-implementation.md`,
+  `docs/journal-validation.md`.
+
+### 2026-08-03 — Ré-exécution WebRAS en direct de QC001 (confirmation finale FSS/CNESST)
+
+- **Type** : scenario
+- **Description** : ré-exécution manuelle en direct de WebRAS pour le scénario
+  QC001 (brut 1 516,32 $, période 1/27), demandée par l'opérateur pour clore
+  l'étape manuelle notée dans l'entrée précédente (« Validation manuelle QC001
+  des charges patronales »). Résultat WebRAS transmis par l'opérateur.
+- **Résultat** : OK — aucun écart.
+- **Sortie WebRAS (retenues employé)** :
+  - Impôt du Québec sur le revenu brut : **104,56 $**
+  - Cotisation au RRQ (6,3 %) : **87,36 $**
+  - Deuxième cotisation supplémentaire au RRQ (4 %) : **0,00 $**
+  - Cotisation au RQAP (0,43 %) : **6,52 $**
+- **Sortie WebRAS (cotisations employeur, période courante)** :
+  - Cotisation au RRQ (6,3 %) : **87,36 $**
+  - Deuxième cotisation supplémentaire au RRQ (4 %) : **0,00 $**
+  - Cotisation au RQAP (0,602 %) : **9,13 $**
+  - Cotisation au FSS (1,65 %) : **25,02 $**
+- **Comparaison avec le moteur / la fixture `qc001.json`** :
+
+| Poste | WebRAS | Moteur | Écart |
+|---|---|---|---|
+| Impôt QC (retenu) | 104,56 $ | 104,56 $ | 0 |
+| RRQ employé | 87,36 $ | 87,36 $ | 0 |
+| RRQ employé (2e cotisation supp.) | 0,00 $ | 0,00 $ (MSGA jamais atteint, hors périmètre) | 0 |
+| RQAP employé | 6,52 $ | 6,52 $ | 0 |
+| RRQ employeur | 87,36 $ | 87,36 $ | 0 |
+| RQAP employeur | 9,13 $ | 9,13 $ | 0 |
+| **FSS** | **25,02 $** | **25,02 $** | **0** |
+- **Note CNESST** : WebRAS **ne calcule pas la CNESST** (absente de ses sorties,
+  employeur comme employé) — correction par rapport à l'hypothèse de travail
+  antérieure. La cotisation CNESST (16,98 $ pour QC001) reste donc validée
+  exclusivement par calcul direct `0,0112 × Salaire_Assujetti` contre la
+  décision de classification officielle (unité 57020, taux total 1,12 %), et
+  non par WebRAS. Idem pour la CNT (0,91 $, calcul direct `0,0006 × brut`
+  d'après la LE-39.0.2, ligne 35 — WebRAS ne la calcule pas non plus, cotisation
+  annuelle hors sorties par paie).
+- **Conclusion** : la ré-exécution WebRAS confirme au cent près toutes les
+  valeurs qu'elle est en mesure de produire (impôt QC, RRQ employé/employeur,
+  RQAP employé/employeur, FSS). Les charges CNESST et CNT, structurellement
+  absentes de WebRAS, demeurent validées par calcul direct contre leurs sources
+  officielles respectives (décision de classification CNESST ; LE-39.0.2
+  (2026-01)). L'étape manuelle de revalidation WebRAS de QC001 est close.
+- **Reste à faire (opérateur)** : archivage physique du PDF LE-39.0.2 (2026-01)
+  dans `docs/sources-officielles/2026/` — la référence documentaire est déjà en
+  place (`docs/sources-officielles.md`), seul le dépôt du fichier binaire reste
+  à faire.
+- **Fichiers modifiés** : `docs/journal-validation.md`.

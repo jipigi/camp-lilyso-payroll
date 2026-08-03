@@ -290,12 +290,13 @@
         "source": "TP-1015.F 2026, section 5 — FSS",
         "annee": 2026,
         "juridiction": "quebec",
-        "section": "5 — Fonds des services de santé",
+        "section": "5 — Fonds des services de santé (FSS)",
         "parametres_utilises": {
           "taux_fss": "0.0165"
         },
         "entrees": {
-          "salaire_periode": "1739.92"
+          "salaire_assujetti": "1739.92",
+          "masse_salariale_annuelle": "14861.60"
         },
         "sous_totaux": {
           "cotisation_brute": "28.71"
@@ -308,15 +309,15 @@
     "cnesst": {
       "montant": "19.49",
       "trace": {
-        "source": "TP-1015.F 2026, section 6 — CNESST",
+        "source": "https://www.cnesst.gouv.qc.ca/fr/demarches-formulaires/employeurs/assurance-sante-securite-travail/tarification/taux-prime",
         "annee": 2026,
         "juridiction": "quebec",
-        "section": "6 — CNESST (unité 57020)",
+        "section": "Classification CNESST — unité 57020",
         "parametres_utilises": {
-          "taux_cnesst_provisoire": "0.0112"
+          "taux_total_cnesst": "0.0112"
         },
         "entrees": {
-          "salaire_periode": "1739.92"
+          "salaire_assujetti": "1739.92"
         },
         "sous_totaux": {
           "cotisation_brute": "19.49"
@@ -328,30 +329,31 @@
     },
     "cnesst_en_attente_classification": false,
     "cnt": {
-      "montant": "0.00",
+      "montant": "1.04",
       "trace": {
-        "source": "TP-1015.F 2026, section 7 — CNT",
+        "source": "LE-39.0.2 2026",
         "annee": 2026,
         "juridiction": "quebec",
-        "section": "7 — Commission des normes du travail",
+        "section": "Normes du travail — cotisation (ligne 35)",
         "parametres_utilises": {
-          "taux_cnt": "0.0000"
+          "taux_cnt": "0.0006",
+          "base_admissible": "103000.00"
         },
         "entrees": {
-          "salaire_periode": "1739.92"
+          "salaire_assujetti": "1739.92"
         },
         "sous_totaux": {
-          "cotisation_brute": "0.00"
+          "cotisation_brute": "1.04"
         },
         "mode_arrondissement": "ROUND_HALF_UP",
         "precision_arrondissement": 2,
-        "resultat": "0.00"
+        "resultat": "1.04"
       }
     },
-    "total_cotisations_employeur": "191.79"
+    "total_cotisations_employeur": "192.83"
   },
   "net": "1608.37",
-  "cout_employeur": "1931.71",
+  "cout_employeur": "1932.75",
   "cumuls_fin": {
     "employe_id": "EMP004",
     "annee_civile": 2026,

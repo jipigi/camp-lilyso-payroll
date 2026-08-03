@@ -197,32 +197,39 @@ class TestValeurToFill:
     Note (mise à jour paramètres 2026) : les plafonds RRQ
     (``maximum_gains_admissibles_mga`` et consorts) ont été renseignés
     depuis TP-1015.F 2026 et ne sont plus ``"TO_FILL"``. La section
-    ``cnt`` (charge patronale annuelle, hors périmètre de la spec
-    ``rrq``/``rqap``/``assurance-emploi``, formulée par la future spec
-    ``charges-patronales``) reste ``"TO_FILL"`` et sert désormais de
-    cible de test pour ce mécanisme.
+    ``cnt`` (charge patronale annuelle, formulée par la spec
+    ``charges-patronales``) a elle aussi été renseignée depuis le
+    formulaire LE-39.0.2 2026 (``taux`` et ``base_admissible``) et ne sert
+    donc plus de cible de test. La cible actuelle est
+    ``td_1015_3.montant_total_defaut`` : ce champ ``Decimal`` matérialisé
+    est absent de ``2026/quebec.json`` (seul ``retenue_additionnelle_defaut``
+    y figure), il retombe donc sur la sentinelle ``"TO_FILL"`` par défaut
+    et lève ``MissingParameterError`` au premier accès.
     """
 
-    def test_acces_cnt_taux_leve_missing_parameter_error(self) -> None:
-        # ``cnt.taux`` est ``"TO_FILL"`` dans le fichier actuel
-        # (2026/quebec.json) — cotisation aux normes du travail, charge
-        # annuelle hors périmètre des specs `rrq`/`rqap`/`assurance-emploi`
-        # (formulée plus tard par la spec `charges-patronales`).
+    def test_acces_td_1015_3_montant_total_defaut_leve_missing_parameter_error(
+        self,
+    ) -> None:
+        # ``td_1015_3.montant_total_defaut`` retombe sur la sentinelle
+        # ``"TO_FILL"`` dans le fichier actuel (2026/quebec.json) : le champ
+        # ``Decimal`` matérialisé est absent du JSON (seul
+        # ``retenue_additionnelle_defaut`` y est renseigné), son accès DOIT
+        # donc lever ``MissingParameterError``.
         parametres = load_parameters(2026, Juridiction.QUEBEC)
         with pytest.raises(MissingParameterError) as exc_info:
-            _ = parametres.cnt.taux
+            _ = parametres.td_1015_3.montant_total_defaut
 
         message = str(exc_info.value)
         # Le chemin JSON doit apparaître dans le message (Req 9.5).
-        assert "cnt" in message.lower()
-        assert "taux" in message
+        assert "td_1015_3" in message.lower()
+        assert "montant_total_defaut" in message
 
     def test_message_missing_parameter_error_identifie_le_fichier(self) -> None:
         # Req 8.6 — le message DOIT indiquer le fichier de paramètres à
         # mettre à jour et l'année / la juridiction concernées.
         parametres = load_parameters(2026, Juridiction.QUEBEC)
         with pytest.raises(MissingParameterError) as exc_info:
-            _ = parametres.cnt.taux
+            _ = parametres.td_1015_3.montant_total_defaut
 
         message = str(exc_info.value)
         assert "2026" in message

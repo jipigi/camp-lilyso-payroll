@@ -23,9 +23,10 @@ Contraintes structurantes :
   validation, ce qui rend la comparaison à la liste blanche déterministe.
 - Liste blanche stricte des sources officielles (Req 5.2, règle 02) :
   formulaires ``TP-1015.F``, ``TP-1015.G``, ``TP-1015.3``, ``T4127``,
-  ``TD1``, ``Guide de l'employeur ARC``, ou URL sur ``.gouv.qc.ca`` /
-  ``.canada.ca``. Toute autre source est refusée avec un message renvoyant
-  explicitement à la règle 02.
+  ``TD1``, ``Guide de l'employeur ARC``, ``LE-39.0.2`` (cotisation CNT,
+  ajouté par la spec ``charges-patronales``, extension additive), ou URL
+  sur ``.gouv.qc.ca`` / ``.canada.ca``. Toute autre source est refusée
+  avec un message renvoyant explicitement à la règle 02.
 - Rejet universel de ``float`` sur tous les champs ``Decimal`` (règle 01,
   Req 5.3) via ``field_validator(..., mode="before")`` délégué à
   :func:`models._validators.reject_float`. Pour les champs ``dict[str,
@@ -75,6 +76,11 @@ _SOURCES_OFFICIELLES_REGEX: tuple[str, ...] = (
     r"^T4127 \d{4}(, section .+)?$",
     r"^TD1 \d{4}(, section .+)?$",
     r"^Guide de l'employeur ARC \d{4}(, section .+)?$",
+    # NOUVEAU (spec ``charges-patronales``, tâche 8.1) — cotisation CNT.
+    # Formulaire LE-39.0.2 « Déclaration pour la cotisation des normes du
+    # travail » (Revenu Québec). Extension STRICTEMENT ADDITIVE : aucun
+    # motif existant n'est retiré ni modifié (Req 5.7, Req 12.3, règle 02).
+    r"^LE-39\.0\.2 \d{4}(, .+)?$",
     r"^https?://[a-z0-9\-\.]+\.gouv\.qc\.ca/.+$",
     r"^https?://[a-z0-9\-\.]+\.canada\.ca/.+$",
 )
@@ -193,8 +199,8 @@ class CalculationTrace(BaseModel):
         raise ValueError(
             f"Source non officielle refusée (règle 02) : {v!r}. "
             "Les seules sources autorisées sont TP-1015.F, TP-1015.G, "
-            "TP-1015.3, T4127, TD1, le guide de l'employeur ARC, ou une "
-            "URL sur `.gouv.qc.ca` / `.canada.ca`. "
+            "TP-1015.3, T4127, TD1, le guide de l'employeur ARC, LE-39.0.2, "
+            "ou une URL sur `.gouv.qc.ca` / `.canada.ca`. "
             "Voir `.kiro/steering/02-tracabilite-formules.md` (règle 02) "
             "pour la liste complète des documents officiels admissibles."
         )
