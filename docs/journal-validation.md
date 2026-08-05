@@ -287,3 +287,47 @@ Chaque entrée comprend :
   place (`docs/sources-officielles.md`), seul le dépôt du fichier binaire reste
   à faire.
 - **Fichiers modifiés** : `docs/journal-validation.md`.
+
+### 2026-08-XX — Recherche documentaire sur le plafonnement combiné des retenues additionnelles (insuffisance de brut QC+fédéral) — recherche infructueuse, décision opérationnelle actée
+
+- **Type** : deviation
+- **Description** : recherche de la règle officielle applicable lorsque la
+  somme des deux retenues additionnelles volontaires (`retenue_additionnelle_QC_effective`
+  + `retenue_additionnelle_federale_effective`) dépasse l'espace disponible sur
+  le brut après les cotisations obligatoires (RRQ, RQAP, AE) et l'impôt de base
+  (post-exonération, pré-additionnelle) des deux juridictions. Cas testé
+  manuellement par l'opérateur avec un brut de 100 $ et des retenues
+  additionnelles de 75 $ (QC) + 75 $ (fédéral), soit 150 $ de retenues
+  additionnelles demandées pour un brut de 100 $.
+- **Résultat** : ECART — aucune règle officielle trouvée.
+  - **PDOC (calculateur de l'ARC)** refuse purement et simplement de calculer
+    ce cas : lorsque les retenues combinées dépassent le brut disponible après
+    cotisations et impôt de base, PDOC ne produit aucun résultat exploitable
+    (blocage de la saisie / message de refus, pas de valeur de référence à
+    reproduire).
+  - **WebRAS (Revenu Québec)** ne valide rien de plus : aucun mécanisme de
+    priorité, de réduction partielle ou de plafonnement n'y est documenté ou
+    observable pour ce cas de figure.
+  - Ni le **TP-1015.F 2026** ni le **T4127 2026** (ARC) ne prescrivent de
+    traitement pour l'insuffisance combinée de brut entre les deux retenues
+    additionnelles volontaires QC et fédérale. Aucune source officielle
+    (Revenu Québec ou ARC) n'a pu être identifiée.
+- **Décision opérationnelle actée avec l'utilisateur** : en l'absence de règle
+  officielle, le projet Camp LilySO adopte la règle suivante, à titre de
+  **décision opérationnelle du projet, non prescrite par TP-1015.F ni
+  T4127/T4001 de l'ARC** : lorsque la somme des deux retenues additionnelles
+  volontaires dépasse l'espace disponible sur le brut (après RRQ, RQAP, AE et
+  impôt de base des deux juridictions), **les deux retenues additionnelles
+  sont mises à 0 $** — jamais une réduction partielle, jamais un choix de
+  priorité entre QC et fédéral. Cette règle est documentée avec le statut
+  `HYPOTHESE` dans `docs/hypotheses-2026.md` (sections 5 et 6) et ne doit
+  jamais être présentée comme une règle fiscale officielle dans le code, les
+  traces de calcul ou la documentation destinée à un tiers/auditeur.
+- **Conséquence de conception** : ce calcul relève d'une vue transversale
+  (accès simultané au brut, aux trois cotisations sociales, et à l'impôt de
+  base des deux juridictions) que ni `impot_qc.py` ni `impot_federal.py` ne
+  possèdent — il est donc calculé par l'orchestrateur
+  `payroll_engine/net_pay.py::assembler_paie` (spec `net-cumuls-registre`), qui
+  seul dispose de cette vue complète. Voir spec `impots-retenues-source`
+  Requirement 14 (nouveau paramètre `additionnelle_permise: bool`).
+- **Fichiers modifiés** : `docs/hypotheses-2026.md`, `docs/journal-validation.md`.

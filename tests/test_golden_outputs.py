@@ -57,13 +57,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Final
 
 import pytest
 
-from models.enums import Juridiction
+from models.enums import Juridiction, StatutDePaie
 from models.payroll_input import PayrollInput
 from models.payroll_result import GainsDecomposes, PayrollResult
 from payroll_engine.parameters_loader import load_parameters
@@ -687,18 +688,22 @@ def test_impots_reproduisent_fixture(
 
     # ------------------------------------------------------------------
     # 4. Appel des quatre fonctions.
+    #
+    # additionnelle_permise=True (Requirement 14) : les 6 fixtures
+    # QC001-QC006 ont toutes une retenue additionnelle nulle (QC et
+    # fédérale) — comportement inchangé, rétrocompatible (Req 14.3).
     # ------------------------------------------------------------------
     impot_qc_formule, trace_impot_qc_formule = calcul_impot_qc_formule(
         payroll_input, gains, parametres
     )
     impot_qc_retenu, _ = calcul_impot_qc_retenu(
-        payroll_input, gains, parametres
+        payroll_input, gains, parametres, True
     )
     impot_federal_formule, _ = calcul_impot_federal_formule(
         payroll_input, gains, parametres
     )
     impot_federal_retenu, _ = calcul_impot_federal_retenu(
-        payroll_input, gains, parametres
+        payroll_input, gains, parametres, True
     )
 
     # ------------------------------------------------------------------
@@ -946,3 +951,173 @@ def test_charges_patronales_reproduisent_fixture(
         f"[{scenario_id}] trace_fss.resultat ({trace_fss.resultat}) != "
         f"fss ({fss}) (Req 5.5)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Golden test bout en bout — assemblage + registre (spec net-cumuls-registre,
+# tâche 4.1).
+#
+# ``payroll_engine.net_pay`` et ``payroll_engine.register`` n'existent pas
+# encore à ce stade de la règle 06 (« tests avant code » — livrés par les
+# tâches 7 et 8 de la spec ``net-cumuls-registre``). L'import des quatre
+# fonctions (``assembler_paie``, ``inserer_paie``, ``lire_paie``,
+# ``lire_cumuls_ytd``) est donc effectué **localement**, à l'intérieur du
+# test, afin qu'un ``ModuleNotFoundError`` sur ces deux modules ne fasse pas
+# échouer la collecte de tout ce fichier (les golden tests ci-dessus,
+# portant sur des modules déjà livrés, doivent continuer à passer) — même
+# patron que ``test_charges_patronales_reproduisent_fixture``.
+# ---------------------------------------------------------------------------
+
+SCENARIOS_ASSEMBLAGE: Final[tuple[str, ...]] = (
+    "QC001",
+    "QC002",
+    "QC003",
+    "QC004",
+    "QC005",
+    "QC006",
+)
+
+
+@pytest.mark.golden
+@pytest.mark.parametrize("scenario_id", SCENARIOS_ASSEMBLAGE)
+def test_assemblage_et_registre_reproduisent_fixture(
+    scenario_id: str,
+    fixtures_inputs_dir: Path,
+    fixtures_outputs_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Assemblage + registre reproduisent ``net``/``cout_employeur``/``cumuls_fin``.
+
+    Vérifie, pour chacun des six scénarios QC001–QC006, que
+    ``assembler_paie`` (spec ``net-cumuls-registre``, orchestrateur des neuf
+    fonctions de calcul déjà livrées) reproduit au cent près les champs
+    ``net`` et ``cout_employeur`` de la fixture de sortie, que
+    ``inserer_paie``/``lire_paie`` effectuent un round-trip strict
+    (``relu == resultat``, Property 10), et que ``lire_cumuls_ytd``
+    reproduit au cent près chacune des onze catégories de
+    ``sortie["cumuls_fin"]``.
+
+    La base SQLite utilisée est systématiquement ``tmp_path / "payroll.db"``
+    — jamais la base de production (règle 04).
+
+    **Limitation connue** : ce test nécessite que
+    ``payroll_engine.net_pay.assembler_paie`` et les fonctions du registre
+    ``payroll_engine.register`` existent (tâches 7 et 8). Tant que ces
+    modules ne sont pas livrés, ce test échoue par ``ModuleNotFoundError``
+    (et non par écart de logique) — la collecte reste saine grâce à
+    l'import local.
+
+    Validates: Requirements 17.4
+    """
+    # Import local — voir le commentaire de section ci-dessus : les modules
+    # n'existent pas encore (tâches 7 et 8), l'échec attendu à ce stade est
+    # un ``ModuleNotFoundError`` propre, pas un crash de collecte pour le
+    # reste du fichier.
+    from payroll_engine.net_pay import assembler_paie
+    from payroll_engine.register import inserer_paie, lire_cumuls_ytd, lire_paie
+
+    scenario_fichier = scenario_id.lower()
+
+    # ------------------------------------------------------------------
+    # 1. Chargement de la fixture d'entrée → ``PayrollInput``.
+    # ------------------------------------------------------------------
+    fixture_input_path = fixtures_inputs_dir / f"{scenario_fichier}.json"
+    assert fixture_input_path.exists(), (
+        f"Fixture d'entrée manquante : {fixture_input_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les fixtures "
+        f"QC001–QC006 avant ce golden test."
+    )
+    payroll_input = PayrollInput.model_validate_json(
+        fixture_input_path.read_text(encoding="utf-8")
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Chargement des paramètres annuels versionnés (règle 05) — fusion
+    #    Québec/Canada. ``assembler_paie`` invoque les neuf fonctions des
+    #    étapes 2 à 5, qui consomment collectivement ``rrq``/``rqap``/
+    #    ``impot_quebec``/``fss``/``cnesst``/``cnt`` (racine Québec) ainsi
+    #    que ``assurance_emploi``/``impot_federal`` (racine Canada). Aucune
+    #    mutation — ``model_copy`` (patron identique à
+    #    ``test_impots_reproduisent_fixture``).
+    # ------------------------------------------------------------------
+    parametres_qc = load_parameters(2026, Juridiction.QUEBEC)
+    parametres_ca = load_parameters(2026, Juridiction.CANADA)
+    parametres = parametres_qc.model_copy(
+        update={
+            "assurance_emploi": parametres_ca.assurance_emploi,
+            "impot_federal": parametres_ca.impot_federal,
+        }
+    )
+
+    # ------------------------------------------------------------------
+    # 3. Chargement de la fixture de sortie attendue (``net``,
+    #    ``cout_employeur``, ``cumuls_fin``) et des arguments de cycle de
+    #    vie (``id_paie``, ``version``, ``statut``, ``date_creation``,
+    #    ``date_emission``) reportés tels quels à ``assembler_paie``.
+    # ------------------------------------------------------------------
+    fixture_output_path = fixtures_outputs_dir / f"{scenario_fichier}.json"
+    assert fixture_output_path.exists(), (
+        f"Fixture de sortie manquante : {fixture_output_path}. Les tâches "
+        f"14.1/14.2 de moteur-paie-contrats doivent produire les fixtures "
+        f"QC001–QC006 avant ce golden test."
+    )
+    sortie = json.loads(fixture_output_path.read_text(encoding="utf-8"))
+
+    # Base SQLite temporaire — jamais la base de production (règle 04).
+    chemin_bd = tmp_path / "payroll.db"
+
+    # ------------------------------------------------------------------
+    # 4. Assemblage via ``assembler_paie``.
+    # ------------------------------------------------------------------
+    resultat = assembler_paie(
+        payroll_input=payroll_input,
+        parametres_annee=parametres,
+        id_paie=sortie["id_paie"],
+        version=sortie["version"],
+        statut=StatutDePaie(sortie["statut"]),
+        date_creation=datetime.fromisoformat(sortie["date_creation"]),
+        date_emission=(
+            datetime.fromisoformat(sortie["date_emission"])
+            if sortie.get("date_emission")
+            else None
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Assertions golden sur ``net``/``cout_employeur`` (Req 17.4) —
+    #    égalité stricte, tolérance nulle (règle 01).
+    # ------------------------------------------------------------------
+    assert resultat.net == Decimal(sortie["net"]), (
+        f"[{scenario_id}] net ({resultat.net}) != fixture "
+        f"({sortie['net']}) (Req 17.4)."
+    )
+    assert resultat.cout_employeur == Decimal(sortie["cout_employeur"]), (
+        f"[{scenario_id}] cout_employeur ({resultat.cout_employeur}) != "
+        f"fixture ({sortie['cout_employeur']}) (Req 17.4)."
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Insertion + relecture — round-trip strict (Property 10, Req 17.4).
+    # ------------------------------------------------------------------
+    inserer_paie(resultat, saison="Saison 2026 (test)", chemin_bd=chemin_bd)
+    relu = lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
+    assert relu == resultat, (
+        f"[{scenario_id}] Round-trip inserer_paie/lire_paie non fidèle : "
+        f"{relu!r} != {resultat!r} (Req 17.4)."
+    )
+
+    # ------------------------------------------------------------------
+    # 7. Relecture des cumuls — égalité au cent près pour chacune des onze
+    #    catégories monétaires de ``sortie["cumuls_fin"]`` (Req 17.4).
+    # ------------------------------------------------------------------
+    cumuls = lire_cumuls_ytd(
+        resultat.employe_id, resultat.annee_fiscale, chemin_bd=chemin_bd
+    )
+    for categorie, valeur_attendue in sortie["cumuls_fin"].items():
+        if categorie in ("employe_id", "annee_civile"):
+            continue
+        assert getattr(cumuls, categorie) == Decimal(valeur_attendue), (
+            f"[{scenario_id}] cumuls_fin.{categorie} "
+            f"({getattr(cumuls, categorie)}) != fixture ({valeur_attendue}) "
+            f"(Req 17.4)."
+        )

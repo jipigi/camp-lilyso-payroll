@@ -221,10 +221,13 @@ def calcul_impot_qc_retenu(
     payroll_input: PayrollInput,
     gains: GainsDecomposes,
     parametres_annee: ParametresAnnee,
+    additionnelle_permise: bool,
 ) -> tuple[Decimal, CalculationTrace]: ...
 ```
 
-Signature identique pour `calcul_impot_federal_formule` et `calcul_impot_federal_retenu` (Req 1.1, 1.2). Ordre des arguments fixe, aucun défaut. Exceptions autorisées : `MissingParameterError` (propagée) et `pydantic.ValidationError` (bug interne uniquement, Req 1.8).
+Signature identique pour `calcul_impot_federal_formule` (3 paramètres) et `calcul_impot_federal_retenu` (4 paramètres, `additionnelle_permise` en 4e position) (Req 1.1, 1.2). Ordre des arguments fixe, aucun défaut — y compris pour `additionnelle_permise` (Requirement 14.1). Exceptions autorisées : `MissingParameterError` (propagée) et `pydantic.ValidationError` (bug interne uniquement, Req 1.8).
+
+**Extension Requirement 14 — `additionnelle_permise: bool`** : les deux fonctions « retenue effective » (`calcul_impot_qc_retenu`, `calcul_impot_federal_retenu`) reçoivent désormais un 4e paramètre obligatoire `additionnelle_permise`, calculé et transmis par l'orchestrateur `payroll_engine/net_pay.py::assembler_paie` (spec `net-cumuls-registre`) — ni `impot_qc.py` ni `impot_federal.py` n'ont la vue transversale (accès RRQ/RQAP/AE et à l'autre juridiction) nécessaire pour le calculer eux-mêmes. Ce paramètre ne modifie ni la signature ni le comportement de `calcul_impot_qc_formule`/`calcul_impot_federal_formule` (toujours 3 paramètres, Req 2.8/4.9 inchangés). Voir §Components §3 et §5 (mis à jour) pour l'algorithme exact et §Correctness Properties (Property 14).
 
 ### 2. `calcul_impot_qc_formule` (Requirement 2, Requirement 7)
 
@@ -279,9 +282,9 @@ La formule officielle comporte **deux arrondissements monétaires** bien identif
 
 **Note de conception — divergence avec les traces déjà présentes dans les fixtures `tests/fixtures/outputs/qc00{2,3,4,5,6}.json`** : ces fixtures ont été rédigées avant cette spec de conception (à titre d'illustration anticipée dans les documents de scénario) et portent des clés `sous_totaux` hétérogènes selon le scénario (`impot_avant_exoneration`, `brut_annualise`). Le Requirement 11 impose la reproduction exacte du **montant** (`impot_qc_formule.montant`) sur les 6 scénarios, pas la reproduction de la structure interne de `trace`. Cette spec fixe une structure de trace **unique et cohérente** pour toutes les entrées (tableau ci-dessus), conforme aux minimums du Requirement 9. La tâche d'implémentation devra mettre à jour les fixtures `qc002.json` à `qc006.json` pour aligner leurs sous-champs `trace` sur cette structure uniforme (changement non contractuel, les montants restent inchangés).
 
-### 3. `calcul_impot_qc_retenu` (Requirement 3)
+### 3. `calcul_impot_qc_retenu` (Requirement 3, Requirement 14)
 
-Algorithme — délégation structurelle stricte :
+Algorithme — délégation structurelle stricte, avec plafonnement combiné (Requirement 14) appliqué **après** le court-circuit d'exonération :
 
 ```
 if payroll_input.exoneration_TP1015_3_effectif:
@@ -291,23 +294,30 @@ else:
     impot_qc_formule_valeur, _ = calcul_impot_qc_formule(payroll_input, gains, parametres_annee)
     montant_base = impot_qc_formule_valeur
 
-retenue_effective = montant_base + payroll_input.retenue_additionnelle_QC_effective
+retenue_additionnelle_demandee = payroll_input.retenue_additionnelle_QC_effective
+retenue_additionnelle_appliquee = (
+    retenue_additionnelle_demandee if additionnelle_permise else Decimal("0.00")
+)
+
+retenue_effective = montant_base + retenue_additionnelle_appliquee
 ```
 
-Le court-circuit est **véritable** : lorsque l'exonération est active, `calcul_impot_qc_formule` n'est **jamais appelée** — pas même pour construire la trace (Req 3.3). La valeur `impot_qc_formule` exposée dans `trace.entrees` (Req 3.6) est alors `Decimal("0.00")` par construction du montant de base, cohérent avec l'absence d'invocation (et non une valeur « recalculée puis ignorée »).
+Le court-circuit d'exonération est **véritable** : lorsque l'exonération est active, `calcul_impot_qc_formule` n'est **jamais appelée** — pas même pour construire la trace (Req 3.3). La valeur `impot_qc_formule` exposée dans `trace.entrees` (Req 3.6) est alors `Decimal("0.00")` par construction du montant de base, cohérent avec l'absence d'invocation (et non une valeur « recalculée puis ignorée »). Le plafonnement combiné (Requirement 14) est **indépendant** de ce court-circuit : `additionnelle_permise` ne modifie jamais `montant_base`, seulement la retenue additionnelle ajoutée à ce montant de base.
 
 Trace :
 
 | Champ | Valeur |
 |---|---|
-| `source` | `f"TP-1015.F {annee_fiscale}, section 4 — Impôt du Québec"` |
+| `source` | `f"TP-1015.F {annee_fiscale}, section 4 — Impôt du Québec"` (inchangé — Requirement 14.5, aucune nouvelle source de trace officielle) |
 | `section` | `"4 — Retenue d'impôt du Québec (retenu)"` |
-| `parametres_utilises` | `{"exoneration_active": Decimal("1") if exoneration else Decimal("0")}` |
-| `entrees` | `{"impot_qc_formule": montant_base, "retenue_additionnelle_qc": payroll_input.retenue_additionnelle_QC_effective}` |
-| `sous_totaux` | `{"retenue_effective": retenue_effective}` |
+| `parametres_utilises` | `{"exoneration_active": Decimal("1") if exoneration else Decimal("0"), "additionnelle_permise": Decimal("1") if additionnelle_permise else Decimal("0")}` |
+| `entrees` | `{"impot_qc_formule": montant_base, "retenue_additionnelle_qc": retenue_additionnelle_demandee}` (la retenue additionnelle **originale demandée**, avant tout plafonnement — Req 14.7) |
+| `sous_totaux` | `{"retenue_effective": retenue_effective, "retenue_additionnelle_appliquee": retenue_additionnelle_appliquee}` |
 | `resultat` | `retenue_effective` |
 
-**Note sur `exoneration_active` en `Decimal`** : `CalculationTrace.parametres_utilises` est typé `dict[str, Decimal]` (contrat `moteur-paie-contrats`) — le booléen est donc représenté par `Decimal("1")`/`Decimal("0")`, convention déjà en usage dans les fixtures existantes (`"exoneration_tp1015_3_active": "1"`).
+**Note sur `exoneration_active`/`additionnelle_permise` en `Decimal`** : `CalculationTrace.parametres_utilises` est typé `dict[str, Decimal]` (contrat `moteur-paie-contrats`) — chaque booléen est donc représenté par `Decimal("1")`/`Decimal("0")`, convention déjà en usage dans les fixtures existantes (`"exoneration_tp1015_3_active": "1"`).
+
+**Auto-suffisance de la trace sous plafonnement (Requirement 14.7)** : lorsque `additionnelle_permise == False`, `entrees.retenue_additionnelle_qc` conserve la valeur originale demandée par l'employé (ex. `75.00`) alors que `sous_totaux.retenue_additionnelle_appliquee` vaut `Decimal("0.00")` — un tiers auditeur voit ainsi qu'une retenue a été demandée puis refusée par le mécanisme de plafonnement (documenté comme décision opérationnelle Camp LilySO, `docs/hypotheses-2026.md`), et non un simple montant nul sans explication.
 
 ### 4. `calcul_impot_federal_formule` (Requirement 4, Requirement 6, Requirement 7)
 
@@ -384,9 +394,11 @@ Trace :
 
 Cette trace est **auto-suffisante** (Req 9.7) : `deduction_rrq_supp` est déjà exposée dans `entrees` (Req 9.3), et chacun des sous-totaux permet de reconstruire le suivant par simple arithmétique, sans consulter les fichiers de paramètres.
 
-### 5. `calcul_impot_federal_retenu` (Requirement 5)
+### 5. `calcul_impot_federal_retenu` (Requirement 5, Requirement 14)
 
-Algorithme et trace strictement symétriques à `calcul_impot_qc_retenu` (§Components 3), substituant `exoneration_TD1_effective` à `exoneration_TP1015_3_effectif`, `retenue_additionnelle_federale_effective` à `retenue_additionnelle_QC_effective`, et `calcul_impot_federal_formule` à `calcul_impot_qc_formule`. `source` commence par `"T4127 {annee_fiscale}"`, `section = "3 — Retenue d'impôt fédéral (retenu)"`.
+Algorithme et trace strictement symétriques à `calcul_impot_qc_retenu` (§Components 3, y compris l'extension Requirement 14), substituant `exoneration_TD1_effective` à `exoneration_TP1015_3_effectif`, `retenue_additionnelle_federale_effective` à `retenue_additionnelle_QC_effective`, et `calcul_impot_federal_formule` à `calcul_impot_qc_formule`. `source` commence par `"T4127 {annee_fiscale}"` (inchangé — Requirement 14.5), `section = "3 — Retenue d'impôt fédéral (retenu)"`.
+
+Signature : `(payroll_input, gains, parametres_annee, additionnelle_permise: bool) -> tuple[Decimal, CalculationTrace]`. Trace : `parametres_utilises` porte `{"exoneration_active": ..., "additionnelle_permise": ...}`, `entrees` porte `{"impot_federal_formule": montant_base, "retenue_additionnelle_federale": retenue_additionnelle_demandee}` (originale, avant plafonnement), `sous_totaux` porte `{"retenue_effective": ..., "retenue_additionnelle_appliquee": ...}`.
 
 ### 6. Helpers partagés (Req 8, Req 10)
 
@@ -394,7 +406,7 @@ Voir §Architecture : `_arrondir` et `_taux_et_constante_pour_palier`, dupliqué
 
 ### 7. Ordre d'exécution (invariant de reproduction)
 
-Pour les deux fonctions « formule », l'ordre est fixe : lecture du Salaire_Periode → calcul de la déduction/retranchement propre à la juridiction → annualisation → recherche du palier → calcul de l'impôt avant crédits → calcul des crédits (K1 seul pour le QC ; K1+K2Q+K4 puis abattement pour le fédéral) → conversion en montant de période avec plancher à zéro et arrondissement → construction de la trace → retour du tuple. Pour les deux fonctions « retenu » : test du drapeau d'exonération → appel conditionnel à la fonction formule homologue → somme avec la retenue additionnelle → construction de la trace → retour du tuple. Cet ordre garantit le déterminisme (Req 1.4).
+Pour les deux fonctions « formule », l'ordre est fixe : lecture du Salaire_Periode → calcul de la déduction/retranchement propre à la juridiction → annualisation → recherche du palier → calcul de l'impôt avant crédits → calcul des crédits (K1 seul pour le QC ; K1+K2Q+K4 puis abattement pour le fédéral) → conversion en montant de période avec plancher à zéro et arrondissement → construction de la trace → retour du tuple. Pour les deux fonctions « retenu » : test du drapeau d'exonération → appel conditionnel à la fonction formule homologue → test de `additionnelle_permise` (Requirement 14) → somme du montant de base avec la retenue additionnelle appliquée (originale si `additionnelle_permise`, sinon `Decimal("0.00")`) → construction de la trace (incluant `additionnelle_permise` et `retenue_additionnelle_appliquee`) → retour du tuple. Cet ordre garantit le déterminisme (Req 1.4). Le calcul de `additionnelle_permise` lui-même n'a pas lieu dans ces fonctions — il est reçu en argument, déjà calculé par `net_pay.py::assembler_paie` (Requirement 14.4).
 
 ---
 
@@ -599,6 +611,12 @@ Dans les deux cas, la retenue additionnelle s'ajoute inconditionnellement.
 
 **Validates: Requirements 10.5**
 
+### Property 14: Plafonnement combiné des retenues additionnelles (`additionnelle_permise == False`)
+
+*For any* `PayrollInput`, `GainsDecomposes` et `ParametresAnnee` valides, pour `calcul_impot_qc_retenu` et `calcul_impot_federal_retenu` invoquées avec `additionnelle_permise == False` : le montant retourné (retenue effective) est égal au montant de base (post-exonération, résultat du court-circuit d'exonération du Requirement 3 / Requirement 5, inchangé par `additionnelle_permise`) ; la trace expose `sous_totaux["retenue_additionnelle_appliquee"] == Decimal("0.00")` alors que `entrees["retenue_additionnelle_qc"]` (ou `entrees["retenue_additionnelle_federale"]` pour le fédéral) conserve la retenue additionnelle originale demandée par `payroll_input` (inchangée, non mise à zéro) ; `trace.parametres_utilises["additionnelle_permise"] == Decimal("0")`. Symétriquement, pour `additionnelle_permise == True`, le comportement est strictement identique à celui du Requirement 3 / Requirement 5 avant l'introduction de ce mécanisme (`retenue_additionnelle_appliquee == retenue_additionnelle_qc` demandée, `parametres_utilises["additionnelle_permise"] == Decimal("1")`).
+
+**Validates: Requirements 14.1, 14.2, 14.3, 14.6, 14.7**
+
 ---
 
 ## Error Handling
@@ -652,8 +670,8 @@ tests/
 
 | Fichier | Propriétés couvertes |
 |---|---|
-| `test_impot_qc.py` | Property 1, 2, 3, 4, 5, 8 (variante QC), 9 (variante QC), 10 (variante QC), 11 (variante QC), 12 (variantes QC), 13 (variante QC) |
-| `test_impot_federal.py` | Property 1, 2, 3, 4, 6, 7, 8 (variante fédérale), 9 (variante fédérale), 10 (variante fédérale), 11 (variante fédérale), 12 (variantes fédérales), 13 (variante fédérale) |
+| `test_impot_qc.py` | Property 1, 2, 3, 4, 5, 8 (variante QC), 9 (variante QC), 10 (variante QC), 11 (variante QC), 12 (variantes QC), 13 (variante QC), 14 (variante QC) |
+| `test_impot_federal.py` | Property 1, 2, 3, 4, 6, 7, 8 (variante fédérale), 9 (variante fédérale), 10 (variante fédérale), 11 (variante fédérale), 12 (variantes fédérales), 13 (variante fédérale), 14 (variante fédérale) |
 
 ### Configuration Hypothesis
 
@@ -680,10 +698,13 @@ def test_impots_reproduisent_fixture(scenario_id: str) -> None:
     parametres_fed = load_parameters(2026, Juridiction.CANADA)
     fixture_output = charger_fixture_output(scenario_id)
 
+    # additionnelle_permise=True : aucun scénario du corpus golden ne
+    # porte de retenue additionnelle non nulle (Requirement 14 — comportement
+    # rétrocompatible, identique à avant l'introduction du paramètre).
     impot_qc_formule, _ = calcul_impot_qc_formule(payroll_input, gains, parametres)
-    impot_qc_retenu, _ = calcul_impot_qc_retenu(payroll_input, gains, parametres)
+    impot_qc_retenu, _ = calcul_impot_qc_retenu(payroll_input, gains, parametres, True)
     impot_federal_formule, _ = calcul_impot_federal_formule(payroll_input, gains, parametres_fed)
-    impot_federal_retenu, _ = calcul_impot_federal_retenu(payroll_input, gains, parametres_fed)
+    impot_federal_retenu, _ = calcul_impot_federal_retenu(payroll_input, gains, parametres_fed, True)
 
     assert impot_qc_formule == Decimal(fixture_output["retenues_employe"]["impot_qc_formule"]["montant"])
     assert impot_qc_retenu == Decimal(fixture_output["retenues_employe"]["impot_qc_retenu"]["montant"])

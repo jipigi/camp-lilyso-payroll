@@ -289,6 +289,66 @@ L'ordre suit strictement la règle 06 : **tests avant code**, puis **mise à jou
 - **Chaque property test est annoté** par `# Feature: impots-retenues-source, Property N: <titre>` et référence les exigences EARS qu'il valide (`Requirements X.Y`). Un `grep -rn "Property [0-9]" tests/payroll_engine/test_impot_qc.py tests/payroll_engine/test_impot_federal.py` retrouve les 13 propriétés du design (certaines déclinées en variantes QC/fédéral).
 - **Séparation stricte exonération / cotisations sociales testée explicitement** : la tâche 5.4 vérifie par garde statique qu'`impot_federal.py` n'appelle jamais les fonctions de `cotisations-sociales-qc`, et la tâche 3.3 teste que le recalcul local K2Q ne dépend jamais de `payroll_input.cumuls_debut` — ces deux mécanismes opposés (recalcul local vs délégation interdite) sont le cœur de la séparation imposée par le Requirement 6.
 - **Court-circuit véritable testé par mock, pas par PBT strict** : Property 11 (tâches 2.3, 3.4) utilise `unittest.mock.patch` plutôt qu'une propriété universellement quantifiable — comportement structurel critique (Requirement 3.3, 5.3) qui ne se prête pas naturellement à une formulation « pour tout X » au même titre que les autres propriétés.
+- **Révision Requirement 14 (tâches 13 à 17, ci-dessous)** : ajout du paramètre `additionnelle_permise: bool` (4e position, obligatoire) à `calcul_impot_qc_retenu`/`calcul_impot_federal_retenu` — décision opérationnelle Camp LilySO documentée dans `docs/hypotheses-2026.md`, non prescrite par TP-1015.F/T4127. Le calcul de ce booléen relève de l'orchestrateur `net_pay.py::assembler_paie` (spec `net-cumuls-registre`), pas de cette spec — voir tâche 17 (hors périmètre de cette spec, référencée pour coordination).
+
+## Tasks — Révision Requirement 14 (plafonnement combiné des retenues additionnelles)
+
+- [ ] 13. Étendre les property tests QC et fédéral pour `additionnelle_permise` (Property 14)
+  - [ ] 13.1 Mettre à jour tous les appels existants à `calcul_impot_qc_retenu` dans `tests/payroll_engine/test_impot_qc.py`
+    - Ajouter `additionnelle_permise=True` en 4e argument à **tous** les appels existants de `calcul_impot_qc_retenu` (classes `TestSignaturePureteRobustesse`, `TestRetenueQc`, `TestTraceQc`, `TestMissingParameterImpotQc`) — comportement inchangé par défaut (Requirement 14.3)
+    - Ajouter la classe `TestPlafonnementCombineQc` avec **Property 14 (variante QC)** : *pour tout* `PayrollInput`, `GainsDecomposes`, `ParametresAnnee` valides, `calcul_impot_qc_retenu(pi, g, p, False)` retourne un montant égal au montant de base (post-exonération) sans la retenue additionnelle, et sa trace expose `sous_totaux["retenue_additionnelle_appliquee"] == Decimal("0.00")` alors que `entrees["retenue_additionnelle_qc"]` conserve la valeur originale demandée (`payroll_input.retenue_additionnelle_QC_effective`, inchangée) et `parametres_utilises["additionnelle_permise"] == Decimal("0")` ; et *pour tout* la même entrée avec `additionnelle_permise=True`, le comportement reproduit exactement celui déjà testé par Property 10 (tâche 2.3)
+    - Ajouter un test d'exemple : `additionnelle_permise=False` avec une retenue additionnelle QC strictement positive et exonération inactive → retenue effective strictement égale au montant de base seul (formule), retenue additionnelle absente du résultat mais visible dans `entrees`
+    - Annotation : `# Feature: impots-retenues-source, Property 14: Plafonnement combiné des retenues additionnelles (QC)`
+    - Ces tests échouent avec `TypeError` (argument manquant) tant que la tâche 15 n'a pas étendu `impot_qc.py`
+    - _Requirements: 14.1, 14.2, 14.3, 14.6, 14.7_
+    - _Design: §Correctness Properties 14 ; §Components §3_
+
+  - [ ] 13.2 Mettre à jour tous les appels existants à `calcul_impot_federal_retenu` dans `tests/payroll_engine/test_impot_federal.py`
+    - Même traitement symétrique que la tâche 13.1, substituant `calcul_impot_federal_retenu`, `exoneration_TD1_effective`, `retenue_additionnelle_federale_effective`, `entrees["retenue_additionnelle_federale"]`
+    - Ajouter la classe `TestPlafonnementCombineFederal` avec **Property 14 (variante fédérale)**
+    - Annotation : `# Feature: impots-retenues-source, Property 14: Plafonnement combiné des retenues additionnelles (fédéral)`
+    - Ces tests échouent avec `TypeError` tant que la tâche 15 n'a pas étendu `impot_federal.py`
+    - _Requirements: 14.1, 14.2, 14.3, 14.6, 14.7_
+    - _Design: §Correctness Properties 14 ; §Components §5_
+
+- [ ] 14. Mettre à jour `tests/test_golden_outputs.py` pour le nouveau paramètre
+  - [ ] 14.1 Ajouter `additionnelle_permise=True` aux deux appels de `test_impots_reproduisent_fixture`
+    - Les 6 fixtures QC001–QC006 ont toutes une retenue additionnelle nulle (QC et fédérale) — `additionnelle_permise=True` partout, comportement inchangé, montants golden inchangés (`104,56 $`/`86,25 $` sur QC001, `0,00 $`/`0,00 $` sur QC004/QC006)
+    - Commentaire citant le Requirement 14.3 (rétrocompatibilité du chemin nominal)
+    - Ce test échoue avec `TypeError` tant que la tâche 15 n'a pas étendu les modules
+    - _Requirements: 14.1, 14.3_
+    - _Design: §Testing Strategy « Détail des golden tests »_
+
+- [ ] 15. Vérifier `tests/test_guards.py` (signature à 4 paramètres)
+  - [ ] 15.1 Confirmer que `_verifier_signatures_retournent_tuple_decimal_trace` n'exige pas de nombre de paramètres précis
+    - Relire la fonction partagée (déjà utilisée par `TestImpotQCNoFloat`/`TestImpotFederalNoFloat`) : elle vérifie uniquement l'annotation de retour exacte et l'absence de paramètre par défaut, jamais le nombre de paramètres — aucune modification nécessaire pour accepter la 4e position `additionnelle_permise` sans défaut
+    - Si un défaut était accidentellement introduit pour `additionnelle_permise` en tâche 16 (violerait Requirement 14.1 — paramètre obligatoire), ce test de garde existant DOIT échouer et signaler l'erreur — aucune nouvelle classe de garde n'est nécessaire pour cette révision
+    - _Requirements: 14.1_
+    - _Design: §Testing Strategy « Détail des tests de garde »_
+
+- [ ] 16. Implémenter le paramètre `additionnelle_permise` dans `payroll_engine/impot_qc.py` et `impot_federal.py`
+  - [ ] 16.1 Étendre `calcul_impot_qc_retenu`
+    - Ajouter le 4e paramètre positionnel `additionnelle_permise: bool`, sans défaut
+    - Calculer `retenue_additionnelle_demandee = payroll_input.retenue_additionnelle_QC_effective` (inchangé) puis `retenue_additionnelle_appliquee = retenue_additionnelle_demandee if additionnelle_permise else Decimal("0.00")` ; `retenue_effective = montant_base + retenue_additionnelle_appliquee`
+    - Étendre la trace : `parametres_utilises["additionnelle_permise"] = Decimal("1") if additionnelle_permise else Decimal("0")` (même patron `Decimal(str(int(...)))` que `exoneration_active`) ; `entrees["retenue_additionnelle_qc"]` reste `retenue_additionnelle_demandee` (originale, inchangée) ; `sous_totaux["retenue_additionnelle_appliquee"] = retenue_additionnelle_appliquee` (nouveau sous-total, en plus de `retenue_effective`)
+    - Ne modifie ni la signature ni le corps de `calcul_impot_qc_formule` (Req 14.8)
+    - Mettre à jour la docstring de la fonction (citer Requirement 14, préciser que `additionnelle_permise` est reçu tel quel de l'appelant — jamais calculé ici)
+    - À ce stade, tous les tests des tâches 13.1 et 14.1 (portion QC) doivent passer
+    - _Requirements: 14.1, 14.2, 14.3, 14.5, 14.6, 14.7, 14.8_
+    - _Design: §Components §3_
+
+  - [ ] 16.2 Étendre `calcul_impot_federal_retenu`
+    - Même traitement symétrique que la tâche 16.1, substituant `retenue_additionnelle_federale_effective`, `entrees["retenue_additionnelle_federale"]`, `impot_federal_formule`
+    - Ne modifie ni la signature ni le corps de `calcul_impot_federal_formule` (Req 14.8)
+    - À ce stade, tous les tests des tâches 13.2 et 14.1 (portion fédérale) doivent passer
+    - _Requirements: 14.1, 14.2, 14.3, 14.5, 14.6, 14.7, 14.8_
+    - _Design: §Components §5_
+
+- [ ] 17. Checkpoint final — pytest complet (révision Requirement 14, portée `impots-retenues-source`)
+  - Exécuter `pytest tests/payroll_engine/test_impot_qc.py tests/payroll_engine/test_impot_federal.py tests/test_golden_outputs.py tests/test_guards.py --strict-markers -ra` — tous doivent passer
+  - Vérifier par grep que `payroll_engine/impot_qc.py`/`impot_federal.py` ne contiennent toujours aucun `float`, aucune valeur fiscale codée en dur hors `Decimal("0.00")`/`2`, ni `load_parameters`/`open(`/`datetime.now`/`random.`/`UnsupportedPayrollCase`
+  - **Note de coordination (hors périmètre de cette spec)** : `payroll_engine/net_pay.py::assembler_paie` (spec `net-cumuls-registre`) doit être mis à jour séparément pour calculer `additionnelle_permise` et le transmettre en 4e argument — voir Étape 4 de la demande utilisateur, hors tâches de cette spec `impots-retenues-source`. Tant que `net_pay.py` n'est pas mis à jour, ses propres tests (`tests/payroll_engine/test_net_pay.py`) échoueront avec `TypeError` sur les appels à 3 arguments — comportement rouge attendu et hors périmètre de ce checkpoint.
+  - Ensure all tests pass, ask the user if questions arise.
 
 ## Task Dependency Graph
 

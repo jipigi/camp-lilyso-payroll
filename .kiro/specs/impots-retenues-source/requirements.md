@@ -310,12 +310,17 @@ retourne systématiquement une trace auditable.
 #### Acceptance Criteria
 
 1. LE Moteur_Impots DOIT exposer, dans `payroll_engine/impot_qc.py`,
-   deux fonctions publiques `calcul_impot_qc_formule` et
-   `calcul_impot_qc_retenu`, chacune de signature
-   `(payroll_input: PayrollInput, gains: GainsDecomposes, parametres_annee: ParametresAnnee) -> tuple[Decimal, CalculationTrace]`.
+   deux fonctions publiques `calcul_impot_qc_formule`, de signature
+   `(payroll_input: PayrollInput, gains: GainsDecomposes, parametres_annee: ParametresAnnee) -> tuple[Decimal, CalculationTrace]`,
+   et `calcul_impot_qc_retenu`, de signature
+   `(payroll_input: PayrollInput, gains: GainsDecomposes, parametres_annee: ParametresAnnee, additionnelle_permise: bool) -> tuple[Decimal, CalculationTrace]`
+   (voir Requirement 14 pour le rôle exact du 4e paramètre
+   `additionnelle_permise`, introduit par cette même spec en révision).
 2. LE Moteur_Impots DOIT exposer, dans `payroll_engine/impot_federal.py`,
-   deux fonctions publiques `calcul_impot_federal_formule` et
-   `calcul_impot_federal_retenu`, de même signature que l'AC1.
+   deux fonctions publiques `calcul_impot_federal_formule`, de même
+   signature à 3 paramètres que `calcul_impot_qc_formule` (AC1), et
+   `calcul_impot_federal_retenu`, de même signature à 4 paramètres que
+   `calcul_impot_qc_retenu` (AC1, Requirement 14).
 3. `calcul_impot_qc_retenu` DOIT invoquer `calcul_impot_qc_formule` en
    interne (même module, appel direct) avec les mêmes arguments
    `payroll_input`, `gains`, `parametres_annee` — délégation
@@ -816,3 +821,96 @@ un seul point de vérité pour la définition de la matrice Camp LilySO
    contrôle de forme redondant (seule `MissingParameterError`,
    couverte par le Requirement 10, reste une exception légitime hors du
    chemin nominal).
+
+---
+
+### Requirement 14: Plafonnement combiné des retenues additionnelles selon l'espace disponible
+
+**User Story:** En tant que responsable de la conformité fiscale, je
+veux que les deux retenues additionnelles volontaires (QC et fédérale)
+soient mises à 0 $ ensemble — jamais réduites partiellement, jamais
+départagées par une priorité entre juridictions — lorsque leur somme
+dépasse l'espace réellement disponible sur le brut de la paie, afin
+d'éviter qu'une paie produise un net négatif ou une situation
+incohérente que ni PDOC ni WebRAS ne savent traiter.
+
+**Contexte et décision de périmètre** : cette règle est une **décision
+opérationnelle du projet Camp LilySO**, actée avec l'employeur après
+une recherche documentaire dont le résultat est infructueux —
+consignée dans `docs/journal-validation.md` (entrée « Recherche
+documentaire sur le plafonnement combiné des retenues additionnelles »).
+Ni le TP-1015.F 2026 (Revenu Québec) ni le T4127 2026/T4001 (ARC) ne
+prescrivent de traitement pour ce cas ; PDOC refuse de calculer le cas
+testé manuellement par l'employeur (brut 100 $, retenues additionnelles
+75 $ QC + 75 $ fédéral), et WebRAS ne valide rien de plus. Cette règle
+**ne doit jamais être présentée comme une règle fiscale officielle**
+dans le code, les traces de calcul, ni la documentation destinée à un
+tiers ou un auditeur — voir Requirement 9 (aucune nouvelle source de
+trace officielle n'est inventée par ce mécanisme).
+
+#### Acceptance Criteria
+
+1. `calcul_impot_qc_retenu` et `calcul_impot_federal_retenu` DOIVENT
+   chacune accepter un 4e paramètre positionnel obligatoire
+   `additionnelle_permise: bool`, sans valeur par défaut, en plus des
+   trois paramètres existants (`payroll_input`, `gains`,
+   `parametres_annee`) — signature complète :
+   `(payroll_input: PayrollInput, gains: GainsDecomposes, parametres_annee: ParametresAnnee, additionnelle_permise: bool) -> tuple[Decimal, CalculationTrace]`.
+   `calcul_impot_qc_formule` et `calcul_impot_federal_formule` NE SONT
+   PAS modifiées par ce Requirement et conservent leur signature à 3
+   paramètres (Requirement 1).
+2. LORSQUE `additionnelle_permise == False`, LE Moteur_Impots DOIT
+   forcer la retenue additionnelle correspondante
+   (`payroll_input.retenue_additionnelle_QC_effective` pour
+   `calcul_impot_qc_retenu`, `payroll_input.retenue_additionnelle_federale_effective`
+   pour `calcul_impot_federal_retenu`) à `Decimal("0.00")` dans le
+   calcul de la retenue effective retournée — le montant de base
+   (post-exonération, résultat du court-circuit d'exonération existant
+   du Requirement 3 / Requirement 5) DOIT rester inchangé et continuer
+   à suivre son propre court-circuit d'exonération existant,
+   indépendamment de `additionnelle_permise`.
+3. LORSQUE `additionnelle_permise == True` (cas normal, majoritaire),
+   LE Moteur_Impots DOIT produire un comportement **strictement
+   identique** à celui déjà spécifié par le Requirement 3 (QC) et le
+   Requirement 5 (fédéral) avant l'introduction de ce Requirement —
+   rétrocompatibilité totale du chemin nominal.
+4. LE calcul de la valeur booléenne `additionnelle_permise` NE
+   RELÈVE PAS de `payroll_engine/impot_qc.py` ni de
+   `payroll_engine/impot_federal.py` : ces deux modules n'ont pas la
+   vue transversale nécessaire (aucun accès aux montants RRQ, RQAP, AE,
+   ni à l'impôt de base de l'autre juridiction). CE calcul DOIT être
+   effectué exclusivement par l'orchestrateur
+   `payroll_engine/net_pay.py::assembler_paie` (spec
+   `net-cumuls-registre`), seul composant disposant de cette vue
+   complète, qui le transmet en 4e argument aux deux fonctions de
+   retenue.
+5. LE mécanisme de plafonnement introduit par ce Requirement NE DOIT
+   PAS inventer de nouvelle source de `CalculationTrace` officielle :
+   `trace.source` de `calcul_impot_qc_retenu` DOIT continuer à commencer
+   par `"TP-1015.F 2026"` et celui de `calcul_impot_federal_retenu` par
+   `"T4127 2026"`, exactement comme avant ce Requirement (Requirement 9)
+   — ce mécanisme modifie une entrée du calcul déjà tracé, il n'invente
+   pas une source distincte.
+6. LA `CalculationTrace` retournée par `calcul_impot_qc_retenu` et
+   `calcul_impot_federal_retenu` DOIT exposer, dans
+   `parametres_utilises`, un nouveau champ `additionnelle_permise` égal
+   à `Decimal("1")` si `additionnelle_permise == True`, ou
+   `Decimal("0")` si `additionnelle_permise == False` (même convention
+   que le champ existant `exoneration_active`).
+7. LA `CalculationTrace` retournée par `calcul_impot_qc_retenu` et
+   `calcul_impot_federal_retenu` DOIT continuer à exposer, dans
+   `entrees`, la retenue additionnelle **originale demandée** (avant
+   tout plafonnement — `payroll_input.retenue_additionnelle_QC_effective`
+   ou son équivalent fédéral, inchangée), ET DOIT exposer, dans
+   `sous_totaux`, un nouveau sous-total `retenue_additionnelle_appliquee`
+   distinct — égal à la retenue additionnelle originale lorsque
+   `additionnelle_permise == True`, et égal à `Decimal("0.00")` lorsque
+   `additionnelle_permise == False` — de sorte qu'un tiers auditeur
+   puisse voir qu'une retenue additionnelle a été demandée puis refusée,
+   et non simplement observer un montant nul sans explication
+   (auto-suffisance de la trace, cohérent avec le Requirement 9.7).
+8. CE Requirement NE MODIFIE PAS le comportement de
+   `calcul_impot_qc_formule` ni de `calcul_impot_federal_formule`
+   (Requirement 2, Requirement 4) : le montant théorique de la formule
+   demeure calculé identiquement, sans lecture d'`additionnelle_permise`
+   (paramètre qu'elles ne reçoivent pas).

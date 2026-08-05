@@ -329,8 +329,12 @@ class TestSignaturePureteRobustesse:
         assert resultat_formule_1[0] == resultat_formule_2[0]
         assert resultat_formule_1[1] == resultat_formule_2[1]
 
-        resultat_retenu_1 = calcul_impot_qc_retenu(payroll_input, gains, parametres_annee)
-        resultat_retenu_2 = calcul_impot_qc_retenu(payroll_input, gains, parametres_annee)
+        resultat_retenu_1 = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_annee, True
+        )
+        resultat_retenu_2 = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_annee, True
+        )
         assert resultat_retenu_1 == resultat_retenu_2
         assert resultat_retenu_1[0] == resultat_retenu_2[0]
         assert resultat_retenu_1[1] == resultat_retenu_2[1]
@@ -359,7 +363,9 @@ class TestSignaturePureteRobustesse:
         payroll_input, gains = entrees
 
         resultat_formule = calcul_impot_qc_formule(payroll_input, gains, parametres_annee)
-        resultat_retenu = calcul_impot_qc_retenu(payroll_input, gains, parametres_annee)
+        resultat_retenu = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_annee, True
+        )
 
         assert resultat_formule is not None
         assert resultat_retenu is not None
@@ -392,7 +398,7 @@ class TestSignaturePureteRobustesse:
         _verifier_property_3_forme_decimal(montant_formule, trace_formule)
 
         montant_retenu, trace_retenu = calcul_impot_qc_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
         _verifier_property_3_forme_decimal(montant_retenu, trace_retenu)
 
@@ -940,11 +946,13 @@ class TestRetenueQc:
         payroll_input, gains = entrees
 
         # --- Exonération active : montant de base court-circuité à zéro ---
+        # additionnelle_permise=True (Requirement 14) : comportement
+        # rétrocompatible identique à celui d'avant la révision.
         payroll_input_exo = payroll_input.model_copy(
             update={"exoneration_TP1015_3_effectif": True}
         )
         montant_exo, _trace_exo = calcul_impot_qc_retenu(
-            payroll_input_exo, gains, parametres_annee
+            payroll_input_exo, gains, parametres_annee, True
         )
         assert (
             montant_exo == payroll_input_exo.retenue_additionnelle_QC_effective
@@ -958,7 +966,7 @@ class TestRetenueQc:
             payroll_input_non_exo, gains, parametres_annee
         )
         montant_retenu, _trace_retenu = calcul_impot_qc_retenu(
-            payroll_input_non_exo, gains, parametres_annee
+            payroll_input_non_exo, gains, parametres_annee, True
         )
         assert (
             montant_retenu
@@ -1000,7 +1008,7 @@ class TestRetenueQc:
             "payroll_engine.impot_qc.calcul_impot_qc_formule"
         ) as espion_formule:
             montant, _trace = calcul_impot_qc_retenu(
-                payroll_input, gains, parametres_annee
+                payroll_input, gains, parametres_annee, True
             )
 
         espion_formule.assert_not_called()
@@ -1054,7 +1062,7 @@ class TestRetenueQc:
         assert payroll_input.retenue_additionnelle_QC_effective > Decimal("0.00")
 
         montant, trace = calcul_impot_qc_retenu(
-            payroll_input, gains, parametres_2026_reels
+            payroll_input, gains, parametres_2026_reels, True
         )
 
         assert montant == retenue_additionnelle
@@ -1164,7 +1172,7 @@ class TestTraceQc:
 
         # --- Trace de calcul_impot_qc_retenu (design §Components §3) ---
         montant_retenu, trace_retenu = calcul_impot_qc_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
 
         assert _MOTIF_SOURCE_QC.match(trace_retenu.source) is not None
@@ -1267,7 +1275,9 @@ class TestMissingParameterImpotQc:
             calcul_impot_qc_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_qc_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt QC)
     @pytest.mark.property
@@ -1301,7 +1311,7 @@ class TestMissingParameterImpotQc:
             calcul_impot_qc_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee, True)
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt QC)
     @pytest.mark.property
@@ -1335,7 +1345,7 @@ class TestMissingParameterImpotQc:
             calcul_impot_qc_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee, True)
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt QC)
     @pytest.mark.property
@@ -1370,4 +1380,161 @@ class TestMissingParameterImpotQc:
             calcul_impot_qc_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_qc_retenu(payroll_input_non_exo, gains, parametres_annee, True)
+
+
+# ---------------------------------------------------------------------------
+# 13.1 (révision Requirement 14) — Plafonnement combiné des retenues
+# additionnelles (Property 14, variante QC)
+# ---------------------------------------------------------------------------
+#
+# Property 14 (design §Correctness Properties 14 ; §Components §3, révisé)
+# porte sur `calcul_impot_qc_retenu` invoquée avec `additionnelle_permise
+# == False` : le montant retourné (retenue effective) doit être égal au
+# montant de base (post-exonération) seul, sans la retenue additionnelle ;
+# la trace doit exposer `sous_totaux["retenue_additionnelle_appliquee"] ==
+# Decimal("0.00")` alors que `entrees["retenue_additionnelle_qc"]`
+# conserve la retenue additionnelle ORIGINALE demandée par
+# `payroll_input` (inchangée, jamais mise à zéro) et
+# `parametres_utilises["additionnelle_permise"] == Decimal("0")`.
+# Symétriquement, `additionnelle_permise == True` doit reproduire
+# exactement le comportement déjà couvert par Property 10 (rétrocompatibilité,
+# Requirement 14.3).
+#
+# Décision opérationnelle Camp LilySO documentée dans
+# `docs/hypotheses-2026.md` (sections 5 et 6) et `docs/journal-validation.md`
+# — non prescrite par TP-1015.F ni T4127/T4001 de l'ARC.
+
+
+class TestPlafonnementCombineQc:
+    """Property 14 (variante QC) — plafonnement combiné des retenues
+    additionnelles selon l'espace disponible.
+
+    Design (§Correctness Properties 14 ; §Components §3, révisé pour le
+    Requirement 14). `additionnelle_permise` est reçu tel quel de
+    l'appelant (`net_pay.py::assembler_paie`, hors périmètre de cette
+    spec) — `calcul_impot_qc_retenu` ne le calcule jamais elle-même.
+    """
+
+    # Feature: impots-retenues-source, Property 14: Plafonnement combiné des retenues additionnelles (QC)
+    @pytest.mark.property
+    @given(
+        entrees=_st_entrees_completes(),
+        parametres_annee=st_parametres_annee_2026_qc_ca(),
+    )
+    @settings_large_input
+    def test_property_14_plafonnement_combine(
+        self,
+        entrees: tuple[PayrollInput, GainsDecomposes],
+        parametres_annee,
+    ) -> None:
+        """*Pour tout* `PayrollInput`, `GainsDecomposes` et
+        `ParametresAnnee` valides :
+
+        - `calcul_impot_qc_retenu(pi, g, p, False)` retourne un montant
+          égal au montant de base (post-exonération, résultat du
+          court-circuit d'exonération existant, inchangé par
+          `additionnelle_permise` — Req 14.2) ; sa trace expose
+          `sous_totaux["retenue_additionnelle_appliquee"] ==
+          Decimal("0.00")`, `entrees["retenue_additionnelle_qc"]` égal à
+          la retenue additionnelle **originale** demandée (inchangée), et
+          `parametres_utilises["additionnelle_permise"] == Decimal("0")` ;
+        - `calcul_impot_qc_retenu(pi, g, p, True)` reproduit exactement le
+          comportement déjà couvert par Property 10 (rétrocompatibilité,
+          Req 14.3) : `retenue_additionnelle_appliquee` égale la retenue
+          additionnelle demandée, `additionnelle_permise` trace ==
+          `Decimal("1")`.
+
+        **Validates: Requirements 14.1, 14.2, 14.3, 14.6, 14.7**
+        """
+        payroll_input, gains = entrees
+        retenue_demandee = payroll_input.retenue_additionnelle_QC_effective
+
+        # --- additionnelle_permise=False : retenue additionnelle plafonnée à 0 ---
+        montant_refuse, trace_refuse = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_annee, False
+        )
+        montant_base, _trace_base_formule = (
+            (Decimal("0.00"), None)
+            if payroll_input.exoneration_TP1015_3_effectif
+            else calcul_impot_qc_formule(payroll_input, gains, parametres_annee)
+        )
+        assert montant_refuse == montant_base, (
+            "Sous additionnelle_permise=False, la retenue effective doit "
+            f"être égale au seul montant de base : {montant_refuse!r} != "
+            f"{montant_base!r}."
+        )
+        assert trace_refuse.sous_totaux["retenue_additionnelle_appliquee"] == (
+            Decimal("0.00")
+        )
+        assert trace_refuse.entrees["retenue_additionnelle_qc"] == retenue_demandee, (
+            "La retenue additionnelle ORIGINALE demandée doit rester "
+            "visible dans `entrees`, inchangée (Req 14.7)."
+        )
+        assert trace_refuse.parametres_utilises["additionnelle_permise"] == (
+            Decimal("0")
+        )
+
+        # --- additionnelle_permise=True : comportement rétrocompatible (Property 10) ---
+        montant_permis, trace_permis = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_annee, True
+        )
+        assert montant_permis == montant_base + retenue_demandee
+        assert trace_permis.sous_totaux["retenue_additionnelle_appliquee"] == (
+            retenue_demandee
+        )
+        assert trace_permis.entrees["retenue_additionnelle_qc"] == retenue_demandee
+        assert trace_permis.parametres_utilises["additionnelle_permise"] == (
+            Decimal("1")
+        )
+
+    def test_exemple_additionnelle_permise_false_retenue_positive(
+        self,
+        fixtures_inputs_dir,
+        fixtures_outputs_dir,
+        parametres_2026_reels,
+    ) -> None:
+        """Test d'exemple — `additionnelle_permise=False` avec une retenue
+        additionnelle QC strictement positive et exonération inactive
+        (Requirement 14.2, 14.7).
+
+        Le `PayrollInput` de QC001 est chargé depuis la fixture d'entrée
+        réelle puis décliné (`model_copy`) avec une retenue additionnelle
+        QC strictement positive et exonération inactive. Sous
+        `additionnelle_permise=False`, la retenue effective doit être
+        strictement égale au montant de base (formule) seul — la retenue
+        additionnelle demandée n'apparaît pas dans le résultat, mais reste
+        visible dans `entrees` de la trace.
+
+        Validates: Requirements 14.1, 14.2, 14.7
+        """
+        texte_entree = (fixtures_inputs_dir / "qc001.json").read_text(
+            encoding="utf-8"
+        )
+        payroll_input = PayrollInput.model_validate_json(texte_entree)
+
+        sortie = json.loads(
+            (fixtures_outputs_dir / "qc001.json").read_text(encoding="utf-8")
+        )
+        gains = GainsDecomposes.model_validate(sortie["gains"])
+
+        retenue_additionnelle = Decimal("25.00")
+        payroll_input = payroll_input.model_copy(
+            update={
+                "exoneration_TP1015_3_effectif": False,
+                "retenue_additionnelle_QC_effective": retenue_additionnelle,
+            }
+        )
+
+        montant_formule, _trace_formule = calcul_impot_qc_formule(
+            payroll_input, gains, parametres_2026_reels
+        )
+        montant, trace = calcul_impot_qc_retenu(
+            payroll_input, gains, parametres_2026_reels, False
+        )
+
+        assert montant == montant_formule
+        assert trace.sous_totaux["retenue_additionnelle_appliquee"] == Decimal(
+            "0.00"
+        )
+        assert trace.entrees["retenue_additionnelle_qc"] == retenue_additionnelle

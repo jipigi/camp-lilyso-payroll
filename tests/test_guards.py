@@ -40,9 +40,10 @@ from __future__ import annotations
 import ast
 import json
 import re
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Iterator, get_args
 
 import pytest
 from hypothesis import given
@@ -2911,4 +2912,524 @@ class TestChargesPatronalesNoUnsupportedPayrollCase:
             "existants de ``PayrollInput``/``GainsDecomposes`` — aucun "
             "nouveau garde-fou ne doit être introduit ici. Occurrences :\n"
             + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 5.1 (spec net-cumuls-registre) — Tests de garde statique de
+#     ``payroll_engine/net_pay.py`` (Req 1.3, 16.8, 17.1, 17.2)
+# ===========================================================================
+#
+# Spec de référence : ``net-cumuls-registre`` — tâche 5.1. Même discipline
+# que :class:`TestChargesPatronalesNoFloat` et consorts (règle 06, TDD) :
+# ces quatre classes de garde sont écrites AVANT ``payroll_engine/net_pay.py``
+# (tâche 7.1/7.2, non réalisée à ce stade). Tant que ce fichier n'existe pas,
+# chaque test échoue explicitement via ``pytest.fail`` (et non par une
+# erreur de collection), ce qui est le comportement rouge attendu (règle 06).
+#
+# Les trois premières classes réutilisent intégralement les helpers
+# génériques déjà validés pour les modules RRQ/RQAP/AE, impôt et charges
+# patronales (design §Testing Strategy « Détail des tests de garde »),
+# appliqués au module unique de cette spec. La deuxième classe introduit un
+# helper strict propre à ``net_pay.py`` : contrairement aux modules de
+# calcul fiscal (qui autorisent ``Decimal("0.00")``/``Decimal("0.01")``
+# comme plancher/précision), ``net_pay.py`` n'a besoin d'AUCUNE constante
+# ``Decimal`` littérale — tous les montants qu'il assemble proviennent des
+# neuf fonctions déjà livrées ou d'une arithmétique d'agrégation sur ces
+# montants (design §Components §1 : « net_pay.py orchestre, ne calcule
+# pas »).
+
+
+#: Chemin du module cible de cette spec, relatif à la racine du dépôt.
+_CHEMIN_NET_PAY: Path = _REPO_ROOT / "payroll_engine" / "net_pay.py"
+
+
+class TestNetPayNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/net_pay.py`` (Req 16.8).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module
+    d'assemblage, par introspection statique de l'AST — sans dépendre
+    d'une exécution ni d'un import du module. Motif identique à
+    :class:`TestChargesPatronalesNoFloat` (design §Testing Strategy
+    « Détail des tests de garde »).
+
+    Trois gardes complémentaires :
+
+    1. Aucune littérale flottante dans le code source
+       (``ast.Constant`` de type ``float``).
+    2. Aucun appel ``Decimal(<non-str>)`` — seule ``Decimal("...")`` (ou la
+       conversion mandatée ``Decimal(str(...))``) est admise.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)`` — seul ``Decimal.quantize`` arrondit (et
+       même celui-ci n'est pas nécessaire dans ``net_pay.py``, chaque
+       montant assemblé étant déjà arrondi par la fonction qui l'a produit,
+       design §Components « Helper d'arrondissement — non applicable »).
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 16.8)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_NET_PAY)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal("...")`` est admise (Req 16.8)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_NET_PAY)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 16.8)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_NET_PAY)
+
+
+def _verifier_aucune_constante_decimal_dans_net_pay(chemin: Path) -> None:
+    """Aucune constante ``Decimal("...")`` littérale, sans exception (règle 05).
+
+    Contrairement aux modules de calcul fiscal (RRQ, RQAP, AE, impôt,
+    charges patronales), qui autorisent ``Decimal("0.00")``
+    (plancher/valeur neutre) et ``Decimal("0.01")`` (précision
+    d'arrondissement) en dur, ``net_pay.py`` n'a besoin d'AUCUNE constante
+    ``Decimal`` littérale pour construire ``_ContributionPaie`` : tous ses
+    treize attributs (``employe_id``, ``annee_fiscale`` et les onze
+    catégories monétaires) proviennent soit directement des neuf fonctions
+    déjà livrées, soit d'une arithmétique d'agrégation exacte sur ces
+    montants (``net = gains.brut_total - retenues_employe.total_retenues_employe``,
+    design §Components §1 étape F/G). Tout littéral ``Decimal("...")``
+    détecté ici — même ``Decimal("0.00")`` — signale donc une valeur
+    fiscale ou un plancher codé en dur qui n'a pas sa place dans ce
+    module d'assemblage pur.
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if (
+            isinstance(noeud, ast.Call)
+            and isinstance(noeud.func, ast.Name)
+            and noeud.func.id == "Decimal"
+        ):
+            for argument in noeud.args:
+                if isinstance(argument, ast.Constant) and isinstance(
+                    argument.value, str
+                ):
+                    violations.append(
+                        f"ligne {noeud.lineno} — Decimal({argument.value!r})"
+                    )
+
+    assert not violations, (
+        "Constante ``Decimal(\"...\")`` littérale détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (règle 05). "
+        "``net_pay.py`` n'a besoin d'AUCUNE constante ``Decimal`` en dur — "
+        "tous les montants qu'il assemble proviennent des neuf fonctions "
+        "déjà livrées ou d'une arithmétique d'agrégation sur ces montants "
+        "(design §Components §1). Occurrences :\n" + "\n".join(violations)
+    )
+
+
+class TestNetPayNoHardcodedFiscalValues:
+    """Aucune valeur fiscale en dur dans ``payroll_engine/net_pay.py`` (règle 05).
+
+    Ferme la règle 05 côté module d'assemblage, par deux gardes
+    complémentaires :
+
+    1. Introspection AST stricte
+       (:func:`_verifier_aucune_constante_decimal_dans_net_pay`) : AUCUNE
+       constante ``Decimal("...")`` littérale n'est admise — pas même
+       ``Decimal("0.00")`` — puisque tous les montants assemblés par
+       ``_ContributionPaie``/``assembler_paie`` proviennent d'appels aux
+       neuf fonctions déjà livrées.
+    2. Lecture ligne à ligne contre les motifs fiscaux partagés du domaine
+       (:func:`_verifier_aucun_motif_fiscal_partage_en_dur`), en défense
+       complémentaire (mêmes motifs que
+       :class:`TestChargesPatronalesNoHardcodedFiscalValues`).
+    """
+
+    def test_aucune_constante_decimal_en_dur(self) -> None:
+        """Aucune constante ``Decimal(\"...\")`` littérale, sans exception (règle 05)."""
+        _verifier_aucune_constante_decimal_dans_net_pay(_CHEMIN_NET_PAY)
+
+    def test_aucun_motif_fiscal_partage_en_dur(self) -> None:
+        """Aucun motif fiscal partagé du domaine détecté (règle 05)."""
+        _verifier_aucun_motif_fiscal_partage_en_dur(_CHEMIN_NET_PAY)
+
+
+class TestNetPayNoLoadParametersCall:
+    """``payroll_engine/net_pay.py`` n'appelle jamais ``load_parameters``
+    (Req 1.3).
+
+    ``assembler_paie`` reçoit ``parametres_annee`` déjà matérialisé par
+    l'appelant — il ne DOIT jamais le charger lui-même (design
+    §Architecture « Contrainte de pureté »), motif identique à
+    :class:`TestChargesPatronalesNoLoadParametersCall`.
+    """
+
+    def test_aucun_token_load_parameters(self) -> None:
+        """Grep : aucune occurrence du token ``load_parameters`` (Req 1.3)."""
+        _verifier_aucun_token_load_parameters(_CHEMIN_NET_PAY)
+
+
+class TestNetPayNoOwnUnsupportedPayrollCase:
+    """``payroll_engine/net_pay.py`` ne lève jamais sa propre
+    ``UnsupportedPayrollCase`` (Req 17.1, 17.2).
+
+    Cette spec **délègue intégralement** aux garde-fous déjà portés par
+    ``PayrollInput``/``GainsDecomposes`` (validateurs de la spec
+    ``moteur-paie-contrats``) et par les neuf fonctions de calcul déjà
+    livrées : seule la propagation par transitivité d'appel est admise
+    — ``assembler_paie`` ne DOIT jamais lever lui-même
+    ``UnsupportedPayrollCase`` (design §Error Handling ; miroir de
+    :class:`TestChargesPatronalesNoUnsupportedPayrollCase` et de
+    :class:`TestImpotNoUnsupportedPayrollCase`).
+
+    Réutilise le helper de lecture ligne à ligne
+    :func:`_lire_lignes_cotisation` (même état rouge « module inexistant »
+    attendu avant la tâche 7.1/7.2, règle 06).
+    """
+
+    def test_aucun_raise_unsupported_payroll_case(self) -> None:
+        """Grep : aucune occurrence de ``raise UnsupportedPayrollCase`` (Req 17.1, 17.2)."""
+        violations: list[str] = []
+        for numero_ligne, ligne in enumerate(
+            _lire_lignes_cotisation(_CHEMIN_NET_PAY), start=1
+        ):
+            if "raise UnsupportedPayrollCase" in ligne:
+                violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+        assert not violations, (
+            "Occurrence de ``raise UnsupportedPayrollCase`` détectée dans "
+            f"{_CHEMIN_NET_PAY.relative_to(_REPO_ROOT).as_posix()} "
+            "(Req 17.1, 17.2). Cette spec délègue intégralement aux "
+            "garde-fous existants de ``PayrollInput``/``GainsDecomposes`` "
+            "et des neuf fonctions déjà livrées — seule la propagation par "
+            "transitivité d'appel est admise, jamais une levée propre. "
+            "Occurrences :\n" + "\n".join(violations)
+        )
+
+
+# ===========================================================================
+# 5.2 (spec net-cumuls-registre) — Tests de garde statique de
+#     ``payroll_engine/register.py`` (Req 9.1, 9.2, 10.1, 10.2, 10.3, 15.3,
+#     16.8)
+# ===========================================================================
+#
+# Spec de référence : ``net-cumuls-registre`` — tâche 5.2. Même discipline
+# que :class:`TestNetPayNoFloat` et consorts (règle 06, TDD) : les deux
+# premières classes ci-dessous sont écrites AVANT ``payroll_engine/register.py``
+# (tâche 8, non réalisée à ce stade) et réutilisent les helpers génériques
+# déjà validés pour les modules RRQ/RQAP/AE/impôt/charges patronales (design
+# §Testing Strategy « Détail des tests de garde »). Tant que le fichier
+# n'existe pas, chaque test statique échoue explicitement via ``pytest.fail``
+# (via :func:`_parser_module_cotisation`/:func:`_lire_lignes_cotisation`,
+# et non par une erreur de collection) — comportement rouge attendu.
+#
+# ``TestRegisterSchemaExact`` importe localement ``payroll_engine.register``
+# à l'intérieur de chaque test : tant que la tâche 8 n'est pas réalisée, cet
+# import lève ``ModuleNotFoundError`` — laissé volontairement non intercepté,
+# ce qui fait échouer le test de façon explicite (règle 06).
+#
+# ``TestRegisterNoDbFileInRepo`` est la seule classe des trois qui ne dépend
+# pas de l'existence de ``register.py`` : elle vérifie l'arbre versionné
+# lui-même (Req 15.3, règle 04) et DOIT déjà passer maintenant.
+
+
+#: Chemin du module cible de cette spec, relatif à la racine du dépôt.
+_CHEMIN_REGISTER: Path = _REPO_ROOT / "payroll_engine" / "register.py"
+
+
+def _verifier_aucune_colonne_real_dans_ddl(chemin: Path) -> None:
+    """Aucune colonne SQL déclarée ``REAL`` dans le DDL (Req 10.2, règle 01).
+
+    Recherche textuelle ligne à ligne du token ``REAL`` (délimité par des
+    frontières de mot, pour ne pas confondre avec un identifiant qui le
+    contiendrait comme sous-chaîne). La présence de ce token n'importe où
+    dans le module signale une colonne monétaire ou de date dupliquée en
+    flottant SQLite — chaque montant et chaque date DOIT être stocké en
+    ``TEXT`` (``str(Decimal(...))``/``datetime.isoformat()``), jamais en
+    ``REAL`` (design §Data Models « Schéma SQL — table paies »/
+    « table cumuls_ytd »).
+    """
+    violations: list[str] = []
+    for numero_ligne, ligne in enumerate(_lire_lignes_cotisation(chemin), start=1):
+        if re.search(r"\bREAL\b", ligne):
+            violations.append(f"ligne {numero_ligne} — {ligne.strip()}")
+
+    assert not violations, (
+        "Colonne SQL déclarée ``REAL`` détectée dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 10.2, règle "
+        "01). Toute colonne monétaire ou de date DOIT être déclarée "
+        "``TEXT`` dans le DDL — jamais ``REAL``. Occurrences :\n"
+        + "\n".join(violations)
+    )
+
+
+def _verifier_aucun_appel_float(chemin: Path) -> None:
+    """Aucun appel ``float(...)`` dans le module (Req 10.3, 16.8).
+
+    Détection AST d'un appel direct ``float(<expr>)`` — ``register.py``
+    ne DOIT jamais convertir une valeur destinée à une colonne monétaire
+    (ou toute autre valeur transitant par le registre) via ``float()`` ;
+    la conversion mandatée est ``str(Decimal(...))`` à l'écriture et
+    ``Decimal(...)`` à la lecture (design §Data Models « Correspondance
+    modèles ↔ colonnes »).
+    """
+    arbre = _parser_module_cotisation(chemin)
+    violations: list[str] = []
+    for noeud in ast.walk(arbre):
+        if (
+            isinstance(noeud, ast.Call)
+            and isinstance(noeud.func, ast.Name)
+            and noeud.func.id == "float"
+        ):
+            argument_source = ast.unparse(noeud.args[0]) if noeud.args else ""
+            violations.append(f"ligne {noeud.lineno} — float({argument_source})")
+
+    assert not violations, (
+        "Appel ``float(...)`` détecté dans "
+        f"{chemin.relative_to(_REPO_ROOT).as_posix()} (Req 10.3, 16.8). "
+        "Aucune valeur monétaire ne DOIT être convertie via ``float()`` — "
+        "utiliser ``str(Decimal(...))`` à l'écriture et ``Decimal(...)`` "
+        "à la lecture. Occurrences :\n" + "\n".join(violations)
+    )
+
+
+class TestRegisterNoFloat:
+    """Aucun ``float`` dans ``payroll_engine/register.py`` (Req 10.2, 10.3, 16.8).
+
+    Ferme la règle 01 (« ``Decimal`` obligatoire ») côté module du
+    registre maître, par introspection statique de l'AST et lecture
+    ligne à ligne — sans dépendre d'une exécution ni d'un import du
+    module. Les trois premières gardes réutilisent intégralement les
+    helpers génériques déjà validés pour les modules de calcul (motif
+    identique à :class:`TestNetPayNoFloat`) ; les deux dernières sont
+    propres au registre, puisque ``register.py`` manipule un schéma SQL
+    et des colonnes ``TEXT`` plutôt que des formules fiscales :
+
+    1. Aucune littérale flottante dans le code source.
+    2. Aucun appel ``Decimal(<non-str>)``.
+    3. Aucun appel ``round(...)``, ``math.floor(...)``, ``math.ceil(...)``
+       ou ``math.trunc(...)``.
+    4. Aucune colonne SQL déclarée ``REAL`` dans le DDL (Req 10.2).
+    5. Aucun appel ``float(...)`` sur une valeur destinée à une colonne
+       monétaire (Req 10.3).
+    """
+
+    def test_aucune_litterale_flottante(self) -> None:
+        """Aucun ``ast.Constant`` de type ``float`` dans le module (Req 16.8)."""
+        _verifier_aucune_litterale_flottante(_CHEMIN_REGISTER)
+
+    def test_aucun_appel_decimal_depuis_non_str(self) -> None:
+        """Aucun ``Decimal(<non-str>)`` — seule ``Decimal(\"...\")`` est admise (Req 16.8)."""
+        _verifier_aucun_appel_decimal_depuis_non_str(_CHEMIN_REGISTER)
+
+    def test_aucune_fonction_arrondissement_interdite(self) -> None:
+        """Aucun ``round``/``math.floor``/``math.ceil``/``math.trunc`` (Req 16.8)."""
+        _verifier_aucune_fonction_arrondissement_interdite(_CHEMIN_REGISTER)
+
+    def test_aucune_colonne_real_dans_ddl(self) -> None:
+        """Aucune colonne SQL déclarée ``REAL`` dans le DDL (Req 10.2)."""
+        _verifier_aucune_colonne_real_dans_ddl(_CHEMIN_REGISTER)
+
+    def test_aucun_appel_float(self) -> None:
+        """Aucun appel ``float(...)`` sur une valeur monétaire (Req 10.3)."""
+        _verifier_aucun_appel_float(_CHEMIN_REGISTER)
+
+
+# ===========================================================================
+# 5.2 (spec net-cumuls-registre) — Aucun fichier ``*.db``/``*.sqlite``/
+#     ``*.sqlite3`` dans l'arbre versionné (Req 15.3, règle 04)
+# ===========================================================================
+
+
+def _lister_fichiers_bd_interdits() -> list[Path]:
+    """Liste les fichiers ``*.db``/``*.sqlite``/``*.sqlite3`` sous la racine
+    du dépôt, hors ``.git/`` (Req 15.3, règle 04).
+
+    Utilisé à la fois par le test immédiat de
+    :class:`TestRegisterNoDbFileInRepo` (doit passer dès maintenant,
+    avant l'implémentation de ``register.py``) et par la fixture
+    ``autouse`` session-scoped ci-dessous (vérification finale, après
+    exécution complète de la suite — la plus rigoureuse, puisqu'elle
+    couvre également les artefacts éventuellement laissés par d'autres
+    fichiers de test).
+    """
+    motifs = ("*.db", "*.sqlite", "*.sqlite3")
+    trouves: list[Path] = []
+    for motif in motifs:
+        for chemin in sorted(_REPO_ROOT.rglob(motif)):
+            if ".git" in chemin.parts:
+                continue
+            trouves.append(chemin)
+    return trouves
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _garantir_absence_fichier_bd_dans_larbre_a_la_fin_session() -> Iterator[None]:
+    """Fixture ``autouse`` session-scoped : aucun fichier BD résiduel après
+    exécution complète de la suite (Req 15.3, règle 04).
+
+    Ne réalise aucune vérification à la mise en place (``yield``
+    immédiat) : le contrôle a lieu exclusivement au moment du
+    démontage, une fois que **tous** les tests de la session ont
+    terminé — y compris ceux d'autres fichiers susceptibles de créer
+    (par erreur) un fichier SQLite hors ``tmp_path``/``:memory:``. Toute
+    base de données de test DOIT résider sous ``tmp_path`` (fixture
+    pytest, nettoyée automatiquement) ou être ``:memory:`` — jamais dans
+    le dépôt versionné (règle 04 ; §Testing Strategy « Détail des tests
+    de garde »).
+    """
+    yield
+    trouves = _lister_fichiers_bd_interdits()
+    assert not trouves, (
+        "Fichier(s) de base de données résiduel(s) détecté(s) dans "
+        "l'arbre versionné après exécution complète de la suite de tests "
+        f"(Req 15.3, règle 04) : "
+        f"{[chemin.relative_to(_REPO_ROOT).as_posix() for chemin in trouves]}. "
+        "Toute base SQLite de test DOIT résider sous ``tmp_path`` ou être "
+        "``:memory:`` — jamais dans le dépôt versionné. Voir règle 04 "
+        "(``.kiro/steering/04-donnees-sensibles.md``)."
+    )
+
+
+class TestRegisterNoDbFileInRepo:
+    """Aucun fichier ``*.db``/``*.sqlite``/``*.sqlite3`` dans l'arbre
+    versionné (Req 15.3, règle 04).
+
+    Contrairement à :class:`TestRegisterNoFloat` et
+    :class:`TestRegisterSchemaExact`, cette garde ne dépend PAS de
+    l'existence de ``payroll_engine/register.py`` : elle protège
+    l'arbre versionné lui-même, pas un module en particulier. Elle DOIT
+    donc déjà passer maintenant (aucune base de production n'est créée
+    par la suite de tests, toutes les bases de test transitent par
+    ``tmp_path`` ou ``:memory:``).
+
+    Le test ci-dessous vérifie l'état actuel immédiatement ; la fixture
+    ``autouse`` session-scoped
+    :func:`_garantir_absence_fichier_bd_dans_larbre_a_la_fin_session`
+    (module-level, ci-dessus) effectue le contrôle final et faisant
+    autorité une fois toute la suite de tests exécutée (design
+    §Testing Strategy « Détail des tests de garde »).
+    """
+
+    def test_aucun_fichier_bd_dans_larbre_actuellement(self) -> None:
+        """Vérifie immédiatement l'absence de tout fichier BD résiduel (Req 15.3)."""
+        trouves = _lister_fichiers_bd_interdits()
+
+        assert not trouves, (
+            "Fichier(s) de base de données résiduel(s) détecté(s) dans "
+            f"l'arbre versionné (Req 15.3, règle 04) : "
+            f"{[chemin.relative_to(_REPO_ROOT).as_posix() for chemin in trouves]}. "
+            "Toute base SQLite de test DOIT résider sous ``tmp_path`` ou "
+            "être ``:memory:`` — jamais dans le dépôt versionné."
+        )
+
+
+# ===========================================================================
+# 5.2 (spec net-cumuls-registre) — Le schéma SQLite créé par
+#     ``register.py`` correspond exactement au DDL de conception
+#     (Req 9.1, 10.1)
+# ===========================================================================
+
+
+#: DDL de conception exacte — nom et type de chaque colonne de ``paies``,
+#: dans l'ordre de déclaration (design §Data Models « Schéma SQL — table
+#: paies », Req 9.1).
+_COLONNES_ATTENDUES_PAIES: tuple[tuple[str, str], ...] = (
+    ("id_paie", "TEXT"),
+    ("employe_id", "TEXT"),
+    ("annee_fiscale", "INTEGER"),
+    ("numero_periode", "INTEGER"),
+    ("saison", "TEXT"),
+    ("version", "INTEGER"),
+    ("statut", "TEXT"),
+    ("remplace_par_id", "TEXT"),
+    ("date_creation", "TEXT"),
+    ("date_emission", "TEXT"),
+    ("payload_json", "TEXT"),
+)
+
+#: DDL de conception exacte — nom et type de chaque colonne de
+#: ``cumuls_ytd``, dans l'ordre de déclaration (design §Data Models
+#: « Schéma SQL — table cumuls_ytd », Req 10.1). Les onze catégories
+#: monétaires suivent l'ordre de présentation de
+#: ``models.cumuls._CATEGORIES_MONETAIRES``.
+_COLONNES_ATTENDUES_CUMULS_YTD: tuple[tuple[str, str], ...] = (
+    ("employe_id", "TEXT"),
+    ("annee_civile", "INTEGER"),
+    ("brut", "TEXT"),
+    ("vacances", "TEXT"),
+    ("rrq_employe", "TEXT"),
+    ("rrq_employeur", "TEXT"),
+    ("rqap_employe", "TEXT"),
+    ("rqap_employeur", "TEXT"),
+    ("ae_employe", "TEXT"),
+    ("ae_employeur", "TEXT"),
+    ("impot_qc_retenu", "TEXT"),
+    ("impot_federal_retenu", "TEXT"),
+    ("net", "TEXT"),
+)
+
+
+def _lire_colonnes_pragma(
+    connexion: sqlite3.Connection, table: str
+) -> tuple[tuple[str, str], ...]:
+    """Retourne ``(nom, type)`` pour chaque colonne de ``table``.
+
+    Introspection via ``PRAGMA table_info(<table>)`` — l'ordre des
+    lignes retournées reflète l'ordre de déclaration du DDL (``cid``
+    croissant), directement comparable à l'ordre du DDL de conception
+    (design §Data Models).
+    """
+    curseur = connexion.execute(f"PRAGMA table_info({table})")
+    return tuple((ligne[1], ligne[2]) for ligne in curseur.fetchall())
+
+
+class TestRegisterSchemaExact:
+    """Le schéma SQLite créé par ``register.py`` correspond exactement au
+    DDL de conception (Req 9.1, 10.1).
+
+    Importe localement ``payroll_engine.register`` à l'intérieur de
+    chaque test — non au niveau module — pour ne pas faire échouer la
+    collecte de l'ensemble du fichier tant que la tâche 8 n'est pas
+    réalisée (règle 06) ; l'import lève alors ``ModuleNotFoundError``,
+    laissé volontairement non intercepté, ce qui fait échouer chaque
+    test explicitement (comportement rouge attendu).
+
+    Une fois le module disponible, chaque test ouvre une connexion
+    ``:memory:`` fraîche, invoque la fonction privée de création de
+    schéma (``_creer_schema_si_absent``, design §Components §3.2,
+    idempotente et appelée en tête de chaque fonction publique), puis
+    compare ``PRAGMA table_info(paies)``/``PRAGMA table_info(cumuls_ytd)``
+    (nom et type de chaque colonne, dans l'ordre du DDL) aux tuples de
+    référence :data:`_COLONNES_ATTENDUES_PAIES` et
+    :data:`_COLONNES_ATTENDUES_CUMULS_YTD`.
+    """
+
+    def test_schema_paies_exact(self) -> None:
+        """``PRAGMA table_info(paies)`` correspond au DDL de conception (Req 9.1)."""
+        import payroll_engine.register as register  # import local (règle 06)
+
+        connexion = sqlite3.connect(":memory:")
+        try:
+            register._creer_schema_si_absent(connexion)
+            colonnes = _lire_colonnes_pragma(connexion, "paies")
+        finally:
+            connexion.close()
+
+        assert colonnes == _COLONNES_ATTENDUES_PAIES, (
+            "Le schéma de la table ``paies`` ne correspond pas au DDL de "
+            f"conception (Req 9.1). Attendu : {_COLONNES_ATTENDUES_PAIES}. "
+            f"Obtenu : {colonnes}."
+        )
+
+    def test_schema_cumuls_ytd_exact(self) -> None:
+        """``PRAGMA table_info(cumuls_ytd)`` correspond au DDL de conception (Req 10.1)."""
+        import payroll_engine.register as register  # import local (règle 06)
+
+        connexion = sqlite3.connect(":memory:")
+        try:
+            register._creer_schema_si_absent(connexion)
+            colonnes = _lire_colonnes_pragma(connexion, "cumuls_ytd")
+        finally:
+            connexion.close()
+
+        assert colonnes == _COLONNES_ATTENDUES_CUMULS_YTD, (
+            "Le schéma de la table ``cumuls_ytd`` ne correspond pas au "
+            f"DDL de conception (Req 10.1). Attendu : "
+            f"{_COLONNES_ATTENDUES_CUMULS_YTD}. Obtenu : {colonnes}."
         )

@@ -92,6 +92,48 @@ première fournit le socle de paramètres commun à toutes les propriétés, la
 seconde couvre la Property 13 pour ``fss.taux_camp_lilyso_2026``,
 ``cnesst.taux_total`` et ``cnt.taux``.
 
+Stratégies dédiées « net, cumuls YTD et registre maître »
+(design.md §Testing Strategy « Stratégies Hypothesis », spec
+``net-cumuls-registre``, tâche 1.1) :
+
+- ``st_sequence_payroll_results_meme_employe_annee(n_max=5)`` — génère
+  une séquence de 0 à ``n_max`` :class:`~models.payroll_result.PayrollResult`
+  ``EMISE`` valides, tous rattachés au même ``employe_id``/``annee_fiscale``,
+  ``id_paie`` distincts (Property 8). Construit directement les
+  sous-modèles (``GainsDecomposes``, ``RetenuesEmploye``,
+  ``CotisationsEmployeur``, ``MontantAvecTrace``, ``CalculationTrace``,
+  ``CumulsYTD``) sans passer par le pipeline à neuf fonctions de
+  ``net_pay.py`` (qui n'existe pas encore — règle 06, TDD).
+- ``st_statut_nouveau_resultat_autorise()`` —
+  ``st.sampled_from([StatutDePaie.EMISE, StatutDePaie.BROUILLON])``, pour
+  Property 9 (statuts acceptés par ``remplacer_paie`` pour le nouveau
+  résultat, Req 13.3).
+- ``st_statut_nouveau_resultat_refuse()`` —
+  ``st.sampled_from([StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR])``,
+  pour le test d'exemple de refus de ``remplacer_paie`` (Req 13.3).
+- ``st_saison()`` — ``st.text(min_size=0, max_size=30)``, pour Property 13
+  (invariance de ``cumuls_ytd`` par rapport à la métadonnée ``saison``).
+- ``st_chemin_bd_temporaire(tmp_path)`` — **fixture pytest** (pas une
+  stratégie Hypothesis) fournissant ``tmp_path / f"test_{uuid4().hex}.db"``
+  à chaque exemple généré, garantissant une base SQLite neuve par exemple
+  Hypothesis (Properties 8/9/10/14, règle 04 — jamais la base de
+  production, jamais un fichier partagé entre exemples).
+
+**Note sur ``st_payroll_input_qc001_a_qc006_ou_genere()`` (design.md
+§Testing Strategy)** : cette fonction n'introduit **aucune nouvelle**
+génération de ``PayrollInput``. Le design la documente comme la
+**réutilisation pure** de la stratégie ``st_payroll_input()`` déjà définie
+ci-dessus (spec ``gains-bruts-vacances-hs``) — les tests de
+``net-cumuls-registre`` qui ont besoin d'un ``PayrollInput`` valide
+appellent directement ``st_payroll_input()``, et les tests golden
+(tâche 4) chargent les fixtures ``QC001``–``QC006`` directement depuis
+``tests/fixtures/inputs/qc00X.json`` via
+``PayrollInput.model_validate_json(...)`` (voir
+``tests/test_golden_outputs.py``), sans strategie Hypothesis dédiée.
+Aucun symbole ``st_payroll_input_qc001_a_qc006_ou_genere`` n'est donc
+ajouté à ce module — le nommer aurait suggéré une nouvelle génération là
+où le design demande explicitement une réutilisation pure.
+
 Règle 01 : chaque stratégie manipulant un montant fiscal ou une durée
 d'heures DOIT retourner un ``Decimal`` (jamais un ``float``).
 """
@@ -99,17 +141,28 @@ d'heures DOIT retourner un ``Decimal`` (jamais un ``float``).
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+import uuid
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 
+import pytest
 from hypothesis import strategies as st
 
 from models.cumuls import CumulsYTD
 from models.employee import Employee
-from models.enums import FrequencePaie, Juridiction
+from models.enums import FrequencePaie, Juridiction, ModeArrondissement, StatutDePaie
 from models.pay_period import PayPeriod, WeekSegment
 from models.payroll_input import HeuresParSemaine, PayrollInput
+from models.payroll_result import (
+    CotisationsEmployeur,
+    GainsDecomposes,
+    MontantAvecTrace,
+    PayrollResult,
+    RetenuesEmploye,
+)
+from models.trace import CalculationTrace
 from payroll_engine.parameters_loader import (
     SENTINEL_TO_FILL,
     ParametresAnnee,
@@ -131,6 +184,11 @@ __all__ = [
     "st_parametres_annee_impot_avec_to_fill",
     "st_brut_total_avec_zero_et_grands",
     "st_parametres_annee_variantes_non_consommees",
+    "st_sequence_payroll_results_meme_employe_annee",
+    "st_statut_nouveau_resultat_autorise",
+    "st_statut_nouveau_resultat_refuse",
+    "st_saison",
+    "st_chemin_bd_temporaire",
 ]
 
 
@@ -1039,3 +1097,275 @@ def st_parametres_annee_variantes_non_consommees(
     return base.model_copy(
         update={"fss": section_fss, "cnesst": section_cnesst, "cnt": section_cnt}
     )
+
+
+# ===========================================================================
+# Stratégies dédiées « net, cumuls YTD et registre maître »
+# (design.md §Testing Strategy « Stratégies Hypothesis »,
+#  spec net-cumuls-registre, tâche 1.1)
+# ===========================================================================
+#
+# Discipline règle 06 (TDD — tests avant code) : ``payroll_engine/net_pay.py``
+# n'existe pas encore. Les ``PayrollResult`` produits ci-dessous sont donc
+# construits **directement** — composition de ``GainsDecomposes``,
+# ``RetenuesEmploye``, ``CotisationsEmployeur``, ``MontantAvecTrace``,
+# ``CalculationTrace`` — sans passer par le pipeline à neuf fonctions de
+# ``net_pay.py`` (approche déjà utilisée par
+# ``tests/models/test_round_trip.py::_payroll_result_valide``). Les trois
+# invariants du contrat ``PayrollResult`` (identités comptables Req 4.9/4.10,
+# biconditionnelle statut Req 6.3-6.5/6.7, cohérence ``cumuls_fin`` Req 4.6)
+# et les deux invariants de somme (``RetenuesEmploye`` Req 12.8,
+# ``CotisationsEmployeur``) sont satisfaits par construction.
+
+
+def _st_calculation_trace_registre_fixe() -> CalculationTrace:
+    """``CalculationTrace`` minimale et valide (règle 02) pour les tests du
+    registre — source de la liste blanche, aucune dépendance à une trace
+    produite par un module de calcul réel (``net_pay.py`` n'existe pas
+    encore, règle 06). Utilisée comme socle par ``_st_montant_registre``,
+    qui en dérive une copie par ``model_copy(update={"resultat": ...})``
+    pour chaque ``MontantAvecTrace`` (aucune mutation de cette instance
+    partagée).
+    """
+    return CalculationTrace(
+        source="TP-1015.F 2026",
+        annee=2026,
+        juridiction=Juridiction.QUEBEC,
+        section="registre (test)",
+        mode_arrondissement=ModeArrondissement.ROUND_HALF_UP,
+        precision_arrondissement=2,
+        resultat=Decimal("0.00"),
+    )
+
+
+def _st_montant_registre(montant: Decimal) -> MontantAvecTrace:
+    """``MontantAvecTrace`` valide portant ``montant`` (règle 01, règle 02).
+
+    Dérive la trace socle via ``model_copy`` — jamais de mutation de
+    l'instance partagée retournée par
+    :func:`_st_calculation_trace_registre_fixe`.
+    """
+    trace = _st_calculation_trace_registre_fixe().model_copy(
+        update={"resultat": montant}
+    )
+    return MontantAvecTrace(montant=montant, trace=trace)
+
+
+@st.composite
+def _st_payroll_result_pour_registre(
+    draw: st.DrawFn,
+    *,
+    employe_id: str,
+    annee_fiscale: int,
+    id_paie: str,
+) -> PayrollResult:
+    """``PayrollResult`` ``EMISE`` valide et autonome, pour les tests du
+    registre maître (design §Testing Strategy « Stratégies Hypothesis »,
+    Property 8).
+
+    Construit directement les sous-modèles nécessaires — aucune invocation
+    du pipeline à neuf fonctions de ``net_pay.py`` (inexistant à ce stade
+    de la règle 06). Les identités comptables (Req 4.9, 4.10) et les
+    invariants de somme (Req 12.8, ``CotisationsEmployeur``) sont
+    satisfaits par construction, selon le même patron que
+    ``tests/models/test_round_trip.py::_payroll_result_valide``.
+
+    ``cumuls_fin`` est fixé à ``CumulsYTD.zero(employe_id, annee_fiscale)``
+    (Req 4.6 — cohérence employé/année uniquement) : sa valeur n'influence
+    **pas** l'agrégation testée par Property 8, qui porte sur les onze
+    catégories monétaires exposées directement par le ``PayrollResult``
+    (via ``CumulsYTD.avec_paie(resultat)`` dans ``register.py``), jamais
+    sur son propre champ ``cumuls_fin``.
+
+    Statut fixé à ``StatutDePaie.EMISE`` (biconditionnelle Req 6.7 :
+    ``date_emission`` requise, ``remplace_par_id`` absent) — seul statut
+    pertinent pour Property 8 (agrégation des cumuls YTD, Req 11.3).
+    """
+    rrq = draw(_st_decimal_monetaire(max_value=Decimal("500.00")))
+    rqap = draw(_st_decimal_monetaire(max_value=Decimal("100.00")))
+    ae = draw(_st_decimal_monetaire(max_value=Decimal("200.00")))
+    impot_qc_retenu = draw(_st_decimal_monetaire(max_value=Decimal("1000.00")))
+    impot_federal_retenu = draw(_st_decimal_monetaire(max_value=Decimal("1000.00")))
+    impot_qc_formule = draw(_st_decimal_monetaire(max_value=Decimal("1000.00")))
+    impot_federal_formule = draw(
+        _st_decimal_monetaire(max_value=Decimal("1000.00"))
+    )
+    total_retenues = rrq + rqap + ae + impot_qc_retenu + impot_federal_retenu
+
+    retenues_employe = RetenuesEmploye(
+        rrq=_st_montant_registre(rrq),
+        rqap=_st_montant_registre(rqap),
+        ae=_st_montant_registre(ae),
+        impot_qc_formule=_st_montant_registre(impot_qc_formule),
+        impot_qc_retenu=_st_montant_registre(impot_qc_retenu),
+        impot_federal_formule=_st_montant_registre(impot_federal_formule),
+        impot_federal_retenu=_st_montant_registre(impot_federal_retenu),
+        total_retenues_employe=total_retenues,
+    )
+
+    rrq_er = draw(_st_decimal_monetaire(max_value=Decimal("500.00")))
+    rqap_er = draw(_st_decimal_monetaire(max_value=Decimal("100.00")))
+    ae_er = draw(_st_decimal_monetaire(max_value=Decimal("300.00")))
+    fss = draw(_st_decimal_monetaire(max_value=Decimal("200.00")))
+    cnesst = draw(_st_decimal_monetaire(max_value=Decimal("200.00")))
+    cnt = draw(_st_decimal_monetaire(max_value=Decimal("50.00")))
+    total_cotisations = rrq_er + rqap_er + ae_er + fss + cnesst + cnt
+
+    cotisations_employeur = CotisationsEmployeur(
+        rrq_employeur=_st_montant_registre(rrq_er),
+        rqap_employeur=_st_montant_registre(rqap_er),
+        ae_employeur=_st_montant_registre(ae_er),
+        fss=_st_montant_registre(fss),
+        cnesst=_st_montant_registre(cnesst),
+        cnesst_en_attente_classification=draw(st.booleans()),
+        cnt=_st_montant_registre(cnt),
+        total_cotisations_employeur=total_cotisations,
+    )
+
+    # ``brut_total`` doit couvrir les cinq retenues effectivement retenues
+    # (sinon ``net = brut_total - total_retenues < 0``, refusé par
+    # ``ge=0`` — même patron que ``test_round_trip.py``). Tout le brut est
+    # logé dans ``salaire_regulier`` (``vacances`` à zéro) : ``GainsDecomposes``
+    # n'impose aucune identité entre ses composantes (design §9), et cette
+    # simplification n'affecte pas l'agrégation testée par Property 8.
+    marge_net = draw(_st_decimal_monetaire(max_value=Decimal("2000.00")))
+    brut_total = total_retenues + marge_net
+    gains = GainsDecomposes(
+        salaire_regulier=brut_total,
+        heures_supplementaires_montant=Decimal("0.00"),
+        vacances=Decimal("0.00"),
+        jours_feries_manuels=Decimal("0.00"),
+        brut_total=brut_total,
+        multiplicateur_heures_supp=Decimal("1.5"),
+        seuil_heures_supp_hebdo=Decimal("40"),
+    )
+
+    net = brut_total - total_retenues
+    cout_employeur = brut_total + total_cotisations
+
+    return PayrollResult(
+        id_paie=id_paie,
+        version=1,
+        employe_id=employe_id,
+        annee_fiscale=annee_fiscale,
+        pay_period=draw(_st_pay_period_deux_semaines(annee_fiscale=annee_fiscale)),
+        gains=gains,
+        retenues_employe=retenues_employe,
+        cotisations_employeur=cotisations_employeur,
+        net=net,
+        cout_employeur=cout_employeur,
+        cumuls_fin=CumulsYTD.zero(employe_id=employe_id, annee_civile=annee_fiscale),
+        statut=StatutDePaie.EMISE,
+        remplace_par_id=None,
+        date_creation=datetime(2026, 6, 19, 12, 0, 0),
+        date_emission=datetime(2026, 6, 20, 12, 0, 0),
+    )
+
+
+@st.composite
+def st_sequence_payroll_results_meme_employe_annee(
+    draw: st.DrawFn, n_max: int = 5
+) -> tuple[PayrollResult, ...]:
+    """Séquence de 0 à ``n_max`` ``PayrollResult`` ``EMISE`` valides.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 8,
+    Req 16.3) : tous les éléments de la séquence sont rattachés au même
+    ``employe_id``/``annee_fiscale`` (tirés une seule fois), avec des
+    ``id_paie`` distincts par construction (indexés par position dans la
+    séquence). Destinée à être insérée un par un via ``inserer_paie`` dans
+    une base neuve (voir ``st_chemin_bd_temporaire``) : ``lire_cumuls_ytd``
+    après les *n* insertions doit alors égaler, catégorie par catégorie, la
+    somme des contributions de la séquence — le cas ``n = 0`` doit
+    retourner ``CumulsYTD.zero(employe_id, annee_civile)``.
+
+    Règle 01 : chaque ``PayrollResult`` de la séquence est construit
+    exclusivement à partir de ``Decimal`` (jamais un ``float``).
+    """
+    employe_id = draw(_st_employe_id())
+    annee_fiscale = draw(_st_annee_fiscale())
+    n = draw(st.integers(min_value=0, max_value=n_max))
+    resultats: list[PayrollResult] = []
+    for index in range(n):
+        id_paie = f"PAIE-{employe_id}-{annee_fiscale}-{index + 1:03d}"
+        resultats.append(
+            draw(
+                _st_payroll_result_pour_registre(
+                    employe_id=employe_id,
+                    annee_fiscale=annee_fiscale,
+                    id_paie=id_paie,
+                )
+            )
+        )
+    return tuple(resultats)
+
+
+def st_statut_nouveau_resultat_autorise() -> st.SearchStrategy[StatutDePaie]:
+    """Statuts acceptés pour le ``nouveau_resultat`` de ``remplacer_paie``.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 9,
+    Req 13.3, 16.4) : ``st.sampled_from([StatutDePaie.EMISE,
+    StatutDePaie.BROUILLON])`` — les deux seuls statuts que
+    ``remplacer_paie`` accepte pour le résultat remplaçant
+    (``_STATUTS_NOUVEAU_RESULTAT_AUTORISES`` côté ``register.py``,
+    design §Components §3.0).
+    """
+    return st.sampled_from([StatutDePaie.EMISE, StatutDePaie.BROUILLON])
+
+
+def st_statut_nouveau_resultat_refuse() -> st.SearchStrategy[StatutDePaie]:
+    """Statuts refusés pour le ``nouveau_resultat`` de ``remplacer_paie``.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Req 13.3) :
+    ``st.sampled_from([StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR])``
+    — utilisée par le test d'exemple de refus : ``remplacer_paie`` DOIT
+    lever ``ValueError`` sans aucune mutation lorsque
+    ``nouveau_resultat.statut`` porte l'une de ces deux valeurs (Req 13.3).
+    """
+    return st.sampled_from([StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR])
+
+
+def st_saison() -> st.SearchStrategy[str]:
+    """Métadonnée ``saison`` arbitraire, purement informative.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Property 13,
+    Req 14.1, 14.2) : ``st.text(min_size=0, max_size=30)`` — la chaîne vide
+    est explicitement autorisée (``saison`` n'a aucun effet sur les
+    cumuls fiscaux, Req 14.1) et aucune contrainte de forme n'est imposée
+    (``saison`` n'entre dans aucun calcul, Requirement 9 AC5). Alimente le
+    paramètre ``saison`` d'``inserer_paie``/``remplacer_paie``.
+
+    Règle 01 : sans objet ici — ``saison`` est une chaîne, jamais un
+    montant fiscal ; cette stratégie ne retourne donc pas un ``Decimal``,
+    conformément à sa nature de métadonnée de rapport (design décision
+    n° 4 de l'Introduction des requirements).
+    """
+    return st.text(min_size=0, max_size=30)
+
+
+@pytest.fixture
+def st_chemin_bd_temporaire(tmp_path: Path) -> Path:
+    """Chemin de base SQLite neuf pour chaque exemple Hypothesis.
+
+    Design (§Testing Strategy « Stratégies Hypothesis », Properties
+    8/9/10/14, Req 15.2) : fournit
+    ``tmp_path / f"test_{uuid4().hex}.db"`` — un chemin de fichier qui
+    n'existe pas encore (le schéma SQLite est créé à la première
+    connexion par ``register.py``, jamais par cette fixture). Le suffixe
+    ``uuid4().hex`` garantit qu'aucun exemple Hypothesis ne réutilise
+    accidentellement le fichier d'un exemple précédent au sein du même
+    ``tmp_path`` (function-scoped) — indispensable pour Property 8/9/10/14,
+    qui exigent toutes une base neuve par exemple.
+
+    **Ceci est une fixture pytest, pas une stratégie Hypothesis** (design
+    §Testing Strategy : « fixture pytest (pas une stratégie Hypothesis) »).
+    Contrairement aux fonctions ``st_*`` ci-dessus, elle ne peut pas être
+    passée à ``@given(...)`` — elle est déclarée comme paramètre de
+    fonction de test ordinaire (pytest la résout automatiquement dès
+    qu'elle est importée dans le module de test cible, ex. ``from
+    tests.strategies import st_chemin_bd_temporaire``).
+
+    Règle 04 : jamais la base de production, jamais un fichier partagé
+    entre exemples — chaque exemple Hypothesis obtient un chemin distinct
+    sous le répertoire temporaire pytest, hors du dépôt versionné.
+    """
+    return tmp_path / f"test_{uuid.uuid4().hex}.db"

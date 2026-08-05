@@ -286,8 +286,9 @@ def calcul_impot_qc_retenu(
     payroll_input: PayrollInput,
     gains: GainsDecomposes,
     parametres_annee: ParametresAnnee,
+    additionnelle_permise: bool,
 ) -> tuple[Decimal, CalculationTrace]:
-    """Calcule la retenue d'impôt QC effective et sa trace (Req 3, règles 01, 02, 05).
+    """Calcule la retenue d'impôt QC effective et sa trace (Req 3, Req 14, règles 01, 02, 05).
 
     Délégation structurelle stricte avec court-circuit **véritable**
     (design §Components §3, Req 3.3) :
@@ -297,10 +298,25 @@ def calcul_impot_qc_retenu(
       n'est **jamais invoquée** — pas même pour construire la trace ;
     - sinon, `montant_base = calcul_impot_qc_formule(...)[0]`.
 
-    La retenue additionnelle QC s'ajoute **inconditionnellement** dans les
-    deux cas (Req 3.2) : `retenue_effective = montant_base +
-    retenue_additionnelle_QC_effective`, sans ré-arrondissement (Req 8.2 —
-    somme de deux valeurs déjà à deux décimales).
+    La retenue additionnelle QC est ensuite plafonnée selon
+    `additionnelle_permise` (Requirement 14 — décision opérationnelle du
+    projet Camp LilySO, non prescrite par TP-1015.F, documentée dans
+    `docs/hypotheses-2026.md` ; ce booléen est reçu tel quel de
+    l'appelant, `payroll_engine/net_pay.py::assembler_paie`, qui seul a la
+    vue transversale nécessaire pour le calculer — cette fonction ne le
+    calcule jamais elle-même) :
+
+    - si `additionnelle_permise` est vrai, la retenue additionnelle
+      **originale demandée** s'ajoute inconditionnellement au montant de
+      base (Req 3.2, comportement rétrocompatible identique à avant le
+      Requirement 14) ;
+    - si `additionnelle_permise` est faux, la retenue additionnelle
+      appliquée est forcée à `Decimal("0.00")` — le montant de base reste
+      inchangé, suit toujours son propre court-circuit d'exonération.
+
+    `retenue_effective = montant_base + retenue_additionnelle_appliquee`,
+    sans ré-arrondissement (Req 8.2 — somme de deux valeurs déjà à deux
+    décimales).
 
     Fonction pure (Req 1.4, 1.7, 1.9).
 
@@ -320,10 +336,20 @@ def calcul_impot_qc_retenu(
             payroll_input, gains, parametres_annee
         )
 
-    # Ajout inconditionnel de la retenue additionnelle, sans ré-arrondissement
-    # (Req 3.2, 8.2).
-    retenue_additionnelle = payroll_input.retenue_additionnelle_QC_effective
-    retenue_effective = montant_base + retenue_additionnelle
+    # Plafonnement combiné des retenues additionnelles (Req 14) : la
+    # retenue additionnelle ORIGINALE demandée reste visible dans
+    # `entrees` (Req 14.7) que `additionnelle_permise` soit vrai ou faux ;
+    # seule la retenue APPLIQUÉE au résultat en dépend.
+    retenue_additionnelle_demandee = payroll_input.retenue_additionnelle_QC_effective
+    retenue_additionnelle_appliquee = (
+        retenue_additionnelle_demandee
+        if additionnelle_permise
+        else Decimal("0.00")
+    )
+
+    # Ajout inconditionnel de la retenue additionnelle APPLIQUÉE, sans
+    # ré-arrondissement (Req 3.2, 8.2).
+    retenue_effective = montant_base + retenue_additionnelle_appliquee
 
     annee_fiscale = payroll_input.pay_period.annee_fiscale
     trace = CalculationTrace(
@@ -332,21 +358,29 @@ def calcul_impot_qc_retenu(
         juridiction=Juridiction.QUEBEC,
         section="4 — Retenue d'impôt du Québec (retenu)",
         parametres_utilises={
-            # Drapeau d'exonération encodé en `Decimal` via le patron
-            # mandaté `Decimal(str(...))` (design §Components §2, règle
-            # 01) : `int(exoneration)` vaut 0 ou 1 (booléen, sous-type
-            # de `int`, jamais un `float`), sérialisé en chaîne puis
-            # converti. Évite à la fois les littéraux `Decimal("1")` /
-            # `Decimal("0")` (garde valeurs fiscales en dur) et la
-            # conversion directe `Decimal(int)`/`Decimal(float)`.
+            # Drapeaux encodés en `Decimal` via le patron mandaté
+            # `Decimal(str(...))` (design §Components §2, règle 01) :
+            # `int(...)` vaut 0 ou 1 (booléen, sous-type de `int`, jamais
+            # un `float`), sérialisé en chaîne puis converti. Évite à la
+            # fois les littéraux `Decimal("1")`/`Decimal("0")` (garde
+            # valeurs fiscales en dur) et la conversion directe
+            # `Decimal(int)`/`Decimal(float)`.
             "exoneration_active": Decimal(str(int(exoneration))),
+            "additionnelle_permise": Decimal(str(int(additionnelle_permise))),
         },
         entrees={
             "impot_qc_formule": montant_base,
-            "retenue_additionnelle_qc": retenue_additionnelle,
+            # Retenue additionnelle ORIGINALE demandée (avant tout
+            # plafonnement) — reste visible même si elle a été refusée
+            # (Req 14.7), pour que la trace reste auto-suffisante.
+            "retenue_additionnelle_qc": retenue_additionnelle_demandee,
         },
         sous_totaux={
             "retenue_effective": retenue_effective,
+            # Retenue additionnelle réellement appliquée au résultat —
+            # distincte de la demandée lorsque le plafonnement est actif
+            # (Req 14.7).
+            "retenue_additionnelle_appliquee": retenue_additionnelle_appliquee,
         },
         mode_arrondissement=ModeArrondissement.ROUND_HALF_UP,
         precision_arrondissement=2,

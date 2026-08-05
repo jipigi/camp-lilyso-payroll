@@ -78,6 +78,7 @@ Source : TP-1015.F 2026.
 | Golden values disponibles | QC001 : brut 1 516,32 $ → impôt QC 104,56 $ | **VALIDE_WEBRAS** |
 | Déduction annuelle qui réduit le brut vers le revenu imposable | ~1 825 $ annuel (à confirmer, probablement déduction pour travailleur) | `TO_CONFIRM` |
 | Revenu imposable QC pour QC001 | 1 448,75 $ ( = 1 516,32 − 67,57 ) | **VALIDE_WEBRAS** |
+| Retenue additionnelle plafonnée à 0 $ si insuffisance de brut (QC+fédéral combinés) | Lorsque la somme des retenues additionnelles volontaires QC + fédérale dépasse l'espace disponible sur le brut après cotisations obligatoires (RRQ, RQAP, AE) et impôt de base des deux juridictions, les DEUX retenues additionnelles sont mises à 0 $ (jamais de réduction partielle, jamais de priorité QC/fédéral) | **HYPOTHESE** — décision opérationnelle Camp LilySO, non prescrite par TP-1015.F ni T4127/T4001 de l'ARC — voir `docs/journal-validation.md` pour la recherche effectuée |
 
 **Note sur l'exonération** : ni WebRAS ni PDOC ne proposent de case « exonération de la retenue d'impôt ». Sur les formulaires TP-1015.3 (QC) et TD1 (fédéral), l'employé peut cocher qu'il souhaite être exonéré. Dans ce cas, l'employeur décide de retenir 0 $ d'impôt sans invoquer WebRAS/PDOC pour l'impôt. Le moteur reflète ce mécanisme comme un **court-circuit** : `exoneration_qc = True → impot_qc = 0`, indépendamment du brut.
 
@@ -94,6 +95,7 @@ Source : T4127 2026.
 | Golden values disponibles | QC001 : brut 1 516,32 $ → impôt féd. 86,25 $ | **VALIDE_PDOC** |
 | Portion RRQ déduite avant calcul impôt féd. | 1 % × (brut − exemption RRQ pp) | **VALIDE_PDOC** |
 | Revenu imposable fédéral pour QC001 | 1 502,45 $ ( = 1 516,32 − 13,87 ) | **VALIDE_PDOC** |
+| Retenue additionnelle plafonnée à 0 $ si insuffisance de brut (QC+fédéral combinés) | Lorsque la somme des retenues additionnelles volontaires QC + fédérale dépasse l'espace disponible sur le brut après cotisations obligatoires (RRQ, RQAP, AE) et impôt de base des deux juridictions, les DEUX retenues additionnelles sont mises à 0 $ (jamais de réduction partielle, jamais de priorité QC/fédéral) | **HYPOTHESE** — décision opérationnelle Camp LilySO, non prescrite par TP-1015.F ni T4127/T4001 de l'ARC — voir `docs/journal-validation.md` pour la recherche effectuée |
 
 ## 7. Charges patronales autres
 

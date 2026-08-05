@@ -331,10 +331,10 @@ class TestSignaturePureteRobustesse:
         assert resultat_formule_1[1] == resultat_formule_2[1]
 
         resultat_retenu_1 = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
         resultat_retenu_2 = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
         assert resultat_retenu_1 == resultat_retenu_2
         assert resultat_retenu_1[0] == resultat_retenu_2[0]
@@ -368,7 +368,7 @@ class TestSignaturePureteRobustesse:
             payroll_input, gains, parametres_annee
         )
         resultat_retenu = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
 
         assert resultat_formule is not None
@@ -402,7 +402,7 @@ class TestSignaturePureteRobustesse:
         _verifier_property_3_forme_decimal(montant_formule, trace_formule)
 
         montant_retenu, trace_retenu = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
         _verifier_property_3_forme_decimal(montant_retenu, trace_retenu)
 
@@ -1359,7 +1359,7 @@ class TestRetenueFederale:
             update={"exoneration_TD1_effective": True}
         )
         montant_exo, _trace_exo = calcul_impot_federal_retenu(
-            payroll_input_exo, gains, parametres_annee
+            payroll_input_exo, gains, parametres_annee, True
         )
         assert (
             montant_exo
@@ -1374,7 +1374,7 @@ class TestRetenueFederale:
             payroll_input_non_exo, gains, parametres_annee
         )
         montant_retenu, _trace_retenu = calcul_impot_federal_retenu(
-            payroll_input_non_exo, gains, parametres_annee
+            payroll_input_non_exo, gains, parametres_annee, True
         )
         assert (
             montant_retenu
@@ -1417,7 +1417,7 @@ class TestRetenueFederale:
             "payroll_engine.impot_federal.calcul_impot_federal_formule"
         ) as espion_formule:
             montant, _trace = calcul_impot_federal_retenu(
-                payroll_input, gains, parametres_annee
+                payroll_input, gains, parametres_annee, True
             )
 
         espion_formule.assert_not_called()
@@ -1476,7 +1476,7 @@ class TestRetenueFederale:
         )
 
         montant, trace = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_2026_qc_ca_federal
+            payroll_input, gains, parametres_2026_qc_ca_federal, True
         )
 
         assert montant == retenue_additionnelle
@@ -1592,7 +1592,7 @@ class TestTraceFederale:
 
         # --- Trace de calcul_impot_federal_retenu (design §Components §5) ---
         montant_retenu, trace_retenu = calcul_impot_federal_retenu(
-            payroll_input, gains, parametres_annee
+            payroll_input, gains, parametres_annee, True
         )
 
         assert _MOTIF_SOURCE_FEDERAL.match(trace_retenu.source) is not None
@@ -1696,7 +1696,9 @@ class TestMissingParameterImpotFederal:
             calcul_impot_federal_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_federal_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_federal_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt fédéral)
     @pytest.mark.property
@@ -1730,7 +1732,9 @@ class TestMissingParameterImpotFederal:
             calcul_impot_federal_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_federal_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_federal_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt fédéral)
     @pytest.mark.property
@@ -1765,7 +1769,9 @@ class TestMissingParameterImpotFederal:
             calcul_impot_federal_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_federal_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_federal_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt fédéral)
     @pytest.mark.property
@@ -1800,7 +1806,9 @@ class TestMissingParameterImpotFederal:
             calcul_impot_federal_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_federal_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_federal_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
 
     # Feature: impots-retenues-source, Property 13: Propagation de MissingParameterError (impôt fédéral)
     @pytest.mark.property
@@ -1834,4 +1842,145 @@ class TestMissingParameterImpotFederal:
             calcul_impot_federal_formule(payroll_input_non_exo, gains, parametres_annee)
 
         with pytest.raises(MissingParameterError):
-            calcul_impot_federal_retenu(payroll_input_non_exo, gains, parametres_annee)
+            calcul_impot_federal_retenu(
+                payroll_input_non_exo, gains, parametres_annee, True
+            )
+
+
+# ---------------------------------------------------------------------------
+# 13.2 (révision Requirement 14) — Plafonnement combiné des retenues
+# additionnelles (Property 14, variante fédérale)
+# ---------------------------------------------------------------------------
+#
+# Symétrique à `TestPlafonnementCombineQc` de `tests/payroll_engine/test_impot_qc.py`
+# — voir design §Correctness Properties 14 ; §Components §5, révisé.
+
+
+class TestPlafonnementCombineFederal:
+    """Property 14 (variante fédérale) — plafonnement combiné des retenues
+    additionnelles selon l'espace disponible.
+
+    Design (§Correctness Properties 14 ; §Components §5, révisé pour le
+    Requirement 14). `additionnelle_permise` est reçu tel quel de
+    l'appelant (`net_pay.py::assembler_paie`, hors périmètre de cette
+    spec) — `calcul_impot_federal_retenu` ne le calcule jamais elle-même.
+    """
+
+    # Feature: impots-retenues-source, Property 14: Plafonnement combiné des retenues additionnelles (fédéral)
+    @pytest.mark.property
+    @given(
+        entrees=_st_entrees_completes(),
+        parametres_annee=st_parametres_annee_2026_qc_ca(),
+    )
+    @settings_large_input
+    def test_property_14_plafonnement_combine(
+        self,
+        entrees: tuple[PayrollInput, GainsDecomposes],
+        parametres_annee,
+    ) -> None:
+        """*Pour tout* `PayrollInput`, `GainsDecomposes` et
+        `ParametresAnnee` valides :
+
+        - `calcul_impot_federal_retenu(pi, g, p, False)` retourne un
+          montant égal au montant de base (post-exonération, résultat du
+          court-circuit d'exonération existant, inchangé par
+          `additionnelle_permise` — Req 14.2) ; sa trace expose
+          `sous_totaux["retenue_additionnelle_appliquee"] ==
+          Decimal("0.00")`, `entrees["retenue_additionnelle_federale"]`
+          égal à la retenue additionnelle **originale** demandée
+          (inchangée), et
+          `parametres_utilises["additionnelle_permise"] == Decimal("0")` ;
+        - `calcul_impot_federal_retenu(pi, g, p, True)` reproduit
+          exactement le comportement déjà couvert par Property 10
+          (rétrocompatibilité, Req 14.3).
+
+        **Validates: Requirements 14.1, 14.2, 14.3, 14.6, 14.7**
+        """
+        payroll_input, gains = entrees
+        retenue_demandee = payroll_input.retenue_additionnelle_federale_effective
+
+        # --- additionnelle_permise=False : retenue additionnelle plafonnée à 0 ---
+        montant_refuse, trace_refuse = calcul_impot_federal_retenu(
+            payroll_input, gains, parametres_annee, False
+        )
+        montant_base, _trace_base_formule = (
+            (Decimal("0.00"), None)
+            if payroll_input.exoneration_TD1_effective
+            else calcul_impot_federal_formule(payroll_input, gains, parametres_annee)
+        )
+        assert montant_refuse == montant_base, (
+            "Sous additionnelle_permise=False, la retenue effective doit "
+            f"être égale au seul montant de base : {montant_refuse!r} != "
+            f"{montant_base!r}."
+        )
+        assert trace_refuse.sous_totaux["retenue_additionnelle_appliquee"] == (
+            Decimal("0.00")
+        )
+        assert trace_refuse.entrees["retenue_additionnelle_federale"] == (
+            retenue_demandee
+        ), (
+            "La retenue additionnelle ORIGINALE demandée doit rester "
+            "visible dans `entrees`, inchangée (Req 14.7)."
+        )
+        assert trace_refuse.parametres_utilises["additionnelle_permise"] == (
+            Decimal("0")
+        )
+
+        # --- additionnelle_permise=True : comportement rétrocompatible (Property 10) ---
+        montant_permis, trace_permis = calcul_impot_federal_retenu(
+            payroll_input, gains, parametres_annee, True
+        )
+        assert montant_permis == montant_base + retenue_demandee
+        assert trace_permis.sous_totaux["retenue_additionnelle_appliquee"] == (
+            retenue_demandee
+        )
+        assert trace_permis.entrees["retenue_additionnelle_federale"] == (
+            retenue_demandee
+        )
+        assert trace_permis.parametres_utilises["additionnelle_permise"] == (
+            Decimal("1")
+        )
+
+    def test_exemple_additionnelle_permise_false_retenue_positive(
+        self,
+        parametres_2026_qc_ca: ParametresAnnee,
+    ) -> None:
+        """Test d'exemple — `additionnelle_permise=False` avec une retenue
+        additionnelle fédérale strictement positive et exonération
+        inactive (Requirement 14.2, 14.7).
+
+        Le `PayrollInput` de QC001 (`_payroll_input_qc001_pour_exemple`)
+        est décliné (`model_copy`) avec une retenue additionnelle
+        fédérale strictement positive et exonération inactive. Sous
+        `additionnelle_permise=False`, la retenue effective doit être
+        strictement égale au montant de base (formule) seul — la retenue
+        additionnelle demandée n'apparaît pas dans le résultat, mais reste
+        visible dans `entrees` de la trace.
+
+        Validates: Requirements 14.1, 14.2, 14.7
+        """
+        payroll_input = _payroll_input_qc001_pour_exemple()
+        gains = _construire_gains_decomposes(Decimal("1516.32"))
+
+        retenue_additionnelle = Decimal("25.00")
+        payroll_input = payroll_input.model_copy(
+            update={
+                "exoneration_TD1_effective": False,
+                "retenue_additionnelle_federale_effective": retenue_additionnelle,
+            }
+        )
+
+        montant_formule, _trace_formule = calcul_impot_federal_formule(
+            payroll_input, gains, parametres_2026_qc_ca
+        )
+        montant, trace = calcul_impot_federal_retenu(
+            payroll_input, gains, parametres_2026_qc_ca, False
+        )
+
+        assert montant == montant_formule
+        assert trace.sous_totaux["retenue_additionnelle_appliquee"] == Decimal(
+            "0.00"
+        )
+        assert (
+            trace.entrees["retenue_additionnelle_federale"] == retenue_additionnelle
+        )
