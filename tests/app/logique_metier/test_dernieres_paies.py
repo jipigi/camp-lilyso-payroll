@@ -466,6 +466,76 @@ class TestFiltrageParAnnee:
         )
 
 
+class TestNumerosPeriodeDisponibles:
+    """Test d'exemple/property de `numeros_periode_disponibles` (ergonomie
+    de saisie pure, aucune property numérotée du design associée — bug
+    UI corrigé après livraison, cf. `dernieres_paies.py`).
+    """
+
+    @pytest.mark.property
+    @given(champs_lignes=_st_liste_champs_lignes_paie_resume())
+    @settings_large_input
+    def test_retourne_exactement_lensemble_trie_des_numeros_periode_distincts(
+        self,
+        champs_lignes: tuple[dict[str, object], ...],
+    ) -> None:
+        """`numeros_periode_disponibles(resumes)` égale exactement
+        `tuple(sorted({r.numero_periode for r in resumes}))`, y compris
+        le tuple vide pour `resumes` vide.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            numeros_periode_disponibles,
+        )
+
+        resumes = tuple(LignePaieResume(**champs) for champs in champs_lignes)
+
+        resultat_obtenu = numeros_periode_disponibles(resumes)
+        resultat_attendu = tuple(sorted({r.numero_periode for r in resumes}))
+
+        assert resultat_obtenu == resultat_attendu, (
+            f"`numeros_periode_disponibles(resumes)` doit retourner "
+            f"exactement l'ensemble trié des `numero_periode` distincts "
+            f"présents dans `resumes` ; attendu {resultat_attendu!r}, "
+            f"obtenu {resultat_obtenu!r}."
+        )
+
+
+class TestAnneesDisponibles:
+    """Test d'exemple/property de `annees_disponibles` (même patron que
+    `TestNumerosPeriodeDisponibles` — ergonomie de saisie pure, bug UI
+    corrigé après livraison).
+    """
+
+    @pytest.mark.property
+    @given(champs_lignes=_st_liste_champs_lignes_paie_resume())
+    @settings_large_input
+    def test_retourne_exactement_lensemble_trie_des_annees_fiscales_distinctes(
+        self,
+        champs_lignes: tuple[dict[str, object], ...],
+    ) -> None:
+        """`annees_disponibles(resumes)` égale exactement
+        `tuple(sorted({r.annee_fiscale for r in resumes}))`, y compris le
+        tuple vide pour `resumes` vide.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            annees_disponibles,
+        )
+
+        resumes = tuple(LignePaieResume(**champs) for champs in champs_lignes)
+
+        resultat_obtenu = annees_disponibles(resumes)
+        resultat_attendu = tuple(sorted({r.annee_fiscale for r in resumes}))
+
+        assert resultat_obtenu == resultat_attendu, (
+            f"`annees_disponibles(resumes)` doit retourner exactement "
+            f"l'ensemble trié des `annee_fiscale` distincts présents "
+            f"dans `resumes` ; attendu {resultat_attendu!r}, obtenu "
+            f"{resultat_obtenu!r}."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests d'exemple — `lire_resumes_paies` (tâche 5.4)
 # ---------------------------------------------------------------------------

@@ -90,9 +90,26 @@ from app.logique_metier.dernieres_paies import (
     regrouper_saison_par_annee,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
-from app.logique_metier.fiche_employe import mettre_a_jour_donnees_fiscales
+from app.logique_metier.fiche_employe import (
+    mettre_a_jour_donnees_fiscales,
+    mettre_a_jour_informations_principales,
+)
 from models.employee import Employee
 from payroll_engine.register import chemin_bd_production, lire_cumuls_ytd, lire_paie
+
+#: Taux d'indemnité de vacances admis dans le périmètre Camp LilySO
+#: (règle 03) — mêmes deux valeurs que
+#: `app/pages_ui/tableau_de_bord.py::_TAUX_VACANCES_OPTIONS`, dupliquées
+#: ici (constante privée d'un autre module de rendu).
+_TAUX_VACANCES_OPTIONS: tuple[str, ...] = ("0.04", "0.06")
+
+#: Bornes des sélecteurs de date — mêmes valeurs que
+#: `app/pages_ui/tableau_de_bord.py` (bug UI corrigé après livraison,
+#: cf. docstring de ce module dans `tableau_de_bord.py`).
+_DATE_NAISSANCE_MIN = date(date.today().year - 100, 1, 1)
+_DATE_NAISSANCE_MAX = date.today()
+_DATE_EMPLOI_MIN = date(date.today().year - 50, 1, 1)
+_DATE_EMPLOI_MAX = date(date.today().year + 5, 12, 31)
 
 #: Mêmes clés de `st.session_state` que `app/pages_ui/tableau_de_bord.py`
 #: — transportent la sélection d'employé/année courante entre pages
@@ -167,21 +184,118 @@ def render() -> None:
 
 
 def _section_informations_employe(employe: Employee) -> None:
-    """Section (a) — champs `Employee` et modification fiscale (Req 5.1, 11)."""
+    """Section (a) — champs `Employee`, modification des informations
+    principales et modification fiscale (Req 5.1, 11).
+
+    Bug UI corrigé après livraison : la fiche détaillée n'affichait ces
+    champs qu'en lecture seule — aucun moyen de corriger un nom affiché,
+    une date de naissance, un titre d'emploi, un taux horaire de base,
+    une date d'embauche/fin d'emploi ou un taux d'indemnité de vacances
+    après la création de l'employé. Le formulaire ci-dessous couvre
+    exactement les mêmes 7 champs que le formulaire de création
+    (`tableau_de_bord.py::_afficher_formulaire_creation`, Req 4.7),
+    hormis `province_travail` (fixée à `Juridiction.QUEBEC`, non
+    éditable — règle 03).
+    """
     st.subheader("Informations employé")
 
     st.write(f"id : {employe.id}")
-    st.write(f"Nom affiché : {employe.nom_affichage}")
-    st.write(f"Date de naissance : {employe.date_naissance}")
-    st.write(f"Province de travail : {employe.province_travail.value}")
-    st.write(f"Titre d'emploi : {employe.titre_emploi}")
-    st.write(f"Taux horaire de base : {employe.taux_horaire_base}")
-    st.write(f"Date d'embauche : {employe.date_embauche}")
-    st.write(
-        "Date de fin d'emploi : "
-        f"{employe.date_fin_emploi if employe.date_fin_emploi else 'Aucune'}"
-    )
-    st.write(f"Taux d'indemnité de vacances : {employe.taux_indemnite_vacances}")
+    st.write(f"Province de travail : {employe.province_travail.value} (fixe)")
+
+    st.write("**Modification des informations principales**")
+    with st.form(f"fed_formulaire_informations_{employe.id}"):
+        nom_affichage = st.text_input(
+            "Nom affiché",
+            value=employe.nom_affichage,
+            key=f"fed_nom_affichage_{employe.id}",
+        )
+        date_naissance = st.date_input(
+            "Date de naissance",
+            value=employe.date_naissance,
+            min_value=_DATE_NAISSANCE_MIN,
+            max_value=_DATE_NAISSANCE_MAX,
+            key=f"fed_date_naissance_{employe.id}",
+        )
+        titre_emploi = st.text_input(
+            "Titre d'emploi",
+            value=employe.titre_emploi,
+            key=f"fed_titre_emploi_{employe.id}",
+        )
+        taux_horaire_base = st.text_input(
+            "Taux horaire de base ($)",
+            value=str(employe.taux_horaire_base),
+            key=f"fed_taux_horaire_base_{employe.id}",
+        )
+        date_embauche = st.date_input(
+            "Date d'embauche",
+            value=employe.date_embauche,
+            min_value=_DATE_EMPLOI_MIN,
+            max_value=_DATE_EMPLOI_MAX,
+            key=f"fed_date_embauche_{employe.id}",
+        )
+        date_fin_emploi = st.date_input(
+            "Date de fin d'emploi (optionnel)",
+            value=employe.date_fin_emploi,
+            min_value=_DATE_EMPLOI_MIN,
+            max_value=_DATE_EMPLOI_MAX,
+            key=f"fed_date_fin_emploi_{employe.id}",
+        )
+        index_taux_vacances = _TAUX_VACANCES_OPTIONS.index(
+            str(employe.taux_indemnite_vacances)
+        ) if str(employe.taux_indemnite_vacances) in _TAUX_VACANCES_OPTIONS else 0
+        taux_indemnite_vacances = st.selectbox(
+            "Taux d'indemnité de vacances",
+            _TAUX_VACANCES_OPTIONS,
+            index=index_taux_vacances,
+            key=f"fed_taux_indemnite_vacances_{employe.id}",
+        )
+        soumis_informations = st.form_submit_button(
+            "Mettre à jour les informations principales", type="primary"
+        )
+
+    if soumis_informations:
+
+        def _mettre_a_jour_informations_et_enregistrer() -> Employee:
+            # Même discipline que la section fiscale ci-dessous (Req
+            # 11.4) : les deux opérations sont enchaînées dans une seule
+            # fonction passée à `executer_avec_capture` — si la
+            # reconstruction immuable échoue, `enregistrer_employe`
+            # n'est jamais atteinte, aucune modification partielle n'est
+            # jamais persistée.
+            nouvel_employe = mettre_a_jour_informations_principales(
+                employe,
+                nom_affichage=nom_affichage,
+                date_naissance=date_naissance,
+                titre_emploi=titre_emploi,
+                taux_horaire_base=Decimal(taux_horaire_base),
+                date_embauche=date_embauche,
+                date_fin_emploi=date_fin_emploi,
+                taux_indemnite_vacances=Decimal(taux_indemnite_vacances),
+            )
+            enregistrer_employe(nouvel_employe)
+            return nouvel_employe
+
+        try:
+            resultat_informations = executer_avec_capture(
+                _mettre_a_jour_informations_et_enregistrer
+            )
+        except InvalidOperation:
+            st.error(
+                "ValueError: le taux horaire de base doit être un nombre "
+                "décimal valide (ex. \"18.50\")."
+            )
+        else:
+            if isinstance(resultat_informations, ErreurDomaineAffichable):
+                st.error(
+                    f"{resultat_informations.type_exception}: "
+                    f"{resultat_informations.message}"
+                )
+            else:
+                st.success(
+                    f"Informations principales de {resultat_informations.id} "
+                    "mises à jour."
+                )
+                st.rerun()
 
     st.write("**Modification des données fiscales TD1/TP-1015.3**")
     with st.form(f"fed_formulaire_fiscal_{employe.id}"):
@@ -388,7 +502,7 @@ def _section_paies(employe_id: str) -> None:
             st.error(f"{resultat_cumuls.type_exception}: {resultat_cumuls.message}")
         else:
             cumuls = resultat_cumuls
-            st.write(f"**Cumuls YTD {annee_selectionnee}**")
+            st.write(f"**Cumuls annuels {annee_selectionnee}**")
             for categorie in _CATEGORIES_CUMULS_AFFICHAGE:
                 st.write(f"{categorie} = {getattr(cumuls, categorie)}")
 

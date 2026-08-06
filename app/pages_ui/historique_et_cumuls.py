@@ -45,6 +45,12 @@ from __future__ import annotations
 import streamlit as st
 
 from app.logique_metier.annuaire_employes import lister_employes
+from app.logique_metier.dernieres_paies import (
+    annees_disponibles,
+    filtrer_par_annee,
+    lire_resumes_paies,
+    numeros_periode_disponibles,
+)
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
 from models.cumuls import CumulsYTD
 from payroll_engine.register import chemin_bd_production, lire_cumuls_ytd, lire_historique_paie
@@ -75,7 +81,7 @@ def render() -> None:
     `executer_avec_capture` — une erreur dans une section n'empêche pas
     l'affichage de l'autre.
     """
-    st.header("Historique des paies et cumuls YTD")
+    st.header("Historique des paies et cumuls annuels")
 
     resultat_employes = executer_avec_capture(lambda: lister_employes())
     if isinstance(resultat_employes, ErreurDomaineAffichable):
@@ -92,23 +98,54 @@ def render() -> None:
     # ------------------------------------------------------------------
     # Section 1 — Historique d'une Paie_Logique (Req 14)
     # ------------------------------------------------------------------
-    st.subheader("Historique d'une Paie_Logique")
+    st.subheader("Historique d'une paie")
 
     employe_id_historique = st.selectbox(
         "Employé", options_employes, key="historique_employe_id"
     )
-    annee_fiscale = st.number_input(
-        "Année fiscale",
-        min_value=2000,
-        max_value=2100,
-        step=1,
-        key="historique_annee_fiscale",
+
+    # Bug UI corrigé après livraison (Req 14) : l'année fiscale et le
+    # numéro de période étaient saisis via des `st.number_input` libres
+    # (n'importe quelle valeur entre 2000/2100 ou 1/27), sans lien avec
+    # les paies réellement existantes pour l'employé sélectionné. Les
+    # deux sélecteurs sont désormais des listes déroulantes alimentées
+    # par `lire_resumes_paies` — uniquement les années/numéros de
+    # période pour lesquels cet employé a au moins une paie.
+    resultat_resumes_historique = executer_avec_capture(
+        lambda: lire_resumes_paies(
+            employe_id_historique, chemin_bd=chemin_bd_production()
+        )
     )
-    numero_periode = st.number_input(
+    if isinstance(resultat_resumes_historique, ErreurDomaineAffichable):
+        st.error(
+            f"{resultat_resumes_historique.type_exception}: "
+            f"{resultat_resumes_historique.message}"
+        )
+        return
+    resumes_historique = resultat_resumes_historique
+
+    annees_historique = annees_disponibles(resumes_historique)
+    if not annees_historique:
+        st.info(f"Aucune paie enregistrée pour {employe_id_historique}.")
+        return
+
+    annee_fiscale = st.selectbox(
+        "Année fiscale", annees_historique, key="historique_annee_fiscale"
+    )
+
+    numeros_periode_historique = numeros_periode_disponibles(
+        filtrer_par_annee(resumes_historique, int(annee_fiscale))
+    )
+    if not numeros_periode_historique:
+        st.info(
+            f"Aucune paie enregistrée pour {employe_id_historique} en "
+            f"{int(annee_fiscale)}."
+        )
+        return
+
+    numero_periode = st.selectbox(
         "Numéro de période",
-        min_value=1,
-        max_value=27,
-        step=1,
+        numeros_periode_historique,
         key="historique_numero_periode",
     )
 
@@ -128,7 +165,7 @@ def render() -> None:
         elif not resultat_historique:
             # Req 14.2 — tuple vide indiqué explicitement, sans erreur.
             st.info(
-                "Aucune paie trouvée pour cette Paie_Logique "
+                "Aucune paie trouvée pour cette paie "
                 f"(employé={employe_id_historique}, "
                 f"année fiscale={int(annee_fiscale)}, "
                 f"numéro de période={int(numero_periode)})."
@@ -153,17 +190,37 @@ def render() -> None:
     # ------------------------------------------------------------------
     # Section 2 — Cumuls YTD d'un employé (Req 15)
     # ------------------------------------------------------------------
-    st.subheader("Cumuls YTD d'un employé")
+    st.subheader("Cumuls annuels d'un employé")
 
     employe_id_cumuls = st.selectbox(
         "Employé", options_employes, key="cumuls_employe_id"
     )
-    annee_civile = st.number_input(
-        "Année civile",
-        min_value=2000,
-        max_value=2100,
-        step=1,
-        key="cumuls_annee_civile",
+
+    # Même correction que ci-dessus (Req 15) : l'année civile est
+    # désormais une liste déroulante alimentée par les paies réellement
+    # existantes de l'employé sélectionné, plutôt qu'un `st.number_input`
+    # libre. `annee_fiscale` (utilisée par `lire_resumes_paies`) et
+    # `annee_civile` (utilisée par `lire_cumuls_ytd`) désignent la même
+    # notion d'année dans ce contexte (Req 15.1) — aucune conversion
+    # additionnelle n'est nécessaire.
+    resultat_resumes_cumuls = executer_avec_capture(
+        lambda: lire_resumes_paies(employe_id_cumuls, chemin_bd=chemin_bd_production())
+    )
+    if isinstance(resultat_resumes_cumuls, ErreurDomaineAffichable):
+        st.error(
+            f"{resultat_resumes_cumuls.type_exception}: "
+            f"{resultat_resumes_cumuls.message}"
+        )
+        return
+    resumes_cumuls = resultat_resumes_cumuls
+
+    annees_cumuls = annees_disponibles(resumes_cumuls)
+    if not annees_cumuls:
+        st.info(f"Aucune paie enregistrée pour {employe_id_cumuls}.")
+        return
+
+    annee_civile = st.selectbox(
+        "Année civile", annees_cumuls, key="cumuls_annee_civile"
     )
 
     if st.button("Consulter les cumuls", type="primary"):

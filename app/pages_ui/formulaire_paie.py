@@ -83,6 +83,14 @@ from models.enums import StatutDePaie
 from models.payroll_input import HeuresParSemaine
 from models.payroll_result import PayrollResult
 from payroll_engine.net_pay import assembler_paie
+
+#: Bornes du sélecteur de dates de période/paiement — sans
+#: `min_value`/`max_value` explicites, `st.date_input` limite la plage
+#: par défaut à environ ±10 ans autour d'aujourd'hui, ce qui empêche de
+#: saisir une paie de correction pour une période ancienne (bug corrigé
+#: ici, pure ergonomie de saisie — aucune règle fiscale associée).
+_DATE_PERIODE_MIN = date(date.today().year - 15, 1, 1)
+_DATE_PERIODE_MAX = date(date.today().year + 5, 12, 31)
 from payroll_engine.register import (
     chemin_bd_production,
     inserer_paie,
@@ -203,7 +211,7 @@ def _afficher_paie_assemblee(resultat: PayrollResult) -> None:
     st.write(f"Net : {resultat.net}")
     st.write(f"Coût employeur : {resultat.cout_employeur}")
 
-    with st.expander("Cumuls YTD après cette paie", expanded=False):
+    with st.expander("Cumuls annuels après cette paie", expanded=False):
         st.write(f"Brut : {resultat.cumuls_fin.brut}")
         st.write(f"Vacances : {resultat.cumuls_fin.vacances}")
         st.write(f"RRQ employé : {resultat.cumuls_fin.rrq_employe}")
@@ -261,11 +269,22 @@ def _section_nouvelle_paie(
         key="fp_nouvelle_numero_periode",
     )
     date_debut = st.date_input(
-        "Date de début de la période", key="fp_nouvelle_date_debut"
+        "Date de début de la période",
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
+        key="fp_nouvelle_date_debut",
     )
-    date_fin = st.date_input("Date de fin de la période", key="fp_nouvelle_date_fin")
+    date_fin = st.date_input(
+        "Date de fin de la période",
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
+        key="fp_nouvelle_date_fin",
+    )
     date_paiement = st.date_input(
-        "Date de paiement", key="fp_nouvelle_date_paiement"
+        "Date de paiement",
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
+        key="fp_nouvelle_date_paiement",
     )
 
     st.write("Heures — semaine 1")
@@ -486,7 +505,7 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
 
     Simplification documentée (voir docstring de module) : la paie
     cible est identifiée par saisie directe de son ``id_paie`` (recueilli
-    au préalable depuis l'écran « Historique et cumuls »), relue via
+    au préalable depuis l'écran « Historique et cumuls annuels »), relue via
     ``lire_paie``, puis pré-remplit un formulaire de réassemblage
     identique au flux de nouvelle paie. ``version = version_ciblee + 1``
     (Req 13.3) et confirmation explicite avant ``remplacer_paie``
@@ -498,7 +517,10 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         "id_paie de la paie EMISE à corriger", key="fp_corriger_ancien_id"
     )
     if not ancien_id:
-        st.info("Saisissez l'id_paie d'une paie EMISE (voir Historique et cumuls).")
+        st.info(
+            "Saisissez l'id_paie d'une paie EMISE (voir Historique et "
+            "cumuls annuels)."
+        )
         return
 
     resultat_ancienne_paie = executer_avec_capture(
@@ -566,16 +588,22 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
     date_debut = st.date_input(
         "Date de début de la période",
         value=semaines[0].date_debut,
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
         key="fp_corriger_date_debut",
     )
     date_fin = st.date_input(
         "Date de fin de la période",
         value=semaines[-1].date_fin,
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
         key="fp_corriger_date_fin",
     )
     date_paiement = st.date_input(
         "Date de paiement",
         value=ancienne_paie.pay_period.date_paiement,
+        min_value=_DATE_PERIODE_MIN,
+        max_value=_DATE_PERIODE_MAX,
         key="fp_corriger_date_paiement",
     )
 

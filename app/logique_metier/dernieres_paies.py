@@ -192,3 +192,31 @@ def formater_option_annee(annee: int, saison: str | None) -> str:
     `"<annee>"` seul.
     """
     return f"{annee} ({saison})" if saison else str(annee)
+
+
+def numeros_periode_disponibles(
+    resumes: tuple[LignePaieResume, ...]
+) -> tuple[int, ...]:
+    """Numéros de période distincts présents dans ``resumes``, triés croissant.
+
+    Filtre pur, sans accès disque — destiné à alimenter une liste
+    déroulante de numéros de période déjà utilisés par un employé pour
+    une année donnée (typiquement après un appel à :func:`filtrer_par_annee`),
+    plutôt qu'un `st.number_input` libre acceptant n'importe quelle valeur
+    entre 1 et 27. Ergonomie de saisie pure — aucune règle fiscale
+    associée, aucune donnée inventée : uniquement les numéros de période
+    pour lesquels ``resumes`` contient effectivement au moins une paie.
+    """
+    return tuple(sorted({r.numero_periode for r in resumes}))
+
+
+def annees_disponibles(resumes: tuple[LignePaieResume, ...]) -> tuple[int, ...]:
+    """Années fiscales distinctes présentes dans ``resumes``, triées croissant.
+
+    Filtre pur, sans accès disque — destiné à alimenter une liste
+    déroulante des années pour lesquelles un employé a au moins une paie
+    (écran « Historique et cumuls »), plutôt qu'un `st.number_input`
+    libre acceptant n'importe quelle année entre 2000 et 2100. Même
+    discipline que :func:`numeros_periode_disponibles`.
+    """
+    return tuple(sorted({r.annee_fiscale for r in resumes}))

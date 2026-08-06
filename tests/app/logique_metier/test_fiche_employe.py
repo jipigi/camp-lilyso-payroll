@@ -508,3 +508,168 @@ class TestPropagationMiseAJour:
         # fonction, mais on vérifie que l'instance passée en argument
         # reste elle-même inchangée, cohérent avec `frozen=True`).
         assert employee.retenue_additionnelle_federale == Decimal("0.00")
+
+
+class TestMiseAJourInformationsPrincipalesImmuable:
+    """Mise à jour immuable des 6 informations principales d'une
+    Fiche_Employe (bug UI corrigé après livraison — édition des champs du
+    formulaire de création depuis la Fiche_Employe_Detaillee, même patron
+    exact que ``TestMiseAJourFiscaleImmuable`` pour
+    ``mettre_a_jour_donnees_fiscales``).
+
+    Design : ``mettre_a_jour_informations_principales`` reconstruit une
+    **nouvelle** instance ``Employee`` dont les 6 champs principaux
+    (``nom_affichage``, ``date_naissance``, ``titre_emploi``,
+    ``taux_horaire_base``, ``date_embauche``, ``date_fin_emploi``,
+    ``taux_indemnite_vacances`` — 7 champs au total) égalent exactement
+    les nouvelles valeurs fournies, tous les autres champs (dont les 6
+    champs fiscaux TD1/TP-1015.3) restant identiques à l'original ;
+    l'original reste inchangé après l'appel.
+    """
+
+    #: Alphabet ASCII lisible, réutilisation exacte de
+    #: `tests/models/test_employee.py::_ALPHABET_TEXTE` — ne contient
+    #: aucun caractère blanchi par `str_strip_whitespace=True`
+    #: (`Employee.model_config`), ce qui évite d'invalider
+    #: `min_length=1` par accident (bug de stratégie de test, pas du
+    #: code sous test).
+    _ALPHABET_TEXTE_SANS_BLANCS = st.characters(
+        min_codepoint=0x41,
+        max_codepoint=0x7A,
+        whitelist_categories=("Lu", "Ll", "Nd"),
+    )
+
+    @pytest.mark.property
+    @given(
+        employee=st_employee_valide(),
+        nouveau_nom_affichage=st.text(
+            alphabet=_ALPHABET_TEXTE_SANS_BLANCS, min_size=1, max_size=40
+        ),
+        nouvelle_date_naissance=st.dates(
+            min_value=date(1960, 1, 1), max_value=date(2015, 12, 31)
+        ),
+        nouveau_titre_emploi=st.text(
+            alphabet=_ALPHABET_TEXTE_SANS_BLANCS, min_size=1, max_size=40
+        ),
+        nouveau_taux_horaire_base=st.decimals(
+            min_value=Decimal("10.00"),
+            max_value=Decimal("60.00"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        nouvelle_date_embauche=st.dates(
+            min_value=date(2020, 1, 1), max_value=date(2028, 12, 31)
+        ),
+        nouveau_taux_indemnite_vacances=st.sampled_from(
+            [Decimal("0.04"), Decimal("0.06")]
+        ),
+    )
+    @settings_employee
+    def test_nouvelle_instance_7_champs_maj_reste_identique_sinon(
+        self,
+        employee: Employee,
+        nouveau_nom_affichage: str,
+        nouvelle_date_naissance: date,
+        nouveau_titre_emploi: str,
+        nouveau_taux_horaire_base: Decimal,
+        nouvelle_date_embauche: date,
+        nouveau_taux_indemnite_vacances: Decimal,
+    ) -> None:
+        """Pour toute ``Employee`` valide et toute combinaison valide des 7
+        nouvelles informations principales (``date_fin_emploi`` fixée à
+        ``None`` dans ce test), vérifie que
+        ``mettre_a_jour_informations_principales`` retourne une nouvelle
+        instance dont ces champs égalent exactement les nouvelles
+        valeurs, dont tous les autres champs (y compris les 6 champs
+        fiscaux) égalent ceux de l'original, et que l'original demeure
+        inchangé.
+        """
+        from app.logique_metier.fiche_employe import (
+            mettre_a_jour_informations_principales,
+        )
+
+        employee_avant = employee.model_copy(deep=True)
+
+        resultat = mettre_a_jour_informations_principales(
+            employee,
+            nom_affichage=nouveau_nom_affichage,
+            date_naissance=nouvelle_date_naissance,
+            titre_emploi=nouveau_titre_emploi,
+            taux_horaire_base=nouveau_taux_horaire_base,
+            date_embauche=nouvelle_date_embauche,
+            date_fin_emploi=None,
+            taux_indemnite_vacances=nouveau_taux_indemnite_vacances,
+        )
+
+        assert resultat.nom_affichage == nouveau_nom_affichage
+        assert resultat.date_naissance == nouvelle_date_naissance
+        assert resultat.titre_emploi == nouveau_titre_emploi
+        assert resultat.taux_horaire_base == nouveau_taux_horaire_base
+        assert resultat.date_embauche == nouvelle_date_embauche
+        assert resultat.date_fin_emploi is None
+        assert resultat.taux_indemnite_vacances == nouveau_taux_indemnite_vacances
+
+        # Champs fiscaux et identité inchangés.
+        assert resultat.id == employee_avant.id
+        assert resultat.province_travail == employee_avant.province_travail
+        assert (
+            resultat.montant_total_TP1015_3 == employee_avant.montant_total_TP1015_3
+        )
+        assert resultat.exoneration_TP1015_3 == employee_avant.exoneration_TP1015_3
+        assert (
+            resultat.retenue_additionnelle_QC
+            == employee_avant.retenue_additionnelle_QC
+        )
+        assert resultat.montant_total_TD1 == employee_avant.montant_total_TD1
+        assert resultat.exoneration_TD1 == employee_avant.exoneration_TD1
+        assert (
+            resultat.retenue_additionnelle_federale
+            == employee_avant.retenue_additionnelle_federale
+        )
+
+        assert employee == employee_avant
+
+    def test_valeur_hors_matrice_leve_unsupported_payroll_case(self) -> None:
+        """Test explicite du même point de vigilance que pour les données
+        fiscales : appeler ``mettre_a_jour_informations_principales`` avec
+        un ``taux_indemnite_vacances`` hors matrice (ex.
+        ``Decimal("0.05")``) DOIT lever ``UnsupportedPayrollCase``. Ce
+        test échouerait silencieusement si l'implémentation utilisait
+        ``employee.model_copy(update={...})``.
+        """
+        from models.exceptions import UnsupportedPayrollCase
+
+        from app.logique_metier.fiche_employe import (
+            mettre_a_jour_informations_principales,
+        )
+
+        employee = Employee(
+            id="EMP003",
+            nom_affichage="Employe Test EMP003",
+            date_naissance=date(2000, 1, 1),
+            province_travail=Juridiction.QUEBEC,
+            titre_emploi="Moniteur",
+            taux_horaire_base=Decimal("18.50"),
+            date_embauche=date(2024, 6, 1),
+            date_fin_emploi=None,
+            taux_indemnite_vacances=Decimal("0.04"),
+            exoneration_TP1015_3=False,
+            exoneration_TD1=False,
+            montant_total_TP1015_3=Decimal("18952.00"),
+            montant_total_TD1=Decimal("16452.00"),
+            retenue_additionnelle_QC=Decimal("0.00"),
+            retenue_additionnelle_federale=Decimal("0.00"),
+        )
+
+        with pytest.raises(UnsupportedPayrollCase):
+            mettre_a_jour_informations_principales(
+                employee,
+                nom_affichage=employee.nom_affichage,
+                date_naissance=employee.date_naissance,
+                titre_emploi=employee.titre_emploi,
+                taux_horaire_base=employee.taux_horaire_base,
+                date_embauche=employee.date_embauche,
+                date_fin_emploi=employee.date_fin_emploi,
+                taux_indemnite_vacances=Decimal("0.05"),
+            )

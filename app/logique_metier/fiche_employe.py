@@ -53,6 +53,7 @@ d'``Employee``.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import TypedDict
 
@@ -154,5 +155,52 @@ def mettre_a_jour_donnees_fiscales(
             "montant_total_TD1": montant_total_TD1,
             "exoneration_TD1": exoneration_TD1,
             "retenue_additionnelle_federale": retenue_additionnelle_federale,
+        }
+    )
+
+
+def mettre_a_jour_informations_principales(
+    employee: Employee,
+    *,
+    nom_affichage: str,
+    date_naissance: date,
+    titre_emploi: str,
+    taux_horaire_base: Decimal,
+    date_embauche: date,
+    date_fin_emploi: date | None,
+    taux_indemnite_vacances: Decimal,
+) -> Employee:
+    """Reconstruit un `Employee` immuable avec les 6 champs principaux mis
+    à jour (les mêmes champs saisis au formulaire de création — Req 4.7),
+    tous les autres champs (dont les 6 champs fiscaux TD1/TP-1015.3)
+    inchangés.
+
+    **Constructeur complet, jamais `model_copy`** — même correction et
+    même justification que :func:`mettre_a_jour_donnees_fiscales` (voir
+    le docstring de cette fonction et le module docstring) :
+    `employee.model_copy(update={...})` ne ré-exécute pas les
+    validateurs Pydantic d'`Employee`, ce qui laisserait passer
+    silencieusement une valeur hors matrice (ex. `taux_indemnite_vacances`
+    hors `{0.04, 0.06}`, `taux_horaire_base` négatif) sans lever
+    `UnsupportedPayrollCase`/`ValidationError`. Le constructeur complet
+    `Employee(**{**employee.model_dump(), <6 champs mis à jour>})`
+    ré-exécute tous les validateurs, garantissant que ces garde-fous
+    restent actifs. Toute violation lève l'erreur de validation
+    d'origine, propagée sans interception ni reformulation — cette
+    fonction ne fait elle-même aucune validation supplémentaire.
+
+    `employee` (l'original) reste inchangé (`frozen=True`) ; l'instance
+    retournée est toujours **nouvelle** et intégralement revalidée.
+    """
+    return Employee(
+        **{
+            **employee.model_dump(),
+            "nom_affichage": nom_affichage,
+            "date_naissance": date_naissance,
+            "titre_emploi": titre_emploi,
+            "taux_horaire_base": taux_horaire_base,
+            "date_embauche": date_embauche,
+            "date_fin_emploi": date_fin_emploi,
+            "taux_indemnite_vacances": taux_indemnite_vacances,
         }
     )
