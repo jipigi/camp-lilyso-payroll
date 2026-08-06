@@ -40,22 +40,26 @@ page_tableau_de_bord = st.Page(
     tableau_de_bord.render,
     title="Tableau de bord",
     icon=":material/dashboard:",
+    url_path="tableau-de-bord",
     default=True,
 )
 page_fiche_employe = st.Page(
     fiche_employe_detaillee.render,
     title="Fiche employé",
     icon=":material/person:",
+    url_path="fiche-employe",
 )
 page_formulaire_paie = st.Page(
     formulaire_paie.render,
     title="Nouvelle paie / correction",
     icon=":material/receipt_long:",
+    url_path="formulaire-paie",
 )
 page_historique = st.Page(
     historique_et_cumuls.render,
     title="Historique et cumuls",
     icon=":material/history:",
+    url_path="historique-et-cumuls",
 )
 
 navigation = st.navigation(
