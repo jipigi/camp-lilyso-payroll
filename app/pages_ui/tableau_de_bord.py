@@ -106,6 +106,21 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
         st.info("Aucun employé enregistré dans l'Annuaire_Employes.")
         return
 
+    # En-têtes de colonnes — mêmes proportions que les lignes ci-dessous
+    # (Req 4.2), pour que l'opérateur identifie chaque colonne sans
+    # deviner son contenu.
+    col_entete_id, col_entete_nom, col_entete_derniere_paie, col_entete_actions = (
+        st.columns([2, 3, 3, 3])
+    )
+    with col_entete_id:
+        st.markdown("**No. d'employé**")
+    with col_entete_nom:
+        st.markdown("**Prénom et nom**")
+    with col_entete_derniere_paie:
+        st.markdown("**Dernière paie**")
+    with col_entete_actions:
+        st.markdown("**Actions**")
+
     for employe in employes:
         resultat_resumes = executer_avec_capture(
             lambda employe_id=employe.id: lire_resumes_paies(employe_id)
