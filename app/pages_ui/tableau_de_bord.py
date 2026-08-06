@@ -197,6 +197,16 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
                 # `Page` (pas un chemin de fichier) est requis ici car
                 # la page est définie par un callable
                 # (`app/pages_ui/_navigation.py`).
+                #
+                # Bug UI corrigé après livraison (2) : `formulaire_paie.py`
+                # ne lit jamais `_CLE_EMPLOYE_SELECTIONNE` pour
+                # pré-sélectionner l'employé dans la liste déroulante —
+                # il lit exclusivement `fp_employe_id_precharge` (même
+                # clé que le lien « Dernière paie » ci-dessus et que le
+                # bouton « Ajouter une paie » de la Fiche_Employe_
+                # Detaillee). Sans cette clé, la liste déroulante
+                # revenait toujours au premier employé de l'Annuaire.
+                st.session_state["fp_employe_id_precharge"] = employe.id
                 from app.pages_ui._navigation import page_formulaire_paie
 
                 st.switch_page(page_formulaire_paie)
