@@ -150,35 +150,39 @@ Séquence de développement du moteur de paie Camp LilySO. Chaque étape corresp
 - Property test : cumul YTD n paies = somme des paies 1..n
 - Test d'annulation-remplacement (immutabilité, versionnement)
 
-## Étape 7 — Spec `bulletin-pdf`
-
-**Objectif** : générer un bulletin PDF conforme aux exigences du guide TP-1015.G.
-
-**Livrables** :
-
-- `payroll_engine/paystub.py` (reportlab, weasyprint ou équivalent)
-- Bulletin employé (sans charges patronales)
-- Registre maître (avec charges patronales)
-
-**Tests** :
-
-- Snapshot PDF (comparaison structure)
-- Présence des champs obligatoires
-
-## Étape 8 — Spec `interface-streamlit`
+## Étape 7 — Spec `interface-streamlit`
 
 **Objectif** : interface locale pour saisir une paie et générer les livrables.
 
 **Livrables** :
 
 - `app/main.py` (Streamlit)
-- Sélection employé → saisie heures → génération paie et PDF
-- Consultation du registre maître
+- Sélection employé → saisie heures → génération paie (`assembler_paie`) et insertion au registre (`inserer_paie`)
+- Consultation du registre maître (historique, cumuls YTD)
+- Export CSV/JSON de la paie assemblée en attendant le bulletin PDF (étape 8)
 
 **Tests** :
 
-- Tests d'intégration : parcours saisie → PDF sans erreur
+- Tests d'intégration : parcours saisie → paie assemblée et enregistrée dans le registre sans erreur
 - Aucun test UI automatisé au niveau des composants (hors périmètre MVP)
+
+> **Note (2026-08-05) — inversion des étapes 7 et 8** : l'interface Streamlit est livrée avant la génération du bulletin PDF, à la demande explicite du projet, pour permettre la saisie et la consultation du registre dès cette étape. Le bouton de génération PDF sera ajouté à `app/main.py` lors de l'étape 8, une fois `payroll_engine/paystub.py` livré.
+
+## Étape 8 — Spec `bulletin-pdf`
+
+**Objectif** : générer un bulletin PDF conforme aux exigences du guide TP-1015.G, intégré à l'interface Streamlit livrée à l'étape 7.
+
+**Livrables** :
+
+- `payroll_engine/paystub.py` (reportlab, weasyprint ou équivalent)
+- Bulletin employé (sans charges patronales)
+- Registre maître (avec charges patronales)
+- Intégration du bouton de génération PDF dans `app/main.py` (étape 7)
+
+**Tests** :
+
+- Snapshot PDF (comparaison structure)
+- Présence des champs obligatoires
 
 ## Étape 9 — Validation croisée continue
 
@@ -198,6 +202,6 @@ Si la première saison arrive avant la complétion de toutes les étapes :
 2. Étape 4 (impôts QC et fédéral) est nécessaire
 3. Étape 5 (charges patronales) est nécessaire pour la comptabilité
 4. Étape 6 (registre) est nécessaire pour les cumuls
-5. Étape 7 (PDF) et Étape 8 (Streamlit) peuvent temporairement être remplacés par un export CSV et une saisie via un notebook Jupyter
+5. Étape 7 (Streamlit) et Étape 8 (PDF) peuvent temporairement être remplacées par un export CSV et une saisie via un notebook Jupyter
 
 L'objectif reste **exactitude avant automatisation**.

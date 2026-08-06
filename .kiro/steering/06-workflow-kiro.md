@@ -51,8 +51,8 @@ Chaque module de calcul doit inclure au minimum ces propriétés :
 4. `impots-retenues-source` — impôt QC (TP-1015.F, exonération TP-1015.3) et impôt fédéral (T4127, exonération TD1), regroupées car formes de formule identiques (paliers progressifs, exonération, retenue additionnelle)
 5. `charges-patronales` — FSS, CNESST, CNT
 6. `net-cumuls-registre` — assemblage, cumuls YTD, registre maître
-7. `bulletin-pdf` — génération du bulletin PDF
-8. `interface-streamlit` — saisie et affichage
+7. `interface-streamlit` — saisie et affichage (avant le bulletin PDF, à la demande du projet)
+8. `bulletin-pdf` — génération du bulletin PDF, intégrée à l'interface livrée à l'étape 7
 
 ## Discipline générale
 
