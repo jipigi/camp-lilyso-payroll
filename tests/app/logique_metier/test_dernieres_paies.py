@@ -313,6 +313,9 @@ def _st_champs_ligne_paie_resume(draw: st.DrawFn) -> dict[str, object]:
         "saison": draw(st_saison()),
         "annee_fiscale": draw(_st_annee_fiscale_arbitraire()),
         "date_creation": draw(_st_date_creation_triable()),
+        "date_emission": draw(
+            st.one_of(st.none(), _st_date_creation_triable())
+        ),
     }
 
 
@@ -499,6 +502,46 @@ class TestNumerosPeriodeDisponibles:
             f"présents dans `resumes` ; attendu {resultat_attendu!r}, "
             f"obtenu {resultat_obtenu!r}."
         )
+
+
+class TestDernierePaieCreee:
+    """Test d'exemple/property de `derniere_paie_creee` (Req 4.2 — bug UI
+    corrigé après livraison : statut et date de la dernière paie créée
+    affichés au Tableau_De_Bord).
+    """
+
+    @pytest.mark.property
+    @given(champs_lignes=_st_liste_champs_lignes_paie_resume())
+    @settings_large_input
+    def test_retourne_le_resume_de_date_creation_maximale_ou_none(
+        self,
+        champs_lignes: tuple[dict[str, object], ...],
+    ) -> None:
+        """`derniere_paie_creee(resumes)` égale exactement le
+        `LignePaieResume` de `date_creation` maximale, ou `None` si
+        `resumes` est vide.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            derniere_paie_creee,
+        )
+
+        resumes = tuple(LignePaieResume(**champs) for champs in champs_lignes)
+
+        resultat_obtenu = derniere_paie_creee(resumes)
+
+        if not resumes:
+            assert resultat_obtenu is None, (
+                "`derniere_paie_creee(())` doit retourner `None` pour "
+                f"une séquence vide ; obtenu {resultat_obtenu!r}."
+            )
+        else:
+            resultat_attendu = max(resumes, key=lambda r: r.date_creation)
+            assert resultat_obtenu == resultat_attendu, (
+                f"`derniere_paie_creee(resumes)` doit retourner le "
+                f"résumé de `date_creation` maximale ; attendu "
+                f"{resultat_attendu!r}, obtenu {resultat_obtenu!r}."
+            )
 
 
 class TestAnneesDisponibles:

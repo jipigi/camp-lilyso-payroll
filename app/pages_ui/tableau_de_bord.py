@@ -42,7 +42,10 @@ from datetime import date
 import streamlit as st
 
 from app.logique_metier.annuaire_employes import lister_employes
-from app.logique_metier.dernieres_paies import derniere_annee_paie
+from app.logique_metier.dernieres_paies import (
+    derniere_paie_creee,
+    lire_resumes_paies,
+)
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
 from models.employee import Employee
 
@@ -50,6 +53,17 @@ from models.employee import Employee
 #: d'année vers les pages voisines (Req 4.5, 4.6).
 _CLE_EMPLOYE_SELECTIONNE = "employe_id_selectionne"
 _CLE_ANNEE_PAIE_DEFAUT = "annee_paie_defaut"
+
+#: Libellés d'affichage des statuts de paie (`StatutDePaie`, valeurs
+#: internes en minuscules) — bug UI corrigé après livraison (Req 4.2) :
+#: le Tableau_De_Bord affiche désormais le statut et la date pertinente
+#: de la dernière paie créée pour chaque employé.
+_LIBELLES_STATUT: dict[str, str] = {
+    "brouillon": "Brouillon",
+    "emise": "Émise",
+    "annulee": "Annulée",
+    "remplace_par": "Remplacée",
+}
 
 
 def render() -> None:
@@ -79,25 +93,53 @@ def render() -> None:
 
 
 def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
-    """Affiche une ligne par Fiche_Employe avec ses raccourcis (Req 4.1 à 4.6)."""
+    """Affiche une ligne par Fiche_Employe avec ses raccourcis (Req 4.1 à 4.6).
+
+    Bug UI corrigé après livraison (Req 4.2) : chaque ligne affiche
+    désormais aussi le statut de la dernière paie créée pour l'employé
+    (Brouillon/Émise/Annulée/Remplacée) et la date pertinente — date
+    d'émission si Émise/Annulée/Remplacée (`date_emission`), date de
+    dernier enregistrement si Brouillon (`date_creation`, seule date
+    renseignée dans ce cas).
+    """
     if not employes:
         st.info("Aucun employé enregistré dans l'Annuaire_Employes.")
         return
 
     for employe in employes:
-        annee_derniere = derniere_annee_paie(employe.id)
-        col_id, col_nom, col_annee, col_actions = st.columns([2, 3, 2, 3])
+        resultat_resumes = executer_avec_capture(
+            lambda employe_id=employe.id: lire_resumes_paies(employe_id)
+        )
+        if isinstance(resultat_resumes, ErreurDomaineAffichable):
+            derniere_paie = None
+            erreur_resumes: ErreurDomaineAffichable | None = resultat_resumes
+        else:
+            derniere_paie = derniere_paie_creee(resultat_resumes)
+            erreur_resumes = None
+
+        col_id, col_nom, col_derniere_paie, col_actions = st.columns([2, 3, 3, 3])
 
         with col_id:
             st.write(employe.id)
         with col_nom:
             st.write(employe.nom_affichage)
-        with col_annee:
-            st.write(
-                str(annee_derniere)
-                if annee_derniere is not None
-                else "Aucune paie enregistrée"
-            )
+        with col_derniere_paie:
+            if erreur_resumes is not None:
+                st.write(
+                    f"{erreur_resumes.type_exception}: {erreur_resumes.message}"
+                )
+            elif derniere_paie is None:
+                st.write("Aucune paie enregistrée")
+            else:
+                libelle_statut = _LIBELLES_STATUT.get(
+                    derniere_paie.statut, derniere_paie.statut
+                )
+                date_pertinente = (
+                    derniere_paie.date_emission
+                    if derniere_paie.date_emission
+                    else derniere_paie.date_creation
+                )
+                st.write(f"{libelle_statut} — {date_pertinente}")
         with col_actions:
             if st.button(
                 "Ajouter une paie",

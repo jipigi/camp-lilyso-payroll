@@ -95,6 +95,11 @@ class LignePaieResume:
     saison: str
     annee_fiscale: int
     date_creation: str
+    date_emission: str | None = None
+    """Date d'émission officielle (Req 6.7 de `PayrollResult` — requise
+    dès que `statut` ∈ {EMISE, ANNULEE, REMPLACE_PAR}) ; `None` en
+    `BROUILLON`. Ajouté après livraison pour le Tableau_De_Bord (statut
+    et date de la dernière paie créée d'un employé)."""
 
 
 def lire_resumes_paies(
@@ -120,7 +125,7 @@ def lire_resumes_paies(
         try:
             lignes = connexion.execute(
                 "SELECT id_paie, numero_periode, saison, version, statut, "
-                "annee_fiscale, date_creation, payload_json "
+                "annee_fiscale, date_creation, date_emission, payload_json "
                 "FROM paies WHERE employe_id = ?",
                 (employe_id,),
             ).fetchall()
@@ -140,6 +145,7 @@ def lire_resumes_paies(
         statut,
         annee_fiscale,
         date_creation,
+        date_emission,
         payload_json,
     ) in lignes:
         resultat = PayrollResult.model_validate_json(payload_json)
@@ -153,6 +159,7 @@ def lire_resumes_paies(
                 saison=saison,
                 annee_fiscale=annee_fiscale,
                 date_creation=date_creation,
+                date_emission=date_emission,
             )
         )
     return tuple(sorted(resumes, key=lambda r: (r.annee_fiscale, r.date_creation)))
@@ -208,6 +215,23 @@ def numeros_periode_disponibles(
     pour lesquels ``resumes`` contient effectivement au moins une paie.
     """
     return tuple(sorted({r.numero_periode for r in resumes}))
+
+
+def derniere_paie_creee(
+    resumes: tuple[LignePaieResume, ...]
+) -> LignePaieResume | None:
+    """Résumé de la paie la plus récemment créée (`date_creation` maximale).
+
+    Filtre pur, sans accès disque — destiné au Tableau_De_Bord (Req 4.2)
+    pour afficher le statut et la date pertinente (`date_emission` si
+    `EMISE`/`ANNULEE`/`REMPLACE_PAR`, `date_creation` sinon —
+    `BROUILLON`) de la dernière paie créée d'un employé, en complément
+    de :func:`derniere_annee_paie` (qui ne renvoie que l'année).
+    `None` si ``resumes`` est vide (aucune paie enregistrée).
+    """
+    if not resumes:
+        return None
+    return max(resumes, key=lambda r: r.date_creation)
 
 
 def annees_disponibles(resumes: tuple[LignePaieResume, ...]) -> tuple[int, ...]:
