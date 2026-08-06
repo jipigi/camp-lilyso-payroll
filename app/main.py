@@ -5,12 +5,14 @@ Spec de référence : ``interface-streamlit`` — tâche 26.1 (Req 3.2, 4.1,
 Design de référence : ``design.md`` §Architecture « Navigation
 multipage ».
 
-Ce module assemble les cinq pages de rendu de `app/pages_ui/`
+Ce module assemble les six pages de rendu de `app/pages_ui/`
 (`tableau_de_bord`, `nouvel_employe`, `fiche_employe_detaillee`,
-`formulaire_paie`, `historique_et_cumuls`) via `st.Page`/`st.navigation`
-(décision n° 6) et applique l'identité visuelle globale
-(`st.set_page_config`, Req 3.2). `nouvel_employe` (Req 4.4) a été
-ajoutée après livraison — voir `app/pages_ui/nouvel_employe.py`.
+`formulaire_paie`, `historique_et_cumuls`, `bulletin_paie`) via
+`st.Page`/`st.navigation` (décision n° 6) et applique l'identité
+visuelle globale (`st.set_page_config`, Req 3.2). `nouvel_employe`
+(Req 4.4) et `bulletin_paie` (consultation d'une paie émise) ont été
+ajoutées après livraison — voir `app/pages_ui/nouvel_employe.py` et
+`app/pages_ui/bulletin_paie.py`.
 
 Aucune logique métier n'est introduite ici : ce module se contente de
 déclarer la structure de navigation et de démarrer son exécution
@@ -27,6 +29,7 @@ from __future__ import annotations
 import streamlit as st
 
 from app.pages_ui import (
+    bulletin_paie,
     fiche_employe_detaillee,
     formulaire_paie,
     historique_et_cumuls,
@@ -71,6 +74,12 @@ page_historique = st.Page(
     icon=":material/history:",
     url_path="historique-et-cumuls",
 )
+page_bulletin_paie = st.Page(
+    bulletin_paie.render,
+    title="Bulletin de paie",
+    icon=":material/description:",
+    url_path="bulletin-paie",
+)
 
 
 # Enregistrement des objets `st.Page` avant `navigation.run()` — permet
@@ -84,6 +93,7 @@ configurer_pages(
     fiche_employe=page_fiche_employe,
     formulaire_paie=page_formulaire_paie,
     historique=page_historique,
+    bulletin_paie=page_bulletin_paie,
 )
 
 navigation = st.navigation(
@@ -93,6 +103,7 @@ navigation = st.navigation(
         page_fiche_employe,
         page_formulaire_paie,
         page_historique,
+        page_bulletin_paie,
     ]
 )
 navigation.run()

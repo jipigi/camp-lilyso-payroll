@@ -316,6 +316,9 @@ def _st_champs_ligne_paie_resume(draw: st.DrawFn) -> dict[str, object]:
         "date_emission": draw(
             st.one_of(st.none(), _st_date_creation_triable())
         ),
+        "date_paiement": draw(
+            st.one_of(st.none(), _st_date_creation_triable())
+        ),
     }
 
 
@@ -542,6 +545,134 @@ class TestDernierePaieCreee:
                 f"résumé de `date_creation` maximale ; attendu "
                 f"{resultat_attendu!r}, obtenu {resultat_obtenu!r}."
             )
+
+
+class TestProchaineVersion:
+    """Test d'exemple/property de `prochaine_version` — bug UI corrigé
+    après livraison (éviter la collision d'``id_paie`` lors de la
+    poursuite de saisie d'un brouillon).
+    """
+
+    @pytest.mark.property
+    @given(
+        champs_lignes=_st_liste_champs_lignes_paie_resume(),
+        numero_periode_test=st.integers(min_value=1, max_value=27),
+    )
+    @settings_large_input
+    def test_retourne_max_version_plus_un_ou_un_si_absent(
+        self,
+        champs_lignes: tuple[dict[str, object], ...],
+        numero_periode_test: int,
+    ) -> None:
+        """`prochaine_version(resumes, numero_periode)` égale exactement
+        `max(versions correspondantes) + 1`, ou `1` si aucun résumé ne
+        correspond à `numero_periode`.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            prochaine_version,
+        )
+
+        resumes = tuple(LignePaieResume(**champs) for champs in champs_lignes)
+
+        resultat_obtenu = prochaine_version(resumes, numero_periode_test)
+
+        versions_correspondantes = tuple(
+            r.version for r in resumes if r.numero_periode == numero_periode_test
+        )
+        resultat_attendu = (
+            max(versions_correspondantes) + 1 if versions_correspondantes else 1
+        )
+
+        assert resultat_obtenu == resultat_attendu, (
+            f"`prochaine_version(resumes, {numero_periode_test!r})` doit "
+            f"retourner {resultat_attendu!r}, obtenu {resultat_obtenu!r}."
+        )
+
+
+class TestDernieresVersionsParPeriode:
+    """Test d'exemple/property de `dernieres_versions_par_periode` — décision
+    opérationnelle Camp LilySO (masquer les versions obsolètes d'un
+    même `numero_periode` dans le tableau des paies).
+    """
+
+    @pytest.mark.property
+    @given(champs_lignes=_st_liste_champs_lignes_paie_resume())
+    @settings_large_input
+    def test_retourne_exactement_la_version_maximale_par_periode_triee(
+        self,
+        champs_lignes: tuple[dict[str, object], ...],
+    ) -> None:
+        """`dernieres_versions_par_periode(resumes)` égale exactement,
+        pour chaque `numero_periode` distinct, le résumé de `version`
+        maximale — trié par `numero_periode` croissant.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            dernieres_versions_par_periode,
+        )
+
+        resumes = tuple(LignePaieResume(**champs) for champs in champs_lignes)
+
+        resultat_obtenu = dernieres_versions_par_periode(resumes)
+
+        par_periode_attendu: dict[int, LignePaieResume] = {}
+        for resume in resumes:
+            actuel = par_periode_attendu.get(resume.numero_periode)
+            if actuel is None or resume.version > actuel.version:
+                par_periode_attendu[resume.numero_periode] = resume
+        resultat_attendu = tuple(
+            par_periode_attendu[np] for np in sorted(par_periode_attendu.keys())
+        )
+
+        assert resultat_obtenu == resultat_attendu, (
+            f"`dernieres_versions_par_periode(resumes)` doit retourner, "
+            f"pour chaque `numero_periode` distinct, le résumé de "
+            f"`version` maximale, trié par `numero_periode` croissant ; "
+            f"attendu {resultat_attendu!r}, obtenu {resultat_obtenu!r}."
+        )
+
+    def test_exemple_deux_versions_meme_periode_ne_garde_que_la_plus_recente(
+        self,
+    ) -> None:
+        """Test d'exemple explicite du cas motivant cette fonction : deux
+        résumés partageant le même `numero_periode` (un `BROUILLON`
+        version 1, un `BROUILLON` version 2 issu d'une poursuite de
+        saisie via `inserer_paie` plutôt qu'un remplacement) — seule la
+        version 2 doit apparaître dans le résultat.
+        """
+        from app.logique_metier.dernieres_paies import (
+            LignePaieResume,
+            dernieres_versions_par_periode,
+        )
+
+        v1 = LignePaieResume(
+            id_paie="PAIE-EMP001-2026-01-v1",
+            numero_periode=1,
+            version=1,
+            statut="brouillon",
+            net="100.00",
+            saison="Été 2026",
+            annee_fiscale=2026,
+            date_creation="2026-06-01T10:00:00",
+        )
+        v2 = LignePaieResume(
+            id_paie="PAIE-EMP001-2026-01-v2",
+            numero_periode=1,
+            version=2,
+            statut="brouillon",
+            net="150.00",
+            saison="Été 2026",
+            annee_fiscale=2026,
+            date_creation="2026-06-02T10:00:00",
+        )
+
+        resultat = dernieres_versions_par_periode((v1, v2))
+
+        assert resultat == (v2,), (
+            "Seule la version la plus récente (v2) doit apparaître dans "
+            f"le résultat ; obtenu {resultat!r}."
+        )
 
 
 class TestAnneesDisponibles:

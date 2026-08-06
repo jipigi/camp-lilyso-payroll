@@ -790,3 +790,113 @@ class TestPropagationErreursFormulaire:
             f"try trouvé(s) à la(aux) ligne(s) "
             f"{[bloc.lineno for bloc in blocs_try]}."
         )
+
+
+class TestValeursEffectivesDepuisPaie:
+    """Test d'exemple de `valeurs_effectives_depuis_paie` — bug UI corrigé
+    après livraison (pré-remplissage du Formulaire_Paie pour poursuivre
+    l'édition d'un brouillon ou corriger une paie émise).
+
+    Construit un vrai `PayrollResult` via `assembler_paie` (moteur déjà
+    figé et testé par les six specs antérieures — réutilisé ici sans
+    duplication de logique de calcul), puis vérifie que
+    `valeurs_effectives_depuis_paie` reconstitue exactement les valeurs
+    d'entrée d'origine (round-trip `PayrollInput` → `PayrollResult` →
+    dict reconstruit).
+    """
+
+    def test_round_trip_reconstruit_exactement_les_valeurs_dentree(self) -> None:
+        """Round-trip : les valeurs reconstruites par
+        `valeurs_effectives_depuis_paie(resultat)` égalent exactement
+        celles fournies au `PayrollInput` d'origine.
+
+        Ne couvre volontairement PAS les heures par semaine
+        (`heures_normales_1`/`heures_supplementaires_1`/
+        `heures_normales_2`/`heures_supplementaires_2`) — décision
+        explicite (discussion utilisateur) documentée dans le docstring
+        de `valeurs_effectives_depuis_paie` : ces valeurs ne sont pas
+        récupérables depuis un `PayrollResult` déjà assemblé (non
+        persistées par `assembler_paie`), la fonction ne les inclut
+        donc pas dans le dict retourné.
+        """
+        from datetime import datetime
+
+        from app.logique_metier.formulaire_paie import (
+            construire_payroll_input,
+            generer_id_paie,
+            valeurs_effectives_depuis_paie,
+        )
+        from models.enums import StatutDePaie
+        from payroll_engine.net_pay import assembler_paie
+        from tests.strategies import _charger_parametres_annee_2026_qc_ca
+
+        kwargs = _kwargs_valides_construction_payroll_input()
+        # Valeurs non nulles pour vérifier une reconstruction significative
+        # (une valeur à 0.00 partout masquerait un bug de mapping de champ).
+        kwargs["heures_semaine_1"] = HeuresParSemaine(
+            heures_normales=Decimal("40.00"), heures_supplementaires=Decimal("2.00")
+        )
+        kwargs["heures_semaine_2"] = HeuresParSemaine(
+            heures_normales=Decimal("38.50"), heures_supplementaires=Decimal("0.00")
+        )
+        kwargs["jours_feries_manuels"] = Decimal("50.00")
+        kwargs["montant_total_TP1015_3_effectif"] = Decimal("18952.00")
+        kwargs["exoneration_TP1015_3_effectif"] = False
+        kwargs["retenue_additionnelle_QC_effective"] = Decimal("10.00")
+        kwargs["montant_total_TD1_effectif"] = Decimal("16452.00")
+        kwargs["exoneration_TD1_effective"] = False
+        kwargs["retenue_additionnelle_federale_effective"] = Decimal("5.00")
+
+        payroll_input = construire_payroll_input(**kwargs)
+        parametres_annee = _charger_parametres_annee_2026_qc_ca()
+        id_paie = generer_id_paie(
+            kwargs["employee"].id, kwargs["annee_fiscale"], 1, 1
+        )
+        resultat = assembler_paie(
+            payroll_input,
+            parametres_annee,
+            id_paie,
+            1,
+            StatutDePaie.BROUILLON,
+            datetime(2026, 1, 1, 12, 0),
+        )
+
+        reconstruit = valeurs_effectives_depuis_paie(resultat)
+
+        assert reconstruit["numero_periode"] == kwargs["numero_periode"]
+        assert reconstruit["date_debut"] == kwargs["date_debut"]
+        assert reconstruit["date_fin"] == kwargs["date_fin"]
+        assert reconstruit["date_paiement"] == kwargs["date_paiement"]
+        assert reconstruit["annee_fiscale"] == kwargs["annee_fiscale"]
+        # Les heures par semaine ne sont volontairement PAS reconstruites
+        # (voir docstring de `valeurs_effectives_depuis_paie`) — absentes
+        # du dict retourné.
+        assert "heures_normales_1" not in reconstruit
+        assert "heures_supplementaires_1" not in reconstruit
+        assert "heures_normales_2" not in reconstruit
+        assert "heures_supplementaires_2" not in reconstruit
+        assert reconstruit["jours_feries_manuels"] == kwargs["jours_feries_manuels"]
+        assert (
+            reconstruit["montant_total_TP1015_3_effectif"]
+            == kwargs["montant_total_TP1015_3_effectif"]
+        )
+        assert (
+            reconstruit["exoneration_TP1015_3_effectif"]
+            == kwargs["exoneration_TP1015_3_effectif"]
+        )
+        assert (
+            reconstruit["retenue_additionnelle_QC_effective"]
+            == kwargs["retenue_additionnelle_QC_effective"]
+        )
+        assert (
+            reconstruit["montant_total_TD1_effectif"]
+            == kwargs["montant_total_TD1_effectif"]
+        )
+        assert (
+            reconstruit["exoneration_TD1_effective"]
+            == kwargs["exoneration_TD1_effective"]
+        )
+        assert (
+            reconstruit["retenue_additionnelle_federale_effective"]
+            == kwargs["retenue_additionnelle_federale_effective"]
+        )

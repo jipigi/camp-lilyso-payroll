@@ -37,6 +37,7 @@ page_nouvel_employe: Any = None
 page_fiche_employe: Any = None
 page_formulaire_paie: Any = None
 page_historique: Any = None
+page_bulletin_paie: Any = None
 
 
 def configurer_pages(
@@ -46,8 +47,9 @@ def configurer_pages(
     fiche_employe: Any,
     formulaire_paie: Any,
     historique: Any,
+    bulletin_paie: Any,
 ) -> None:
-    """Enregistre les cinq objets ``st.Page`` construits par ``app/main.py``.
+    """Enregistre les six objets ``st.Page`` construits par ``app/main.py``.
 
     Appelée une seule fois, avant ``navigation.run()`` — voir docstring
     de module pour la garantie d'ordre d'exécution.
@@ -57,9 +59,11 @@ def configurer_pages(
         page_nouvel_employe, \
         page_fiche_employe, \
         page_formulaire_paie, \
-        page_historique
+        page_historique, \
+        page_bulletin_paie
     page_tableau_de_bord = tableau_de_bord
     page_nouvel_employe = nouvel_employe
     page_fiche_employe = fiche_employe
     page_formulaire_paie = formulaire_paie
     page_historique = historique
+    page_bulletin_paie = bulletin_paie

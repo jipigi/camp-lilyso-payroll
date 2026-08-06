@@ -84,6 +84,8 @@ from app.logique_metier.annuaire_coordonnees import (
 from app.logique_metier.annuaire_employes import enregistrer_employe, lister_employes
 from app.logique_metier.dernieres_paies import (
     LignePaieResume,
+    annees_disponibles,
+    dernieres_versions_par_periode,
     filtrer_par_annee,
     formater_option_annee,
     lire_resumes_paies,
@@ -94,8 +96,20 @@ from app.logique_metier.fiche_employe import (
     mettre_a_jour_donnees_fiscales,
     mettre_a_jour_informations_principales,
 )
+from app.pages_ui import bulletin_paie
 from models.employee import Employee
-from payroll_engine.register import chemin_bd_production, lire_cumuls_ytd, lire_paie
+from models.enums import StatutDePaie
+from payroll_engine.register import chemin_bd_production, lire_cumuls_ytd
+
+#: Libellés d'affichage des statuts de paie — même dict que
+#: `app/pages_ui/tableau_de_bord.py::_LIBELLES_STATUT`, dupliqué ici
+#: (constante privée d'un autre module de rendu).
+_LIBELLES_STATUT: dict[str, str] = {
+    "brouillon": "Brouillon",
+    "emise": "Émise",
+    "annulee": "Annulée",
+    "remplace_par": "Remplacée",
+}
 
 #: Taux d'indemnité de vacances admis dans le périmètre Camp LilySO
 #: (règle 03) — mêmes deux valeurs que
@@ -443,7 +457,24 @@ def _section_coordonnees(employe_id: str) -> None:
 
 
 def _section_paies(employe_id: str) -> None:
-    """Section (c) — années, paies, valeurs fiscales effectives, cumuls YTD (Req 5.2 à 5.6)."""
+    """Section (c) — années, tableau des paies, cumuls annuels (Req 5.2 à 5.6).
+
+    Bug UI corrigé après livraison (demande explicite de l'utilisateur) :
+
+    1. La liste déroulante des paies est remplacée par un vrai tableau
+       (colonnes : Numéro de période | Id de la paie | Version | Statut
+       | Salaire net | Date de création | Date de paiement | Actions).
+    2. Seule la version la plus récente de chaque `numero_periode` est
+       affichée (:func:`dernieres_versions_par_periode`) — les versions
+       intermédiaires d'un brouillon poursuivi plusieurs fois restent
+       dans le registre mais n'apparaissent plus ici.
+    3. La liste déroulante d'année reste, valeur par défaut = année la
+       plus récente disponible (dernier élément de la liste triée).
+    4. Colonne Actions : bouton « Modifier » (route vers le
+       Formulaire_Paie, pré-rempli, pour un `BROUILLON`) ou « Voir le
+       bulletin » (route vers le Bulletin_De_Paie, pour toute autre
+       statut — `EMISE`/`ANNULEE`/`REMPLACE_PAR`).
+    """
     st.subheader("Paies")
 
     resultat_resumes = executer_avec_capture(lambda: lire_resumes_paies(employe_id))
@@ -456,41 +487,28 @@ def _section_paies(employe_id: str) -> None:
         # Req 5.6 — absence de paie indiquée explicitement, sans exception.
         st.info("Aucune paie enregistrée pour cet employé.")
     else:
+        annees = annees_disponibles(resumes)
         saisons_par_annee = regrouper_saison_par_annee(resumes)
-        annees = sorted(saisons_par_annee.keys())
         options_annees = [
             formater_option_annee(annee, saisons_par_annee.get(annee))
             for annee in annees
         ]
+        # Valeur par défaut = année la plus récente (dernier élément,
+        # `annees_disponibles` retourne un tuple trié croissant).
         index_annee = st.selectbox(
             "Année fiscale",
             options=range(len(annees)),
             format_func=lambda i: options_annees[i],
+            index=len(annees) - 1,
             key=f"fed_annee_{employe_id}",
         )
         annee_selectionnee = annees[index_annee]
 
-        paies_annee = filtrer_par_annee(resumes, annee_selectionnee)
+        paies_annee = dernieres_versions_par_periode(
+            filtrer_par_annee(resumes, annee_selectionnee)
+        )
         st.write(f"Paies de l'année {annee_selectionnee} :")
-        for resume in paies_annee:
-            st.write(
-                f"numero_periode={resume.numero_periode} | "
-                f"id_paie={resume.id_paie} | "
-                f"version={resume.version} | "
-                f"statut={resume.statut} | "
-                f"net={resume.net} | "
-                f"date_creation={resume.date_creation}"
-            )
-
-        # Req 5.4 — valeurs TD1/TP-1015.3 effectives d'une paie choisie.
-        if paies_annee:
-            options_paies = [r.id_paie for r in paies_annee]
-            id_paie_detail = st.selectbox(
-                "Paie pour le détail fiscal effectif",
-                options_paies,
-                key=f"fed_paie_detail_{employe_id}",
-            )
-            _afficher_valeurs_fiscales_effectives(id_paie_detail)
+        _afficher_tableau_paies(employe_id, paies_annee)
 
         # Req 5.4 — cumuls YTD de l'année sélectionnée.
         resultat_cumuls = executer_avec_capture(
@@ -520,60 +538,96 @@ def _section_paies(employe_id: str) -> None:
         key=f"fed_annee_nouvelle_paie_{employe_id}",
     )
     if st.button("Ajouter une paie", type="primary", key=f"fed_ajouter_paie_{employe_id}"):
-        st.session_state[_CLE_EMPLOYE_SELECTIONNE] = employe_id
-        st.session_state[_CLE_ANNEE_PAIE_DEFAUT] = int(annee_nouvelle_paie)
-        st.info(
-            "Rendez-vous sur la page « Formulaire de paie » pour "
-            f"poursuivre l'ajout d'une paie {int(annee_nouvelle_paie)} "
-            f"pour {employe_id}."
-        )
+        st.session_state["fp_employe_id_precharge"] = employe_id
+        # Bug UI corrigé après livraison : ce bouton ne faisait
+        # qu'écrire `st.session_state` sans jamais naviguer — corrigé
+        # par `st.switch_page` (même patron que `tableau_de_bord.py`).
+        from app.pages_ui._navigation import page_formulaire_paie
+
+        st.switch_page(page_formulaire_paie)
 
 
-def _afficher_valeurs_fiscales_effectives(id_paie: str) -> None:
-    """Affiche les 6 valeurs TD1/TP-1015.3 effectives d'une paie (Req 5.4).
+def _afficher_tableau_paies(
+    employe_id: str, paies_annee: tuple[LignePaieResume, ...]
+) -> None:
+    """Tableau des paies de l'année sélectionnée avec colonne Actions
+    (bug UI corrigé après livraison, demande explicite de l'utilisateur).
 
-    Reconstitue ces six valeurs à partir des `CalculationTrace` déjà
-    produites par `assembler_paie` (règle 02 — aucune nouvelle trace
-    n'est inventée ici), en relisant la paie via `lire_paie` (une des
-    six fonctions figées du moteur, Req 18.3).
+    Colonnes : Numéro de période | Id de la paie | Version | Statut |
+    Salaire net | Date de création | Date de paiement | Actions.
     """
-    resultat_paie = executer_avec_capture(
-        lambda: lire_paie(id_paie, chemin_bd=chemin_bd_production())
-    )
-    if isinstance(resultat_paie, ErreurDomaineAffichable):
-        st.error(f"{resultat_paie.type_exception}: {resultat_paie.message}")
+    if not paies_annee:
+        st.info("Aucune paie pour l'année sélectionnée.")
         return
 
-    paie = resultat_paie
-    retenues = paie.retenues_employe
+    proportions = [1, 2, 1, 1, 1, 2, 2, 2]
+    entetes = st.columns(proportions)
+    for col, libelle in zip(
+        entetes,
+        [
+            "Numéro de période",
+            "Id de la paie",
+            "Version",
+            "Statut",
+            "Salaire net",
+            "Date de création",
+            "Date de paiement",
+            "Actions",
+        ],
+    ):
+        with col:
+            st.markdown(f"**{libelle}**")
 
-    exoneration_tp1015_3 = bool(
-        int(retenues.impot_qc_retenu.trace.parametres_utilises["exoneration_active"])
-    )
-    exoneration_td1 = bool(
-        int(
-            retenues.impot_federal_retenu.trace.parametres_utilises[
-                "exoneration_active"
-            ]
-        )
-    )
+    for resume in paies_annee:
+        (
+            col_periode,
+            col_id,
+            col_version,
+            col_statut,
+            col_net,
+            col_creation,
+            col_paiement,
+            col_actions,
+        ) = st.columns(proportions)
 
-    st.write(f"**Valeurs TD1/TP-1015.3 effectives — {id_paie}**")
-    st.write(
-        "Montant total TP-1015.3 effectif : "
-        f"{retenues.impot_qc_formule.trace.entrees['montant_total_tp1015_3']}"
-    )
-    st.write(f"Exonération TP-1015.3 effective : {exoneration_tp1015_3}")
-    st.write(
-        "Retenue additionnelle QC effective : "
-        f"{retenues.impot_qc_retenu.trace.entrees['retenue_additionnelle_qc']}"
-    )
-    st.write(
-        "Montant total TD1 effectif : "
-        f"{retenues.impot_federal_formule.trace.entrees['montant_total_td1']}"
-    )
-    st.write(f"Exonération TD1 effective : {exoneration_td1}")
-    st.write(
-        "Retenue additionnelle fédérale effective : "
-        f"{retenues.impot_federal_retenu.trace.entrees['retenue_additionnelle_federale']}"
-    )
+        with col_periode:
+            st.write(resume.numero_periode)
+        with col_id:
+            st.write(resume.id_paie)
+        with col_version:
+            st.write(resume.version)
+        with col_statut:
+            st.write(_LIBELLES_STATUT.get(resume.statut, resume.statut))
+        with col_net:
+            st.write(f"{resume.net} $")
+        with col_creation:
+            st.write(resume.date_creation)
+        with col_paiement:
+            st.write(resume.date_paiement if resume.date_paiement else "—")
+        with col_actions:
+            if resume.statut == StatutDePaie.BROUILLON.value:
+                if st.button(
+                    "Modifier",
+                    key=f"fed_modifier_{employe_id}_{resume.id_paie}",
+                ):
+                    st.session_state["fp_employe_id_precharge"] = employe_id
+                    st.session_state["fp_nouvelle_id_paie_precharge"] = (
+                        resume.id_paie
+                    )
+                    from app.pages_ui._navigation import page_formulaire_paie
+
+                    st.switch_page(page_formulaire_paie)
+            else:
+                if st.button(
+                    "Voir le bulletin",
+                    key=f"fed_bulletin_{employe_id}_{resume.id_paie}",
+                ):
+                    st.session_state[bulletin_paie.CLE_ID_PAIE_CIBLE] = (
+                        resume.id_paie
+                    )
+                    from app.pages_ui._navigation import page_bulletin_paie
+
+                    st.switch_page(page_bulletin_paie)
+
+
+

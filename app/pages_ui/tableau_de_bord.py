@@ -47,7 +47,9 @@ from app.logique_metier.dernieres_paies import (
     lire_resumes_paies,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
+from app.pages_ui import bulletin_paie
 from models.employee import Employee
+from models.enums import StatutDePaie
 
 #: Clés de `st.session_state` transportant la sélection d'employé et
 #: d'année vers les pages voisines (Req 4.5, 4.6).
@@ -154,7 +156,31 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
                     if derniere_paie.date_emission
                     else derniere_paie.date_creation
                 )
-                st.write(f"{libelle_statut} — {date_pertinente}")
+                # Bug UI corrigé après livraison (Req demande explicite
+                # de l'utilisateur) : le libellé de la dernière paie est
+                # désormais un lien cliquable — route vers le
+                # Formulaire_Paie (mode correction pré-rempli) si
+                # BROUILLON, vers le Bulletin_De_Paie si EMISE/ANNULEE/
+                # REMPLACE_PAR.
+                if st.button(
+                    f"{libelle_statut} — {date_pertinente}",
+                    key=f"derniere_paie_{employe.id}",
+                ):
+                    if derniere_paie.statut == StatutDePaie.BROUILLON.value:
+                        st.session_state["fp_employe_id_precharge"] = employe.id
+                        st.session_state["fp_nouvelle_id_paie_precharge"] = (
+                            derniere_paie.id_paie
+                        )
+                        from app.pages_ui._navigation import page_formulaire_paie
+
+                        st.switch_page(page_formulaire_paie)
+                    else:
+                        st.session_state[bulletin_paie.CLE_ID_PAIE_CIBLE] = (
+                            derniere_paie.id_paie
+                        )
+                        from app.pages_ui._navigation import page_bulletin_paie
+
+                        st.switch_page(page_bulletin_paie)
         with col_actions:
             if st.button(
                 "Ajouter une paie",

@@ -151,3 +151,80 @@ def generer_id_paie(
     sans validation supplémentaire (règle 03).
     """
     return f"PAIE-{employe_id}-{annee_fiscale}-{numero_periode:02d}-v{version}"
+
+
+def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, object]:
+    """Reconstruit les valeurs saisies du Formulaire_Paie depuis un
+    `PayrollResult` déjà assemblé — bug UI corrigé après livraison
+    (pré-remplissage du formulaire pour poursuivre l'édition d'un
+    brouillon, ou pour corriger une paie émise).
+
+    **Limitation documentée (décision explicite, discussion
+    utilisateur)** : les heures normales/supplémentaires saisies par
+    semaine (`PayrollInput.heures_par_semaine`) ne sont **pas**
+    persistées par `assembler_paie`/`payroll_engine.net_pay` — seul le
+    montant en dollars agrégé (`gains.salaire_regulier`, `gains.
+    heures_supplementaires_montant`) est conservé dans `PayrollResult`.
+    `PayrollResult.pay_period.semaines` porte les `WeekSegment` avec des
+    heures à `Decimal("0")` (dérivées mécaniquement par
+    `deriver_semaines_constituantes`, jamais renseignées par le
+    moteur) — reconstruire les heures par déduction (montant ÷ taux
+    horaire) serait trompeur : impossible de connaître la répartition
+    exacte semaine 1/semaine 2 ni la part normale/supplémentaire si le
+    seuil hebdomadaire a été dépassé. Cette fonction ne tente donc
+    **aucune** reconstruction des heures — les clés `heures_normales_1`,
+    `heures_supplementaires_1`, `heures_normales_2`,
+    `heures_supplementaires_2` sont volontairement absentes du dict
+    retourné ; l'appelant (`app/pages_ui/formulaire_paie.py`) doit
+    laisser ces champs à `"0.00"` et informer l'opérateur qu'ils
+    doivent être ressaisis.
+
+    Cette fonction ne fait qu'une **projection pure** (lecture directe
+    de champs déjà persistés ou de traces déjà produites, règle 02 :
+    aucune nouvelle `CalculationTrace`) — les six valeurs TP-1015.3/TD1
+    effectives sont reconstituées depuis les `CalculationTrace.entrees`
+    des retenues employé (même patron que
+    `fiche_employe_detaillee.py::_afficher_valeurs_fiscales_effectives`).
+
+    Retourne un dict directement utilisable pour pré-remplir les
+    widgets `st.text_input`/`st.date_input`/`st.checkbox` du
+    Formulaire_Paie.
+    """
+    semaines = resultat.pay_period.semaines
+    retenues = resultat.retenues_employe
+
+    exoneration_tp1015_3 = bool(
+        int(retenues.impot_qc_retenu.trace.parametres_utilises["exoneration_active"])
+    )
+    exoneration_td1 = bool(
+        int(
+            retenues.impot_federal_retenu.trace.parametres_utilises[
+                "exoneration_active"
+            ]
+        )
+    )
+
+    return {
+        "numero_periode": resultat.pay_period.numero_periode,
+        "date_debut": semaines[0].date_debut,
+        "date_fin": semaines[-1].date_fin,
+        "date_paiement": resultat.pay_period.date_paiement,
+        "annee_fiscale": resultat.annee_fiscale,
+        "jours_feries_manuels": resultat.gains.jours_feries_manuels,
+        "montant_total_TP1015_3_effectif": (
+            retenues.impot_qc_formule.trace.entrees["montant_total_tp1015_3"]
+        ),
+        "exoneration_TP1015_3_effectif": exoneration_tp1015_3,
+        "retenue_additionnelle_QC_effective": (
+            retenues.impot_qc_retenu.trace.entrees["retenue_additionnelle_qc"]
+        ),
+        "montant_total_TD1_effectif": (
+            retenues.impot_federal_formule.trace.entrees["montant_total_td1"]
+        ),
+        "exoneration_TD1_effective": exoneration_td1,
+        "retenue_additionnelle_federale_effective": (
+            retenues.impot_federal_retenu.trace.entrees[
+                "retenue_additionnelle_federale"
+            ]
+        ),
+    }

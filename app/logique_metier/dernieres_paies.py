@@ -100,6 +100,13 @@ class LignePaieResume:
     dès que `statut` ∈ {EMISE, ANNULEE, REMPLACE_PAR}) ; `None` en
     `BROUILLON`. Ajouté après livraison pour le Tableau_De_Bord (statut
     et date de la dernière paie créée d'un employé)."""
+    date_paiement: str | None = None
+    """Date de paiement de la période (`PayrollResult.pay_period.
+    date_paiement`), ajoutée après livraison pour le tableau des paies
+    de la Fiche_Employe_Detaillee. `None` seulement si absente du
+    `payload_json` (ne devrait jamais arriver — `PayPeriod.date_paiement`
+    est un champ requis — mais un défaut défensif évite une régression
+    si le schéma évoluait)."""
 
 
 def lire_resumes_paies(
@@ -160,6 +167,7 @@ def lire_resumes_paies(
                 annee_fiscale=annee_fiscale,
                 date_creation=date_creation,
                 date_emission=date_emission,
+                date_paiement=resultat.pay_period.date_paiement.isoformat(),
             )
         )
     return tuple(sorted(resumes, key=lambda r: (r.annee_fiscale, r.date_creation)))
@@ -244,3 +252,64 @@ def annees_disponibles(resumes: tuple[LignePaieResume, ...]) -> tuple[int, ...]:
     discipline que :func:`numeros_periode_disponibles`.
     """
     return tuple(sorted({r.annee_fiscale for r in resumes}))
+
+
+def prochaine_version(
+    resumes: tuple[LignePaieResume, ...], numero_periode: int
+) -> int:
+    """Version suivante à utiliser pour insérer une nouvelle Paie_Logique
+    de ``numero_periode`` (bug UI corrigé après livraison).
+
+    Filtre pur, sans accès disque — évite la collision d'``id_paie``
+    lorsqu'un opérateur poursuit la saisie d'un `BROUILLON` plusieurs
+    fois avant de l'émettre : `payroll_engine.register.remplacer_paie`
+    exige que la paie remplacée soit `EMISE` (Req 13.2 du moteur), donc
+    toute poursuite de saisie d'un `BROUILLON` insère une **nouvelle
+    version** via `inserer_paie` (append-only) plutôt que de remplacer
+    l'ancienne ligne — cette fonction détermine le numéro de version à
+    utiliser pour cette nouvelle insertion.
+
+    Retourne `max(versions) + 1` pour les résumés dont `numero_periode`
+    correspond, ou `1` si aucun résumé ne correspond (première
+    insertion pour ce numéro de période).
+    """
+    versions = tuple(
+        r.version for r in resumes if r.numero_periode == numero_periode
+    )
+    return max(versions, default=0) + 1
+
+
+def dernieres_versions_par_periode(
+    resumes: tuple[LignePaieResume, ...]
+) -> tuple[LignePaieResume, ...]:
+    """Ne conserve que la version la plus récente de chaque `numero_periode`.
+
+    Filtre pur, sans accès disque — décision opérationnelle du Camp
+    LilySO (discussion utilisateur, pas une règle du moteur) : le
+    tableau des paies de la Fiche_Employe_Detaillee n'affiche que la
+    version la plus récente de chaque `numero_periode`, jamais les
+    versions intermédiaires devenues obsolètes.
+
+    Contexte : `payroll_engine.register.remplacer_paie` exige que la
+    paie remplacée soit `EMISE` (Req 13.2 du moteur) — il n'existe donc
+    aucun mécanisme de remplacement pour un `BROUILLON`. Poursuivre la
+    saisie d'un brouillon insère par conséquent une **nouvelle version**
+    via `inserer_paie` (append-only) plutôt que de remplacer l'ancienne
+    ligne ; le brouillon précédent demeure dans le registre (jamais
+    supprimé) mais ce filtre l'exclut de l'affichage.
+
+    Pour chaque `numero_periode` présent dans ``resumes``, retient le
+    résumé de `version` maximale. Résultat trié par `numero_periode`
+    croissant (contrairement à :func:`lire_resumes_paies`, trié par
+    `date_creation`) — ordre attendu pour un tableau de paies par
+    période.
+    """
+    par_periode: dict[int, LignePaieResume] = {}
+    for resume in resumes:
+        actuel = par_periode.get(resume.numero_periode)
+        if actuel is None or resume.version > actuel.version:
+            par_periode[resume.numero_periode] = resume
+    return tuple(
+        par_periode[numero_periode]
+        for numero_periode in sorted(par_periode.keys())
+    )

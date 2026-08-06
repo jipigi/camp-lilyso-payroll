@@ -72,9 +72,17 @@ from decimal import Decimal, InvalidOperation
 import streamlit as st
 
 from app.logique_metier.annuaire_employes import lister_employes
+from app.logique_metier.dernieres_paies import (
+    lire_resumes_paies,
+    prochaine_version,
+)
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
 from app.logique_metier.fiche_employe import parametres_effectifs_par_defaut
-from app.logique_metier.formulaire_paie import construire_payroll_input, generer_id_paie
+from app.logique_metier.formulaire_paie import (
+    construire_payroll_input,
+    generer_id_paie,
+    valeurs_effectives_depuis_paie,
+)
 from app.logique_metier.parametres_fiscaux import (
     charger_parametres_fusionnes,
     lister_annees_disponibles,
@@ -228,20 +236,86 @@ def _afficher_paie_assemblee(resultat: PayrollResult) -> None:
 def _section_nouvelle_paie(
     employes: tuple, annees_disponibles: tuple[int, ...]
 ) -> None:
-    """Flux complet Formulaire_Paie pour une nouvelle Paie_Logique (Req 6 à 10, 12)."""
+    """Flux complet Formulaire_Paie pour une nouvelle Paie_Logique (Req 6 à 10, 12).
+
+    Bug UI corrigé après livraison — pré-sélection contextuelle
+    (Req 4.5 du Tableau_De_Bord, tableau des paies de la Fiche_Employe_
+    Detaillee) : si `st.session_state["fp_employe_id_precharge"]` est
+    renseigné (écrit par la page appelante avant `st.switch_page`),
+    l'employé et l'année sont pré-sélectionnés en conséquence — jamais
+    de ressaisie manuelle du numéro d'employé pour ce cas d'usage.
+
+    Pré-remplissage depuis un brouillon existant (`st.session_state[
+    "fp_nouvelle_id_paie_precharge"]`, écrit par le tableau des paies
+    de la Fiche_Employe_Detaillee) : jours fériés et paramètres
+    TP-1015.3/TD1 effectifs sont restaurés depuis la dernière version
+    du brouillon ; les heures par semaine restent à `"0.00"` — non
+    récupérables depuis une paie déjà assemblée (voir docstring de
+    `app/logique_metier/formulaire_paie.py::valeurs_effectives_depuis_paie`,
+    décision explicite : l'opérateur doit les ressaisir).
+    """
     st.subheader("Nouvelle paie")
 
     options_employes = [e.id for e in employes]
+    employe_id_precharge = st.session_state.get("fp_employe_id_precharge")
+    index_employe_precharge = (
+        options_employes.index(employe_id_precharge)
+        if employe_id_precharge in options_employes
+        else 0
+    )
     employe_id = st.selectbox(
-        "Employé", options_employes, key="fp_nouvelle_employe_id"
+        "Employé",
+        options_employes,
+        index=index_employe_precharge,
+        key="fp_nouvelle_employe_id",
     )
     employe = next(e for e in employes if e.id == employe_id)
 
     # ------------------------------------------------------------------
+    # Pré-remplissage depuis un brouillon existant, une seule fois par
+    # navigation contextuelle (consommé puis retiré de session_state
+    # pour ne pas re-déclencher à chaque rerun de widget).
+    # ------------------------------------------------------------------
+    valeurs_precharge: dict[str, object] | None = None
+    id_paie_brouillon_precharge = st.session_state.pop(
+        "fp_nouvelle_id_paie_precharge", None
+    )
+    if id_paie_brouillon_precharge:
+        resultat_brouillon = executer_avec_capture(
+            lambda: lire_paie(
+                id_paie_brouillon_precharge, chemin_bd=chemin_bd_production()
+            )
+        )
+        if isinstance(resultat_brouillon, ErreurDomaineAffichable):
+            st.error(
+                f"{resultat_brouillon.type_exception}: "
+                f"{resultat_brouillon.message}"
+            )
+        else:
+            valeurs_precharge = valeurs_effectives_depuis_paie(resultat_brouillon)
+            st.info(
+                "Formulaire pré-rempli depuis le brouillon "
+                f"'{id_paie_brouillon_precharge}' — les heures par "
+                "semaine doivent être ressaisies (non récupérables "
+                "depuis une paie déjà assemblée)."
+            )
+
+    # ------------------------------------------------------------------
     # Req 6 — sélection de l'année des paramètres fiscaux.
     # ------------------------------------------------------------------
+    annee_precharge = (
+        valeurs_precharge["annee_fiscale"] if valeurs_precharge else None
+    )
+    index_annee_precharge = (
+        list(annees_disponibles).index(annee_precharge)
+        if annee_precharge in annees_disponibles
+        else 0
+    )
     annee_fiscale = st.selectbox(
-        "Année des paramètres fiscaux", annees_disponibles, key="fp_nouvelle_annee"
+        "Année des paramètres fiscaux",
+        annees_disponibles,
+        index=index_annee_precharge,
+        key="fp_nouvelle_annee",
     )
 
     resultat_params = executer_avec_capture(
@@ -266,27 +340,38 @@ def _section_nouvelle_paie(
         min_value=1,
         max_value=nb_periodes_annuelles,
         step=1,
+        value=(
+            int(valeurs_precharge["numero_periode"]) if valeurs_precharge else 1
+        ),
         key="fp_nouvelle_numero_periode",
     )
     date_debut = st.date_input(
         "Date de début de la période",
+        value=valeurs_precharge["date_debut"] if valeurs_precharge else None,
         min_value=_DATE_PERIODE_MIN,
         max_value=_DATE_PERIODE_MAX,
         key="fp_nouvelle_date_debut",
     )
     date_fin = st.date_input(
         "Date de fin de la période",
+        value=valeurs_precharge["date_fin"] if valeurs_precharge else None,
         min_value=_DATE_PERIODE_MIN,
         max_value=_DATE_PERIODE_MAX,
         key="fp_nouvelle_date_fin",
     )
     date_paiement = st.date_input(
         "Date de paiement",
+        value=valeurs_precharge["date_paiement"] if valeurs_precharge else None,
         min_value=_DATE_PERIODE_MIN,
         max_value=_DATE_PERIODE_MAX,
         key="fp_nouvelle_date_paiement",
     )
 
+    if valeurs_precharge is not None:
+        st.warning(
+            "Heures par semaine non récupérables depuis le brouillon — "
+            "veuillez les ressaisir ci-dessous."
+        )
     st.write("Heures — semaine 1")
     heures_normales_1 = st.text_input(
         "Heures normales (semaine 1)", value="0.00", key="fp_nouvelle_hn1"
@@ -303,7 +388,13 @@ def _section_nouvelle_paie(
     )
 
     jours_feries_manuels = st.text_input(
-        "Jours fériés manuels ($)", value="0.00", key="fp_nouvelle_jours_feries"
+        "Jours fériés manuels ($)",
+        value=(
+            str(valeurs_precharge["jours_feries_manuels"])
+            if valeurs_precharge
+            else "0.00"
+        ),
+        key="fp_nouvelle_jours_feries",
     )
 
     # ------------------------------------------------------------------
@@ -328,32 +419,56 @@ def _section_nouvelle_paie(
     )
     montant_tp1015_3 = st.text_input(
         "Montant total TP-1015.3 effectif",
-        value=str(parametres_effectifs["montant_total_TP1015_3_effectif"]),
+        value=str(
+            valeurs_precharge["montant_total_TP1015_3_effectif"]
+            if valeurs_precharge
+            else parametres_effectifs["montant_total_TP1015_3_effectif"]
+        ),
         key="fp_nouvelle_montant_tp",
     )
     exoneration_tp1015_3 = st.checkbox(
         "Exonération TP-1015.3",
-        value=parametres_effectifs["exoneration_TP1015_3_effectif"],
+        value=(
+            valeurs_precharge["exoneration_TP1015_3_effectif"]
+            if valeurs_precharge
+            else parametres_effectifs["exoneration_TP1015_3_effectif"]
+        ),
         key="fp_nouvelle_exo_tp",
     )
     retenue_qc = st.text_input(
         "Retenue additionnelle QC effective",
-        value=str(parametres_effectifs["retenue_additionnelle_QC_effective"]),
+        value=str(
+            valeurs_precharge["retenue_additionnelle_QC_effective"]
+            if valeurs_precharge
+            else parametres_effectifs["retenue_additionnelle_QC_effective"]
+        ),
         key="fp_nouvelle_retenue_qc",
     )
     montant_td1 = st.text_input(
         "Montant total TD1 effectif",
-        value=str(parametres_effectifs["montant_total_TD1_effectif"]),
+        value=str(
+            valeurs_precharge["montant_total_TD1_effectif"]
+            if valeurs_precharge
+            else parametres_effectifs["montant_total_TD1_effectif"]
+        ),
         key="fp_nouvelle_montant_td1",
     )
     exoneration_td1 = st.checkbox(
         "Exonération TD1",
-        value=parametres_effectifs["exoneration_TD1_effective"],
+        value=(
+            valeurs_precharge["exoneration_TD1_effective"]
+            if valeurs_precharge
+            else parametres_effectifs["exoneration_TD1_effective"]
+        ),
         key="fp_nouvelle_exo_td1",
     )
     retenue_federale = st.text_input(
         "Retenue additionnelle fédérale effective",
-        value=str(parametres_effectifs["retenue_additionnelle_federale_effective"]),
+        value=str(
+            valeurs_precharge["retenue_additionnelle_federale_effective"]
+            if valeurs_precharge
+            else parametres_effectifs["retenue_additionnelle_federale_effective"]
+        ),
         key="fp_nouvelle_retenue_fed",
     )
 
@@ -408,14 +523,33 @@ def _section_nouvelle_paie(
                 ),
                 cumuls_debut=cumuls_debut,
             )
+            # Bug UI corrigé après livraison — détermination de la
+            # version à utiliser : `remplacer_paie` (moteur) exige que
+            # la paie remplacée soit EMISE (Req 13.2 du moteur), donc
+            # toute poursuite de saisie d'un brouillon insère une
+            # NOUVELLE version via `inserer_paie` (append-only) plutôt
+            # que de remplacer l'ancienne ligne — `prochaine_version`
+            # détermine ce numéro à partir des paies déjà existantes
+            # pour ce `numero_periode` (1 si aucune, sinon max + 1).
+            resultat_resumes_existants = executer_avec_capture(
+                lambda: lire_resumes_paies(
+                    employe_id, chemin_bd=chemin_bd_production()
+                )
+            )
+            resumes_existants = (
+                ()
+                if isinstance(resultat_resumes_existants, ErreurDomaineAffichable)
+                else resultat_resumes_existants
+            )
+            version = prochaine_version(resumes_existants, int(numero_periode))
             id_paie = generer_id_paie(
-                employe_id, annee_fiscale, int(numero_periode), 1
+                employe_id, annee_fiscale, int(numero_periode), version
             )
             return assembler_paie(
                 payroll_input,
                 parametres_annee,
                 id_paie,
-                1,
+                version,
                 StatutDePaie.BROUILLON,
                 datetime.now(),
             )
@@ -510,11 +644,22 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
     identique au flux de nouvelle paie. ``version = version_ciblee + 1``
     (Req 13.3) et confirmation explicite avant ``remplacer_paie``
     (Req 3.3, 13.4).
+
+    Bug UI corrigé après livraison : si `st.session_state[
+    "fp_corriger_ancien_id_precharge"]` est renseigné (écrit par
+    `bulletin_paie.py` avant `st.switch_page`, bouton « Corriger cette
+    paie »), l'``id_paie`` est pré-rempli — jamais de ressaisie
+    manuelle dans ce cas.
     """
     st.subheader("Corriger une paie émise")
 
+    ancien_id_precharge = st.session_state.pop(
+        "fp_corriger_ancien_id_precharge", ""
+    )
     ancien_id = st.text_input(
-        "id_paie de la paie EMISE à corriger", key="fp_corriger_ancien_id"
+        "id_paie de la paie EMISE à corriger",
+        value=ancien_id_precharge,
+        key="fp_corriger_ancien_id",
     )
     if not ancien_id:
         st.info(
@@ -822,11 +967,21 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
 def render() -> None:
     """Rendu de la page « Formulaire de paie » (Req 6 à 10, 12, 13, 16.4).
 
-    Deux sections indépendantes, sélectionnées par un onglet Streamlit :
-    une nouvelle Paie_Logique (assemblage + enregistrement) et
-    l'Action_Corriger d'une paie déjà émise. Chaque widget est lié par un
-    ``key=`` explicite — un retour ``ErreurDomaineAffichable`` ne
-    réinitialise aucune valeur de ``st.session_state`` (Req 16.4).
+    Bug UI corrigé après livraison — remplacement de ``st.tabs`` (qui ne
+    supporte aucune sélection programmatique d'onglet, limitation
+    Streamlit confirmée) par un dispatch de mode piloté par
+    ``st.session_state`` : le mode « Nouvelle paie » (assemblage +
+    enregistrement, y compris pré-remplissage depuis un brouillon
+    existant) reste **toujours le mode par défaut** — décision explicite
+    (discussion utilisateur) : aucun bouton de bascule manuelle vers le
+    mode « Corriger une paie émise ». Ce dernier n'est activé que
+    lorsque la page est atteinte avec une intention de correction
+    explicite (clé ``st.session_state["fp_corriger_ancien_id_precharge"]``
+    renseignée par `bulletin_paie.py`, bouton « Corriger cette paie »).
+
+    Chaque widget est lié par un ``key=`` explicite — un retour
+    ``ErreurDomaineAffichable`` ne réinitialise aucune valeur de
+    ``st.session_state`` (Req 16.4).
     """
     st.header("Formulaire de paie")
 
@@ -848,12 +1003,14 @@ def render() -> None:
         )
         return
 
-    onglet_nouvelle, onglet_corriger = st.tabs(
-        ["Nouvelle paie", "Corriger une paie émise"]
+    # Mode « Corriger » activé uniquement si une intention explicite de
+    # correction a été transmise par la page appelante — jamais par
+    # défaut, jamais via une bascule manuelle (décision explicite).
+    mode_correction = bool(
+        st.session_state.get("fp_corriger_ancien_id_precharge")
     )
 
-    with onglet_nouvelle:
-        _section_nouvelle_paie(employes, annees_disponibles)
-
-    with onglet_corriger:
+    if mode_correction:
         _section_corriger_paie(employes, annees_disponibles)
+    else:
+        _section_nouvelle_paie(employes, annees_disponibles)
