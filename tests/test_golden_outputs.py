@@ -1100,7 +1100,7 @@ def test_assemblage_et_registre_reproduisent_fixture(
     # 6. Insertion + relecture — round-trip strict (Property 10, Req 17.4).
     # ------------------------------------------------------------------
     inserer_paie(resultat, saison="Saison 2026 (test)", chemin_bd=chemin_bd)
-    relu = lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
+    relu, _ = lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
     assert relu == resultat, (
         f"[{scenario_id}] Round-trip inserer_paie/lire_paie non fidèle : "
         f"{relu!r} != {resultat!r} (Req 17.4)."

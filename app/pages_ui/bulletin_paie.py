@@ -134,7 +134,11 @@ def render() -> None:
         st.header("Bulletin de paie")
         st.error(f"{resultat_paie.type_exception}: {resultat_paie.message}")
         return
-    paie: PayrollResult = resultat_paie
+    # `lire_paie` retourne désormais un couple (PayrollResult,
+    # PayrollInput | None) — le PayrollInput n'est pas utilisé dans ce
+    # module (bulletin affiché à partir du seul PayrollResult).
+    paie, _ = resultat_paie
+    paie: PayrollResult = paie
 
     resultat_employe = executer_avec_capture(
         lambda: lire_employe(paie.employe_id)

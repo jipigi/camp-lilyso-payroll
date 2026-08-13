@@ -86,6 +86,7 @@ from pathlib import Path
 
 from models.cumuls import CumulsYTD
 from models.enums import StatutDePaie
+from models.payroll_input import PayrollInput
 from models.payroll_result import PayrollResult
 
 #: Les onze catégories monétaires `_CATEGORIES_MONETAIRES` de
@@ -204,20 +205,45 @@ class _ContributionResultat:
 # montant individuel d'une paie est `payload_json` (Req 9.2, règle
 # 01). Les colonnes hors `payload_json` sont des colonnes
 # d'indexation, jamais de calcul.
+#
+# `payload_input_json` (bugfix `heures-periode-et-persistance-brouillon`,
+# design §Bug Condition — Bug 2, Req 2.3) — colonne **nullable**, sans
+# `NOT NULL`, ajoutée en fin de table par migration additive
+# (`ALTER TABLE ... ADD COLUMN`, voir
+# :func:`_ajouter_colonne_payload_input_json_si_absente` ci-dessous).
+# Elle porte le `PayrollInput` sérialisé
+# (`PayrollInput.model_dump_json()`) ayant produit la paie, afin qu'un
+# brouillon relu (`lire_paie`) puisse restituer intégralement les
+# valeurs saisies par l'utilisateur (heures, notamment) plutôt que de
+# les recalculer approximativement depuis `PayrollResult` seul.
+#
+# Cette colonne est ajoutée par migration **additive**, jamais par
+# recréation de table : les lignes déjà présentes avant le déploiement
+# du bugfix reçoivent `NULL` pour `payload_input_json` et ne sont
+# **jamais** rétro-remplies (règle 06 — immutabilité historique ;
+# design §Preservation Requirements, Req 3.4). SQLite ne supporte pas
+# `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` : l'idempotence est donc
+# assurée explicitement par :func:`_ajouter_colonne_payload_input_json_si_absente`,
+# qui vérifie d'abord via `PRAGMA table_info(paies)` que la colonne
+# n'existe pas déjà avant d'exécuter l'`ALTER TABLE`, afin qu'un appel
+# répété (chaque fonction publique du registre appelle
+# `_creer_schema_si_absent`) ne lève jamais `sqlite3.OperationalError:
+# duplicate column name`.
 
 _DDL_PAIES = """
 CREATE TABLE IF NOT EXISTS paies (
-    id_paie          TEXT    PRIMARY KEY,
-    employe_id       TEXT    NOT NULL,
-    annee_fiscale    INTEGER NOT NULL,
-    numero_periode   INTEGER NOT NULL,
-    saison           TEXT    NOT NULL,
-    version          INTEGER NOT NULL,
-    statut           TEXT    NOT NULL,
-    remplace_par_id  TEXT,
-    date_creation    TEXT    NOT NULL,
-    date_emission    TEXT,
-    payload_json     TEXT    NOT NULL
+    id_paie             TEXT    PRIMARY KEY,
+    employe_id          TEXT    NOT NULL,
+    annee_fiscale       INTEGER NOT NULL,
+    numero_periode      INTEGER NOT NULL,
+    saison              TEXT    NOT NULL,
+    version             INTEGER NOT NULL,
+    statut              TEXT    NOT NULL,
+    remplace_par_id     TEXT,
+    date_creation       TEXT    NOT NULL,
+    date_emission       TEXT,
+    payload_json        TEXT    NOT NULL,
+    payload_input_json  TEXT
 );
 """
 
@@ -321,6 +347,53 @@ def _creer_schema_si_absent(connexion: sqlite3.Connection) -> None:
     connexion.execute(_DDL_PAIES)
     connexion.execute(_DDL_INDEX_PAIES_LOGIQUE)
     connexion.execute(_DDL_CUMULS_YTD)
+    _ajouter_colonne_payload_input_json_si_absente(connexion)
+
+
+# ---------------------------------------------------------------------------
+# _ajouter_colonne_payload_input_json_si_absente — migration additive
+# (bugfix `heures-periode-et-persistance-brouillon`, design §Bug Condition
+# — Bug 2, §Preservation Requirements, Req 2.3, Req 3.4)
+# ---------------------------------------------------------------------------
+
+
+def _ajouter_colonne_payload_input_json_si_absente(
+    connexion: sqlite3.Connection,
+) -> None:
+    """Ajoute `payload_input_json` à `paies` si elle est absente (Req 2.3).
+
+    Migration **additive** : les bases créées avant ce bugfix portent
+    une table `paies` sans la colonne `payload_input_json` (DDL
+    d'origine, Req 9). Recréer la table (`DROP`/`CREATE`) romprait
+    l'immutabilité historique (règle 06) en risquant de perdre ou de
+    réécrire des lignes déjà présentes ; cette fonction utilise donc
+    exclusivement `ALTER TABLE paies ADD COLUMN payload_input_json
+    TEXT`, qui préserve toutes les lignes existantes et leur donne la
+    valeur `NULL` pour la nouvelle colonne — **jamais** de
+    rétro-remplissage (design §Preservation Requirements, Req 3.4).
+
+    SQLite ne supporte pas la clause `ADD COLUMN IF NOT EXISTS` :
+    l'idempotence est donc assurée explicitement ici, via `PRAGMA
+    table_info(paies)`, qui liste les colonnes actuelles de la table
+    (`ligne[1]` porte le nom de chaque colonne). Si
+    `payload_input_json` est déjà présente, aucune instruction n'est
+    exécutée — un appel répété (chaque fonction publique du registre
+    appelle `_creer_schema_si_absent`, donc cette fonction, à chaque
+    connexion) ne lève donc jamais `sqlite3.OperationalError:
+    duplicate column name`.
+
+    Appelée exclusivement depuis :func:`_creer_schema_si_absent`, à
+    l'intérieur d'une transaction déjà ouverte par :func:`_connexion` —
+    ne gère elle-même aucune transaction.
+    """
+    colonnes = {
+        ligne[1]
+        for ligne in connexion.execute("PRAGMA table_info(paies)").fetchall()
+    }
+    if "payload_input_json" not in colonnes:
+        connexion.execute(
+            "ALTER TABLE paies ADD COLUMN payload_input_json TEXT"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +560,10 @@ def lire_cumuls_ytd(
 
 
 def _inserer_ligne_paie_tx(
-    connexion: sqlite3.Connection, resultat: PayrollResult, saison: str
+    connexion: sqlite3.Connection,
+    resultat: PayrollResult,
+    saison: str,
+    payload_input_json: str | None,
 ) -> None:
     """Insère la ligne `paies` de ``resultat`` (étape 2 de `inserer_paie`).
 
@@ -498,14 +574,22 @@ def _inserer_ligne_paie_tx(
     des cumuls (Req 11.3, 11.4) ; `remplacer_paie` pour le recalcul des
     cumuls après retrait de l'ancienne contribution (Req 13.4c)).
 
+    ``payload_input_json`` (bugfix `heures-periode-et-persistance-brouillon`,
+    design §Fix Implementation point 3, Req 2.3) porte le
+    `PayrollInput.model_dump_json()` ayant produit ``resultat``, ou
+    `None` si l'appelant n'en dispose pas — écrit tel quel dans la
+    colonne nullable `payload_input_json` (règle 06, aucune
+    rétro-inférence).
+
     Fonction interne, appelée à l'intérieur d'une transaction déjà ouverte
     par :func:`_connexion` — ne gère elle-même aucune transaction.
     """
     connexion.execute(
         "INSERT INTO paies (id_paie, employe_id, annee_fiscale, "
         "numero_periode, saison, version, statut, remplace_par_id, "
-        "date_creation, date_emission, payload_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "date_creation, date_emission, payload_json, "
+        "payload_input_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             resultat.id_paie,
             resultat.employe_id,
@@ -518,6 +602,7 @@ def _inserer_ligne_paie_tx(
             resultat.date_creation.isoformat(),
             resultat.date_emission.isoformat() if resultat.date_emission else None,
             resultat.model_dump_json(),
+            payload_input_json,
         ),
     )
 
@@ -531,6 +616,7 @@ def _inserer_ligne_paie_tx(
 def inserer_paie(
     resultat: PayrollResult,
     saison: str,
+    payroll_input: PayrollInput | None = None,
     chemin_bd: str | Path = chemin_bd_production(),
 ) -> None:
     """Insère ``resultat`` dans le registre maître, append-only (Req 11).
@@ -547,7 +633,18 @@ def inserer_paie(
     2. **Insertion append-only** de la ligne dans `paies`, quel que soit
        `resultat.statut` (Req 11.2) — `payload_json` porte
        `resultat.model_dump_json()` sans nouveau schéma de sérialisation
-       (décision design n° 4, Req 12.5).
+       (décision design n° 4, Req 12.5). Depuis le bugfix
+       `heures-periode-et-persistance-brouillon` (Req 2.3, design
+       §Correctness Properties Property 2) : si ``payroll_input`` est
+       fourni, sa sérialisation (`payroll_input.model_dump_json()`) est
+       persistée dans la colonne nullable `payload_input_json` — même
+       mécanisme de sérialisation Decimal → chaîne déjà porté par
+       `PayrollInput.model_dump_json()`/`model_validate_json()` (règle
+       01, aucun nouveau schéma de sérialisation introduit). Si
+       ``payroll_input`` est `None` (défaut — préservation, design
+       §Correctness Properties Property 4), `payload_input_json` reste
+       `NULL` pour cette ligne, comportement identique à avant ce
+       bugfix.
     3. **Mise à jour conditionnelle de `cumuls_ytd`** — uniquement si
        `resultat.statut == StatutDePaie.EMISE` (Req 11.3) : lecture du
        cumul courant via `_lire_cumuls_ytd_tx` (retourne
@@ -585,7 +682,10 @@ def inserer_paie(
             )
 
         # 2. Insertion append-only (Req 11.2) — quel que soit le statut.
-        _inserer_ligne_paie_tx(connexion, resultat, saison)
+        payload_input_json = (
+            payroll_input.model_dump_json() if payroll_input is not None else None
+        )
+        _inserer_ligne_paie_tx(connexion, resultat, saison, payload_input_json)
 
         # 3. Mise à jour cumuls_ytd SEULEMENT si EMISE (Req 11.3, 11.4).
         if resultat.statut == StatutDePaie.EMISE:
@@ -608,14 +708,14 @@ def inserer_paie(
 def lire_paie(
     id_paie: str,
     chemin_bd: str | Path = chemin_bd_production(),
-) -> PayrollResult:
+) -> tuple[PayrollResult, PayrollInput | None]:
     """Relit la paie identifiée par ``id_paie`` (Req 12.1).
 
     Ouvre sa propre transaction via :func:`_connexion` (lecture pure,
     même pattern que toutes les fonctions publiques du registre —
     design §Components §3.2), crée le schéma si absent, puis
-    sélectionne `payload_json` pour la ligne `paies` dont `id_paie`
-    correspond exactement.
+    sélectionne `payload_json` et `payload_input_json` pour la ligne
+    `paies` dont `id_paie` correspond exactement.
 
     Lève `KeyError` avec un message citant `id_paie` si aucune ligne
     ne correspond (Req 12.2) — jamais de valeur de repli silencieuse.
@@ -626,15 +726,38 @@ def lire_paie(
     aucune étape (règle 01, Req 12.5). Round-trip avec `inserer_paie`
     (`resultat.model_dump_json()` — design §Components §3.3, décision
     n° 4) : aucun nouveau schéma de sérialisation.
+
+    Depuis le bugfix `heures-periode-et-persistance-brouillon` (Req
+    2.4, 3.4 ; design §Fix Implementation point 6, §Correctness
+    Properties Property 2/Property 4) : retourne désormais un COUPLE
+    `(resultat, payroll_input)` — **rupture de signature assumée**,
+    tous les appelants existants doivent déstructurer le retour. Le
+    second élément est `None` si `payload_input_json` est `NULL` en
+    base (`Paie_Pre_Correction`, colonne non renseignée par un
+    `inserer_paie`/`remplacer_paie` antérieur à ce bugfix, ou appelant
+    n'ayant pas fourni `payroll_input`) — **jamais** d'exception levée
+    pour ce cas (préservation, Req 3.4). Si `payload_input_json` est
+    renseigné (`Paie_Post_Correction`), `payroll_input` est reconstruit
+    via `PayrollInput.model_validate_json(...)` — même discipline
+    anti-`float` que pour `PayrollResult` (règle 01, Req 12.5).
     """
     with _connexion(chemin_bd) as connexion:
         _creer_schema_si_absent(connexion)
         ligne = connexion.execute(
-            "SELECT payload_json FROM paies WHERE id_paie = ?", (id_paie,)
+            "SELECT payload_json, payload_input_json FROM paies "
+            "WHERE id_paie = ?",
+            (id_paie,),
         ).fetchone()
         if ligne is None:
             raise KeyError(f"Aucune paie trouvée pour id_paie={id_paie!r}.")
-        return PayrollResult.model_validate_json(ligne[0])
+        payload_json, payload_input_json = ligne
+        resultat = PayrollResult.model_validate_json(payload_json)
+        payroll_input = (
+            PayrollInput.model_validate_json(payload_input_json)
+            if payload_input_json is not None
+            else None
+        )
+        return (resultat, payroll_input)
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +771,7 @@ def lire_historique_paie(
     annee_fiscale: int,
     numero_periode: int,
     chemin_bd: str | Path = chemin_bd_production(),
-) -> tuple[PayrollResult, ...]:
+) -> tuple[tuple[PayrollResult, PayrollInput | None], ...]:
     """Relit toutes les versions de la Paie_Logique identifiée (Req 12.3).
 
     Une Paie_Logique est identifiée par le triplet `(employe_id,
@@ -656,9 +779,10 @@ def lire_historique_paie(
     (append-only, `remplacer_paie`) porte le même triplet mais un
     `version` croissant. Ouvre sa propre transaction via
     :func:`_connexion`, crée le schéma si absent, puis sélectionne
-    `payload_json` pour toutes les lignes correspondantes, triées par
-    `version ASC` (ordre chronologique d'insertion — exploite
-    `idx_paies_logique`, design §Data Models « paies »).
+    `payload_json` et `payload_input_json` pour toutes les lignes
+    correspondantes, triées par `version ASC` (ordre chronologique
+    d'insertion — exploite `idx_paies_logique`, design §Data Models
+    « paies »).
 
     Retourne un tuple **vide** si aucune version n'existe pour ce
     triplet — jamais d'exception (comportement symétrique de
@@ -667,16 +791,35 @@ def lire_historique_paie(
     Chaque élément du tuple est désérialisé via
     `PayrollResult.model_validate_json(...)`, jamais via `float()`
     (règle 01, Req 12.5).
+
+    Depuis le bugfix `heures-periode-et-persistance-brouillon` (Req
+    2.4, 3.4 ; design §Fix Implementation point 7, §Correctness
+    Properties Property 2/Property 4) : extension symétrique à
+    `lire_paie` — retourne désormais un tuple de COUPLES
+    `(resultat, payroll_input)`, un couple par version. Pour chaque
+    couple, `payroll_input` est `None` si `payload_input_json` est
+    `NULL` pour cette version précise (`Paie_Pre_Correction`) — jamais
+    d'exception (préservation, Req 3.4) ; sinon reconstruit via
+    `PayrollInput.model_validate_json(...)` (règle 01).
     """
     with _connexion(chemin_bd) as connexion:
         _creer_schema_si_absent(connexion)
         lignes = connexion.execute(
-            "SELECT payload_json FROM paies "
+            "SELECT payload_json, payload_input_json FROM paies "
             "WHERE employe_id = ? AND annee_fiscale = ? AND numero_periode = ? "
             "ORDER BY version ASC",
             (employe_id, annee_fiscale, numero_periode),
         ).fetchall()
-        return tuple(PayrollResult.model_validate_json(ligne[0]) for ligne in lignes)
+        resultats: list[tuple[PayrollResult, PayrollInput | None]] = []
+        for payload_json, payload_input_json in lignes:
+            resultat = PayrollResult.model_validate_json(payload_json)
+            payroll_input = (
+                PayrollInput.model_validate_json(payload_input_json)
+                if payload_input_json is not None
+                else None
+            )
+            resultats.append((resultat, payroll_input))
+        return tuple(resultats)
 
 
 # ---------------------------------------------------------------------------
@@ -723,9 +866,24 @@ def remplacer_paie(
     ancien_id: str,
     nouveau_resultat: PayrollResult,
     saison: str,
+    nouveau_payroll_input: PayrollInput | None = None,
     chemin_bd: str | Path = chemin_bd_production(),
 ) -> None:
     """Remplace la paie ``ancien_id`` par ``nouveau_resultat`` (Req 13).
+
+    Depuis le bugfix `heures-periode-et-persistance-brouillon` (Req
+    2.3, design §Correctness Properties Property 2) : si
+    ``nouveau_payroll_input`` est fourni, sa sérialisation
+    (`nouveau_payroll_input.model_dump_json()`) est persistée dans la
+    colonne `payload_input_json` de la **nouvelle** ligne insérée à
+    l'étape 3b uniquement. L'ancienne ligne (``ancien_id``) n'est
+    **jamais** modifiée dans sa colonne `payload_input_json` — seuls
+    `statut`/`remplace_par_id`/`payload_json` sont mutés à l'étape 3a
+    (immutabilité déjà portée par le registre, règle 06). Si
+    ``nouveau_payroll_input`` est `None` (défaut — préservation, design
+    §Correctness Properties Property 4), `payload_input_json` reste
+    `NULL` pour la nouvelle ligne, comportement identique à avant ce
+    bugfix.
 
     Dans une seule transaction atomique (:func:`_connexion`, Req 13.6) :
 
@@ -816,8 +974,18 @@ def remplacer_paie(
 
         # 3b. Insertion de la nouvelle ligne (même mécanisme que
         #     inserer_paie, Req 13.4b) — pas de mise à jour cumuls à
-        #     cette étape (recalculée à 3c).
-        _inserer_ligne_paie_tx(connexion, nouveau_resultat, saison)
+        #     cette étape (recalculée à 3c). `payload_input_json` ne
+        #     concerne QUE cette nouvelle ligne — l'UPDATE de l'étape
+        #     3a ci-dessus ne mentionne pas cette colonne, elle reste
+        #     donc inchangée pour l'ancienne ligne (règle 06).
+        payload_input_json = (
+            nouveau_payroll_input.model_dump_json()
+            if nouveau_payroll_input is not None
+            else None
+        )
+        _inserer_ligne_paie_tx(
+            connexion, nouveau_resultat, saison, payload_input_json
+        )
 
         # 3c. Recalcul cumuls_ytd : retrait ancien + ajout nouveau (Req
         #     13.4c, 13.5).

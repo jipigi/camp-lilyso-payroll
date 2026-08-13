@@ -1809,3 +1809,195 @@ class TestExtensibiliteEtDefense:
             f"Property 19, cohérent avec Property 16 de "
             f"moteur-paie-contrats). Message reçu : {message!r}"
         )
+
+# ---------------------------------------------------------------------------
+# Tâche 3 (bugfix heures-periode-et-persistance-brouillon) — Property 3:
+# Preservation — Neutralité fiscale de la répartition interne
+# ---------------------------------------------------------------------------
+#
+# Méthodologie observation-first (règle 06, bugfix.md/design.md
+# ``heures-periode-et-persistance-brouillon``) : ce test caractérise le
+# moteur fiscal **déjà existant** (``payroll_engine/gains_bruts.py``, non
+# modifié par ce bugfix) — il doit PASSER aussi bien AVANT qu'APRÈS
+# l'implémentation de ``repartir_heures_sur_semaines`` (tâche 5 du
+# bugfix). L'observation confirmée par lecture directe du code (design
+# §Hypothesized Root Cause, point 4) est que ``calcul_gains`` ne lit
+# jamais ``heures_par_semaine[0]``/``[1]`` individuellement — il calcule
+# exclusivement ``sum(s.heures_normales for s in
+# payroll_input.heures_par_semaine)`` et l'équivalent pour les heures
+# supplémentaires. Ce test rend cette neutralité observable pour au
+# moins 2 répartitions internes candidates distinctes des mêmes 2
+# totaux : « tout sur la semaine 1 » (la répartition retenue par le
+# design pour ``repartir_heures_sur_semaines``) et « 50/50 ».
+#
+# L'import de ``calcul_gains`` reste local à chaque test, cohérent avec
+# le reste de ce fichier (le module existe déjà à ce stade du projet,
+# mais la convention d'import local est conservée pour homogénéité).
+
+
+@st.composite
+def _st_paire_repartitions_equivalentes(
+    draw: st.DrawFn,
+) -> tuple[object, object]:
+    """Génère une paire `(pi_tout_semaine_1, pi_50_50)` de `PayrollInput`
+    identiques sauf sur la répartition interne de `heures_par_semaine`,
+    pour les 2 mêmes totaux de période.
+
+    Utilisé par la Property 3 (préservation — neutralité fiscale de la
+    répartition interne, design §Correctness Properties Property 3,
+    bugfix.md Req 3.1, 3.2). Un `PayrollInput` de base est tiré via
+    `st_payroll_input()` (fournit tous les champs autres que
+    `heures_par_semaine` : employé, période, taux, jours fériés, etc.) ;
+    `total_heures_normales` et `total_heures_supplementaires` sont tirés
+    indépendamment dans `[0, 168]` (borne physique de
+    `HeuresParSemaine`, cohérente avec la tâche 3 du bugfix).
+
+    Deux répartitions internes distinctes des mêmes 2 totaux sur les 2
+    `HeuresParSemaine` sont construites :
+
+    - **tout sur semaine 1** : `semaine_1 = (total_hn, total_hs)`,
+      `semaine_2 = (0, 0)` — répartition retenue par le design pour
+      `repartir_heures_sur_semaines` (Bug 1, tâche 5.1 du bugfix) ;
+    - **50/50** : chaque total est coupé en deux via `quantize(...,
+      ROUND_HALF_UP)` sur la moitié, le reliquat étant absorbé par la
+      seconde semaine (`total - moitie`) pour garantir une somme
+      *exactement* égale au total d'origine même quand celui-ci n'est
+      pas divisible par 2 sans reste (ex. `Decimal("0.01")`).
+
+    Les deux `PayrollInput` résultants ne diffèrent donc que par la
+    répartition interne — tous les autres champs (`employee`,
+    `pay_period`, `taux_horaire_effectif`, `taux_vacances`,
+    `jours_feries_manuels`, etc.) sont strictement identiques
+    (`model_copy(update={"heures_par_semaine": ...})`, à l'image du
+    patron déjà utilisé par `_st_paire_heures_normales_excedentaires`).
+    """
+    pi_base = draw(st_payroll_input())
+    total_heures_normales = draw(
+        st.decimals(
+            min_value=Decimal("0"),
+            max_value=Decimal("168"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+    total_heures_supplementaires = draw(
+        st.decimals(
+            min_value=Decimal("0"),
+            max_value=Decimal("168"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        )
+    )
+
+    # Répartition A — tout sur la semaine 1 (retenue par le design pour
+    # `repartir_heures_sur_semaines`, bugfix Bug 1).
+    heures_par_semaine_tout_semaine_1 = (
+        HeuresParSemaine(
+            heures_normales=total_heures_normales,
+            heures_supplementaires=total_heures_supplementaires,
+        ),
+        HeuresParSemaine(
+            heures_normales=Decimal("0.00"),
+            heures_supplementaires=Decimal("0.00"),
+        ),
+    )
+
+    # Répartition B — 50/50, reliquat absorbé par la seconde semaine
+    # pour garantir une somme exactement égale au total (règle 01,
+    # aucun écart d'arrondi entre les deux répartitions comparées).
+    moitie_hn = (total_heures_normales / Decimal("2")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    moitie_hs = (total_heures_supplementaires / Decimal("2")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    heures_par_semaine_50_50 = (
+        HeuresParSemaine(
+            heures_normales=moitie_hn,
+            heures_supplementaires=moitie_hs,
+        ),
+        HeuresParSemaine(
+            heures_normales=total_heures_normales - moitie_hn,
+            heures_supplementaires=total_heures_supplementaires - moitie_hs,
+        ),
+    )
+
+    pi_tout_semaine_1 = pi_base.model_copy(
+        update={"heures_par_semaine": heures_par_semaine_tout_semaine_1}
+    )
+    pi_50_50 = pi_base.model_copy(
+        update={"heures_par_semaine": heures_par_semaine_50_50}
+    )
+    return pi_tout_semaine_1, pi_50_50
+
+
+class TestNeutraliteRepartitionInterne:
+    """Property 3 (bugfix heures-periode-et-persistance-brouillon) —
+    préservation, neutralité fiscale de la répartition interne.
+
+    Design (`heures-periode-et-persistance-brouillon/design.md`
+    §Correctness Properties, Property 3 ; §Hypothesized Root Cause,
+    point 4). Ce test caractérise le moteur fiscal existant
+    (`payroll_engine/gains_bruts.py`, non modifié par ce bugfix) : pour
+    tout couple de totaux de période et pour au moins 2 répartitions
+    internes distinctes de ces totaux sur les 2 `HeuresParSemaine`,
+    `calcul_gains` produit un `GainsDecomposes` strictement identique.
+    Ce test DOIT passer aussi bien avant qu'après la correction du Bug 1
+    (tâche 5 du bugfix) — il n'exerce que `calcul_gains`, jamais
+    `repartir_heures_sur_semaines`.
+    """
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 3: Preservation — Neutralité fiscale de la répartition interne
+    @pytest.mark.property
+    @given(
+        paire=_st_paire_repartitions_equivalentes(),
+        parametres_annee=st_parametres_annee_2026_qc(),
+    )
+    @settings_large_input
+    def test_property_3_gains_decomposes_identiques_quelle_que_soit_la_repartition_interne(
+        self,
+        paire,
+        parametres_annee,
+    ) -> None:
+        """*Pour tout* couple `(pi_tout_semaine_1, pi_50_50)` de
+        `PayrollInput` identiques sauf sur la répartition interne des 2
+        mêmes totaux d'heures (normales, supplémentaires) sur les 2
+        `HeuresParSemaine`, `calcul_gains` produit un `GainsDecomposes`
+        strictement identique (`salaire_regulier`,
+        `heures_supplementaires_montant`, `vacances`,
+        `jours_feries_manuels`, `brut_total`).
+
+        **Validates: Requirements 3.1, 3.2**
+
+        Comparaison par égalité stricte sur `Decimal` (règle 01,
+        tolérance nulle) : `calcul_gains` ne lit jamais
+        `heures_par_semaine[0]`/`[1]` individuellement — seule la somme
+        sur les 2 semaines entre dans le calcul du brut (design
+        §Hypothesized Root Cause, point 4). Ce test ne construit ni
+        n'importe `repartir_heures_sur_semaines` : il exerce
+        exclusivement `calcul_gains`, module non modifié par ce bugfix
+        (Bug 1, Bug 2 — `payroll_engine/gains_bruts.py` hors périmètre
+        des deux corrections).
+        """
+        from payroll_engine.gains_bruts import calcul_gains
+
+        pi_tout_semaine_1, pi_50_50 = paire
+
+        gains_tout_semaine_1, _trace_1 = calcul_gains(
+            pi_tout_semaine_1, parametres_annee
+        )
+        gains_50_50, _trace_2 = calcul_gains(pi_50_50, parametres_annee)
+
+        assert gains_tout_semaine_1.salaire_regulier == gains_50_50.salaire_regulier
+        assert (
+            gains_tout_semaine_1.heures_supplementaires_montant
+            == gains_50_50.heures_supplementaires_montant
+        )
+        assert gains_tout_semaine_1.vacances == gains_50_50.vacances
+        assert (
+            gains_tout_semaine_1.jours_feries_manuels
+            == gains_50_50.jours_feries_manuels
+        )
+        assert gains_tout_semaine_1.brut_total == gains_50_50.brut_total

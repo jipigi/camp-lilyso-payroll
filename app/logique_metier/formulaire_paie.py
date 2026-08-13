@@ -153,17 +153,66 @@ def generer_id_paie(
     return f"PAIE-{employe_id}-{annee_fiscale}-{numero_periode:02d}-v{version}"
 
 
-def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, object]:
+def repartir_heures_sur_semaines(
+    *,
+    total_heures_normales: Decimal,
+    total_heures_supplementaires: Decimal,
+) -> tuple[HeuresParSemaine, HeuresParSemaine]:
+    """Répartit 2 totaux d'heures sur les 2 `HeuresParSemaine` du
+    contrat moteur (`PayrollInput.heures_par_semaine`) — bug UI corrigé
+    (Req 2.1, 2.2 du bugfix `heures-periode-et-persistance-brouillon`).
+
+    **Règle de répartition, explicite et arbitraire** : la totalité des
+    heures normales et supplémentaires est portée par la PREMIÈRE
+    semaine (`heures_semaine_1`) ; la seconde semaine
+    (`heures_semaine_2`) reçoit toujours `Decimal("0.00")` pour les deux
+    quantités. Ce choix est un détail d'implémentation SANS AUCUN effet
+    sur le résultat fiscal (design §Correctness Properties, Property 1
+    et Property 3) : `payroll_engine.gains_bruts.calcul_gains` ne lit
+    jamais `heures_par_semaine[0]`/`[1]` individuellement — il calcule
+    exclusivement `sum(s.heures_normales for s in
+    payroll_input.heures_par_semaine)` et l'équivalent pour les heures
+    supplémentaires (vérifié par lecture directe de `gains_bruts.py`,
+    confirmé par property-based testing dans
+    `tests/payroll_engine/test_gains_bruts.py::TestNeutraliteRepartitionInterne`).
+    Toute autre règle de répartition déterministe (50/50, tout sur la
+    semaine 2, etc.) satisferait également cette propriété — celle-ci a
+    été retenue pour sa simplicité et sa lisibilité.
+
+    Fonction pure : deux appels avec les mêmes arguments produisent deux
+    tuples égaux au sens `==`. Aucune validation de bornes n'est
+    effectuée ici — `HeuresParSemaine` applique déjà ses propres
+    contraintes (`[0, 168]`, règle 01) ; toute valeur hors plage lève
+    `pydantic.ValidationError` depuis la construction du modèle,
+    propagée sans interception (règle 03 — pas de nouveau garde-fou de
+    périmètre).
+    """
+    semaine_1 = HeuresParSemaine(
+        heures_normales=total_heures_normales,
+        heures_supplementaires=total_heures_supplementaires,
+    )
+    semaine_2 = HeuresParSemaine(
+        heures_normales=Decimal("0.00"),
+        heures_supplementaires=Decimal("0.00"),
+    )
+    return (semaine_1, semaine_2)
+
+
+def valeurs_effectives_depuis_paie(
+    resultat: "PayrollResult",
+    payroll_input_persiste: PayrollInput | None = None,
+) -> dict[str, object]:
     """Reconstruit les valeurs saisies du Formulaire_Paie depuis un
     `PayrollResult` déjà assemblé — bug UI corrigé après livraison
     (pré-remplissage du formulaire pour poursuivre l'édition d'un
     brouillon, ou pour corriger une paie émise).
 
-    **Limitation documentée (décision explicite, discussion
-    utilisateur)** : les heures normales/supplémentaires saisies par
-    semaine (`PayrollInput.heures_par_semaine`) ne sont **pas**
-    persistées par `assembler_paie`/`payroll_engine.net_pay` — seul le
-    montant en dollars agrégé (`gains.salaire_regulier`, `gains.
+    **Limitation documentée, désormais restreinte au cas
+    Paie_Pre_Correction (`payroll_input_persiste is None`)** : les
+    heures normales/supplémentaires saisies par semaine
+    (`PayrollInput.heures_par_semaine`) ne sont **pas** persistées par
+    `assembler_paie`/`payroll_engine.net_pay` — seul le montant en
+    dollars agrégé (`gains.salaire_regulier`, `gains.
     heures_supplementaires_montant`) est conservé dans `PayrollResult`.
     `PayrollResult.pay_period.semaines` porte les `WeekSegment` avec des
     heures à `Decimal("0")` (dérivées mécaniquement par
@@ -171,10 +220,17 @@ def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, objec
     moteur) — reconstruire les heures par déduction (montant ÷ taux
     horaire) serait trompeur : impossible de connaître la répartition
     exacte semaine 1/semaine 2 ni la part normale/supplémentaire si le
-    seuil hebdomadaire a été dépassé. Cette fonction ne tente donc
-    **aucune** reconstruction des heures — les clés `heures_normales_1`,
-    `heures_supplementaires_1`, `heures_normales_2`,
-    `heures_supplementaires_2` sont volontairement absentes du dict
+    seuil hebdomadaire a été dépassé. C'est précisément pour cette
+    raison que le registre (`payroll_engine/register.py`) persiste
+    désormais séparément le `PayrollInput` d'origine
+    (colonne `payload_input_json`) : quand l'appelant peut fournir ce
+    `PayrollInput` relu via ``payroll_input_persiste`` (Paie_Post_
+    Correction), cette fonction restitue `total_heures_normales`/
+    `total_heures_supplementaires` par simple sommation, sans aucune
+    déduction approximative. Quand ``payroll_input_persiste`` est
+    `None` (Paie_Pre_Correction — colonne absente/`NULL`, ou appelant
+    qui ne le transmet pas), les clés `total_heures_normales`,
+    `total_heures_supplementaires` sont volontairement absentes du dict
     retourné ; l'appelant (`app/pages_ui/formulaire_paie.py`) doit
     laisser ces champs à `"0.00"` et informer l'opérateur qu'ils
     doivent être ressaisis.
@@ -185,6 +241,12 @@ def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, objec
     effectives sont reconstituées depuis les `CalculationTrace.entrees`
     des retenues employé (même patron que
     `fiche_employe_detaillee.py::_afficher_valeurs_fiscales_effectives`).
+    Les deux totaux d'heures, quand `payroll_input_persiste` est fourni,
+    sont obtenus par sommation directe sur
+    `payroll_input_persiste.heures_par_semaine` — l'inverse exact de
+    `repartir_heures_sur_semaines`, invariante par rapport à la
+    répartition interne choisie (design §Correctness Properties,
+    Property 1).
 
     Retourne un dict directement utilisable pour pré-remplir les
     widgets `st.text_input`/`st.date_input`/`st.checkbox` du
@@ -204,7 +266,7 @@ def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, objec
         )
     )
 
-    return {
+    resultat_dict: dict[str, object] = {
         "numero_periode": resultat.pay_period.numero_periode,
         "date_debut": semaines[0].date_debut,
         "date_fin": semaines[-1].date_fin,
@@ -228,3 +290,21 @@ def valeurs_effectives_depuis_paie(resultat: "PayrollResult") -> dict[str, objec
             ]
         ),
     }
+
+    if payroll_input_persiste is not None:
+        resultat_dict["total_heures_normales"] = sum(
+            (
+                s.heures_normales
+                for s in payroll_input_persiste.heures_par_semaine
+            ),
+            start=Decimal("0"),
+        )
+        resultat_dict["total_heures_supplementaires"] = sum(
+            (
+                s.heures_supplementaires
+                for s in payroll_input_persiste.heures_par_semaine
+            ),
+            start=Decimal("0"),
+        )
+
+    return resultat_dict

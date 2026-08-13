@@ -3328,7 +3328,10 @@ class TestRegisterNoDbFileInRepo:
 
 #: DDL de conception exacte — nom et type de chaque colonne de ``paies``,
 #: dans l'ordre de déclaration (design §Data Models « Schéma SQL — table
-#: paies », Req 9.1).
+#: paies », Req 9.1). Depuis le bugfix
+#: ``heures-periode-et-persistance-brouillon`` (tâche 6.1, Req 2.3) : colonne
+#: nullable ``payload_input_json`` ajoutée en fin de DDL (migration additive,
+#: aucune donnée existante modifiée).
 _COLONNES_ATTENDUES_PAIES: tuple[tuple[str, str], ...] = (
     ("id_paie", "TEXT"),
     ("employe_id", "TEXT"),
@@ -3341,6 +3344,7 @@ _COLONNES_ATTENDUES_PAIES: tuple[tuple[str, str], ...] = (
     ("date_creation", "TEXT"),
     ("date_emission", "TEXT"),
     ("payload_json", "TEXT"),
+    ("payload_input_json", "TEXT"),
 )
 
 #: DDL de conception exacte — nom et type de chaque colonne de

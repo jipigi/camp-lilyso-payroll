@@ -81,6 +81,7 @@ from app.logique_metier.fiche_employe import parametres_effectifs_par_defaut
 from app.logique_metier.formulaire_paie import (
     construire_payroll_input,
     generer_id_paie,
+    repartir_heures_sur_semaines,
     valeurs_effectives_depuis_paie,
 )
 from app.logique_metier.parametres_fiscaux import (
@@ -88,7 +89,7 @@ from app.logique_metier.parametres_fiscaux import (
     lister_annees_disponibles,
 )
 from models.enums import StatutDePaie
-from models.payroll_input import HeuresParSemaine
+from models.payroll_input import PayrollInput
 from models.payroll_result import PayrollResult
 from payroll_engine.net_pay import assembler_paie
 
@@ -292,12 +293,17 @@ def _section_nouvelle_paie(
                 f"{resultat_brouillon.message}"
             )
         else:
-            valeurs_precharge = valeurs_effectives_depuis_paie(resultat_brouillon)
+            paie_brouillon, payroll_input_brouillon = resultat_brouillon
+            valeurs_precharge = valeurs_effectives_depuis_paie(
+                paie_brouillon, payroll_input_brouillon
+            )
+            # Message générique ici — le détail sur la restitution ou
+            # non des heures (Paie_Post_Correction vs Paie_Pre_
+            # Correction) est affiché juste avant les 2 champs d'heures
+            # concernés, pour éviter un message dupliqué/contradictoire.
             st.info(
                 "Formulaire pré-rempli depuis le brouillon "
-                f"'{id_paie_brouillon_precharge}' — les heures par "
-                "semaine doivent être ressaisies (non récupérables "
-                "depuis une paie déjà assemblée)."
+                f"'{id_paie_brouillon_precharge}'."
             )
 
     # ------------------------------------------------------------------
@@ -368,23 +374,46 @@ def _section_nouvelle_paie(
     )
 
     if valeurs_precharge is not None:
-        st.warning(
-            "Heures par semaine non récupérables depuis le brouillon — "
-            "veuillez les ressaisir ci-dessous."
-        )
-    st.write("Heures — semaine 1")
-    heures_normales_1 = st.text_input(
-        "Heures normales (semaine 1)", value="0.00", key="fp_nouvelle_hn1"
+        if (
+            "total_heures_normales" in valeurs_precharge
+            and "total_heures_supplementaires" in valeurs_precharge
+        ):
+            # Paie_Post_Correction (design §Glossary) — le PayrollInput
+            # d'origine a été persisté (colonne payload_input_json non
+            # NULL) : les 2 totaux d'heures sont restitués sans
+            # ressaisie (Req 2.4, design §Correctness Properties,
+            # Property 2).
+            st.info(
+                "Heures d'origine restituées depuis le brouillon — "
+                "aucune ressaisie nécessaire."
+            )
+        else:
+            # Paie_Pre_Correction (design §Glossary) — le PayrollInput
+            # d'origine n'a pas été persisté, les 2 totaux d'heures
+            # restent non récupérables (Req 3.4, préservation du
+            # comportement antérieur à cette correction).
+            st.warning(
+                "Heures par semaine non récupérables depuis le brouillon — "
+                "veuillez les ressaisir ci-dessous."
+            )
+    st.write("Heures — période complète (2 semaines)")
+    total_heures_normales = st.text_input(
+        "Total heures normales (période)",
+        value=(
+            str(valeurs_precharge.get("total_heures_normales", "0.00"))
+            if valeurs_precharge
+            else "0.00"
+        ),
+        key="fp_nouvelle_total_hn",
     )
-    heures_supp_1 = st.text_input(
-        "Heures supplémentaires (semaine 1)", value="0.00", key="fp_nouvelle_hs1"
-    )
-    st.write("Heures — semaine 2")
-    heures_normales_2 = st.text_input(
-        "Heures normales (semaine 2)", value="0.00", key="fp_nouvelle_hn2"
-    )
-    heures_supp_2 = st.text_input(
-        "Heures supplémentaires (semaine 2)", value="0.00", key="fp_nouvelle_hs2"
+    total_heures_supplementaires = st.text_input(
+        "Total heures supplémentaires (période)",
+        value=(
+            str(valeurs_precharge.get("total_heures_supplementaires", "0.00"))
+            if valeurs_precharge
+            else "0.00"
+        ),
+        key="fp_nouvelle_total_hs",
     )
 
     jours_feries_manuels = st.text_input(
@@ -489,7 +518,21 @@ def _section_nouvelle_paie(
     # Req 10 — assemblage de la paie.
     # ------------------------------------------------------------------
     if st.button("Assembler la paie", type="primary", key="fp_nouvelle_assembler"):
+        # Conservé par `_assembler()` (nonlocal) pour transmission à
+        # `st.session_state["fp_nouvelle_payroll_input_assemble"]" —
+        # préparation pour la tâche 6.5 (persistance du PayrollInput via
+        # `inserer_paie`), `assembler_paie` ne renvoie que le
+        # `PayrollResult` (contrat moteur inchangé, règle 02).
+        payroll_input_construit: PayrollInput | None = None
+
         def _assembler() -> PayrollResult:
+            nonlocal payroll_input_construit
+            heures_semaine_1, heures_semaine_2 = repartir_heures_sur_semaines(
+                total_heures_normales=_decimal_depuis_saisie(total_heures_normales),
+                total_heures_supplementaires=_decimal_depuis_saisie(
+                    total_heures_supplementaires
+                ),
+            )
             payroll_input = construire_payroll_input(
                 employee=employe,
                 numero_periode=int(numero_periode),
@@ -498,14 +541,8 @@ def _section_nouvelle_paie(
                 date_paiement=date_paiement,
                 annee_fiscale=annee_fiscale,
                 nb_periodes_annuelles=nb_periodes_annuelles,
-                heures_semaine_1=HeuresParSemaine(
-                    heures_normales=_decimal_depuis_saisie(heures_normales_1),
-                    heures_supplementaires=_decimal_depuis_saisie(heures_supp_1),
-                ),
-                heures_semaine_2=HeuresParSemaine(
-                    heures_normales=_decimal_depuis_saisie(heures_normales_2),
-                    heures_supplementaires=_decimal_depuis_saisie(heures_supp_2),
-                ),
+                heures_semaine_1=heures_semaine_1,
+                heures_semaine_2=heures_semaine_2,
                 taux_horaire_effectif=_decimal_depuis_saisie(taux_horaire_effectif),
                 taux_vacances=_decimal_depuis_saisie(taux_vacances),
                 jours_feries_manuels=_decimal_depuis_saisie(jours_feries_manuels),
@@ -523,6 +560,7 @@ def _section_nouvelle_paie(
                 ),
                 cumuls_debut=cumuls_debut,
             )
+            payroll_input_construit = payroll_input
             # Bug UI corrigé après livraison — détermination de la
             # version à utiliser : `remplacer_paie` (moteur) exige que
             # la paie remplacée soit EMISE (Req 13.2 du moteur), donc
@@ -563,6 +601,12 @@ def _section_nouvelle_paie(
             # Req 10.5 — aucune persistance automatique : le résultat est
             # conservé en session pour l'étape d'enregistrement explicite.
             st.session_state["fp_nouvelle_paie_assemblee"] = resultat_assemblage
+            # Conservation du PayrollInput assemblé — préparation pour
+            # la tâche 6.5 (transmission à `inserer_paie(...,
+            # payroll_input=...)`, design §Fix Implementation point 5).
+            st.session_state[
+                "fp_nouvelle_payroll_input_assemble"
+            ] = payroll_input_construit
             st.success("Paie assemblée avec succès.")
 
     paie_assemblee = st.session_state.get("fp_nouvelle_paie_assemblee")
@@ -576,7 +620,17 @@ def _section_nouvelle_paie(
 def _section_enregistrement(
     paie_assemblee: PayrollResult, annee_fiscale: int, *, cle_prefixe: str
 ) -> None:
-    """Choix BROUILLON/EMISE, saison, confirmation, ``inserer_paie`` (Req 12, 3.3)."""
+    """Choix BROUILLON/EMISE, saison, confirmation, ``inserer_paie`` (Req 12, 3.3).
+
+    Depuis le bugfix `heures-periode-et-persistance-brouillon` (Req 2.3,
+    2.4, design §Correctness Properties Property 2) : le `PayrollInput`
+    assemblé, conservé en session sous
+    `f"{cle_prefixe}_payroll_input_assemble"` (tâche 5.2), est transmis
+    à `inserer_paie` pour persistance dans `payload_input_json`.
+    """
+    payroll_input_assemble = st.session_state.get(
+        f"{cle_prefixe}_payroll_input_assemble"
+    )
     st.write("**Enregistrement**")
     statut_choisi = st.radio(
         "Statut", ["BROUILLON", "EMISE"], key=f"{cle_prefixe}_statut_choisi"
@@ -616,7 +670,12 @@ def _section_enregistrement(
         )
 
         def _inserer() -> str:
-            inserer_paie(paie_a_inserer, saison, chemin_bd=chemin_bd_production())
+            inserer_paie(
+                paie_a_inserer,
+                saison,
+                payroll_input=payroll_input_assemble,
+                chemin_bd=chemin_bd_production(),
+            )
             return paie_a_inserer.id_paie
 
         resultat_insertion = executer_avec_capture(_inserer)
@@ -677,7 +736,11 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
             f"{resultat_ancienne_paie.message}"
         )
         return
-    ancienne_paie = resultat_ancienne_paie
+    # Le PayrollInput de la paie EMISE ciblée n'est pas utilisé pour
+    # pré-remplir les heures dans ce flux (design §Fix Implementation) —
+    # les heures du formulaire de correction restent à "0.00" par
+    # défaut.
+    ancienne_paie, _ = resultat_ancienne_paie
 
     if ancienne_paie.statut != StatutDePaie.EMISE:
         st.error(
@@ -752,19 +815,14 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         key="fp_corriger_date_paiement",
     )
 
-    st.write("Heures — semaine 1")
-    heures_normales_1 = st.text_input(
-        "Heures normales (semaine 1)", value="0.00", key="fp_corriger_hn1"
+    st.write("Heures — période complète (2 semaines)")
+    total_heures_normales = st.text_input(
+        "Total heures normales (période)", value="0.00", key="fp_corriger_total_hn"
     )
-    heures_supp_1 = st.text_input(
-        "Heures supplémentaires (semaine 1)", value="0.00", key="fp_corriger_hs1"
-    )
-    st.write("Heures — semaine 2")
-    heures_normales_2 = st.text_input(
-        "Heures normales (semaine 2)", value="0.00", key="fp_corriger_hn2"
-    )
-    heures_supp_2 = st.text_input(
-        "Heures supplémentaires (semaine 2)", value="0.00", key="fp_corriger_hs2"
+    total_heures_supplementaires = st.text_input(
+        "Total heures supplémentaires (période)",
+        value="0.00",
+        key="fp_corriger_total_hs",
     )
     jours_feries_manuels = st.text_input(
         "Jours fériés manuels ($)", value="0.00", key="fp_corriger_jours_feries"
@@ -829,7 +887,21 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
     cumuls_debut = resultat_cumuls
 
     if st.button("Réassembler la paie", type="primary", key="fp_corriger_assembler"):
+        # Conservé par `_reassembler()` (nonlocal) pour transmission à
+        # `st.session_state["fp_corriger_payroll_input_reassemble"]" —
+        # préparation pour la tâche 6.5 (persistance du PayrollInput via
+        # `remplacer_paie`), `assembler_paie` ne renvoie que le
+        # `PayrollResult` (contrat moteur inchangé, règle 02).
+        payroll_input_construit: PayrollInput | None = None
+
         def _reassembler() -> PayrollResult:
+            nonlocal payroll_input_construit
+            heures_semaine_1, heures_semaine_2 = repartir_heures_sur_semaines(
+                total_heures_normales=_decimal_depuis_saisie(total_heures_normales),
+                total_heures_supplementaires=_decimal_depuis_saisie(
+                    total_heures_supplementaires
+                ),
+            )
             payroll_input = construire_payroll_input(
                 employee=employe_ciblee,
                 numero_periode=ancienne_paie.pay_period.numero_periode,
@@ -838,14 +910,8 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
                 date_paiement=date_paiement,
                 annee_fiscale=ancienne_paie.annee_fiscale,
                 nb_periodes_annuelles=nb_periodes_annuelles,
-                heures_semaine_1=HeuresParSemaine(
-                    heures_normales=_decimal_depuis_saisie(heures_normales_1),
-                    heures_supplementaires=_decimal_depuis_saisie(heures_supp_1),
-                ),
-                heures_semaine_2=HeuresParSemaine(
-                    heures_normales=_decimal_depuis_saisie(heures_normales_2),
-                    heures_supplementaires=_decimal_depuis_saisie(heures_supp_2),
-                ),
+                heures_semaine_1=heures_semaine_1,
+                heures_semaine_2=heures_semaine_2,
                 taux_horaire_effectif=_decimal_depuis_saisie(taux_horaire_effectif),
                 taux_vacances=_decimal_depuis_saisie(taux_vacances),
                 jours_feries_manuels=_decimal_depuis_saisie(jours_feries_manuels),
@@ -863,6 +929,7 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
                 ),
                 cumuls_debut=cumuls_debut,
             )
+            payroll_input_construit = payroll_input
             # Req 13.3 — version = version_ciblee + 1, id_paie regénéré.
             nouvelle_version = ancienne_paie.version + 1
             id_paie = generer_id_paie(
@@ -889,6 +956,13 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         else:
             st.session_state["fp_corriger_paie_reassemblee"] = resultat_reassemblage
             st.session_state["fp_corriger_ancien_id_cible"] = ancien_id
+            # Conservation du PayrollInput réassemblé — préparation pour
+            # la tâche 6.5 (transmission à `remplacer_paie(...,
+            # nouveau_payroll_input=...)`, design §Fix Implementation
+            # point 5).
+            st.session_state[
+                "fp_corriger_payroll_input_reassemble"
+            ] = payroll_input_construit
             st.success("Paie réassemblée avec succès.")
 
     paie_reassemblee = st.session_state.get("fp_corriger_paie_reassemblee")
@@ -940,11 +1014,16 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
                 }
             )
 
+            nouveau_payroll_input = st.session_state.get(
+                "fp_corriger_payroll_input_reassemble"
+            )
+
             def _remplacer() -> str:
                 remplacer_paie(
                     ancien_id,
                     nouveau_resultat,
                     saison,
+                    nouveau_payroll_input=nouveau_payroll_input,
                     chemin_bd=chemin_bd_production(),
                 )
                 return nouveau_resultat.id_paie

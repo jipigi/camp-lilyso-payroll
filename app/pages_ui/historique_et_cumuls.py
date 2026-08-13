@@ -173,8 +173,12 @@ def render() -> None:
         else:
             # Déjà ordonné par `version` croissant par
             # `lire_historique_paie` (ORDER BY version ASC) — aucun
-            # tri supplémentaire ici (Req 14.1).
-            for version_paie in resultat_historique:
+            # tri supplémentaire ici (Req 14.1). Depuis le bugfix
+            # heures-periode-et-persistance-brouillon, chaque élément
+            # est désormais un couple (PayrollResult, PayrollInput |
+            # None) — le PayrollInput n'est pas utilisé dans cet
+            # affichage.
+            for version_paie, _ in resultat_historique:
                 st.write(
                     f"id_paie={version_paie.id_paie} | "
                     f"version={version_paie.version} | "

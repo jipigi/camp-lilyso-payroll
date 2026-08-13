@@ -107,7 +107,7 @@ _NOM_MODULE_CIBLE = "payroll_engine.register"
 #: registre. ``chemin_bd`` est toujours le dernier paramètre, avec le
 #: chemin de production comme valeur par défaut (Req 15.1).
 _SIGNATURES_ATTENDUES: dict[str, tuple[str, ...]] = {
-    "inserer_paie": ("resultat", "saison", "chemin_bd"),
+    "inserer_paie": ("resultat", "saison", "payroll_input", "chemin_bd"),
     "lire_paie": ("id_paie", "chemin_bd"),
     "lire_historique_paie": (
         "employe_id",
@@ -116,8 +116,24 @@ _SIGNATURES_ATTENDUES: dict[str, tuple[str, ...]] = {
         "chemin_bd",
     ),
     "lire_cumuls_ytd": ("employe_id", "annee_civile", "chemin_bd"),
-    "remplacer_paie": ("ancien_id", "nouveau_resultat", "saison", "chemin_bd"),
+    "remplacer_paie": (
+        "ancien_id",
+        "nouveau_resultat",
+        "saison",
+        "nouveau_payroll_input",
+        "chemin_bd",
+    ),
 }
+
+#: Paramètres autorisés à porter une valeur par défaut en plus de
+#: `chemin_bd` — extension assumée de la signature par le bugfix
+#: `heures-periode-et-persistance-brouillon` (design §Fix Implementation,
+#: point 6) : `payroll_input`/`nouveau_payroll_input` sont optionnels
+#: (défaut `None`) pour préserver tout appelant existant qui ne transmet
+#: pas de `PayrollInput` (Property 4, préservation).
+_PARAMETRES_AVEC_DEFAUT_AUTORISE: frozenset[str] = frozenset(
+    {"chemin_bd", "payroll_input", "nouveau_payroll_input"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +224,19 @@ class TestSignatureEtChemin:
                         f"`{nom_fonction}` doit fournir une valeur par "
                         f"défaut pour `chemin_bd` — le chemin de "
                         f"production (Req 15.1)."
+                    )
+                elif nom in _PARAMETRES_AVEC_DEFAUT_AUTORISE:
+                    # `payroll_input`/`nouveau_payroll_input` — rupture de
+                    # signature assumée par le bugfix
+                    # `heures-periode-et-persistance-brouillon` (design
+                    # §Fix Implementation, point 6) : défaut `None`
+                    # explicitement requis pour la préservation (Property
+                    # 4) de tout appelant existant.
+                    assert parametre.default is None, (
+                        f"`{nom}` de `{nom_fonction}` doit porter le "
+                        f"défaut `None` (préservation, design "
+                        f"§Correctness Properties Property 4), obtenu "
+                        f"{parametre.default!r}."
                     )
                 else:
                     assert parametre.default is inspect.Parameter.empty, (
@@ -804,7 +833,7 @@ class TestRoundTrip:
         module = _importer_module_register()
 
         module.inserer_paie(resultat, saison, chemin_bd=st_chemin_bd_temporaire)
-        relu = module.lire_paie(resultat.id_paie, chemin_bd=st_chemin_bd_temporaire)
+        relu, _ = module.lire_paie(resultat.id_paie, chemin_bd=st_chemin_bd_temporaire)
 
         assert relu == resultat, (
             "`lire_paie` après `inserer_paie` doit retourner un "
@@ -897,7 +926,7 @@ class TestImmutabiliteLignes:
         module.inserer_paie(ancien, saison, chemin_bd=chemin_bd)
         module.remplacer_paie(ancien.id_paie, nouveau, saison, chemin_bd=chemin_bd)
 
-        ancien_apres_remplacement = module.lire_paie(
+        ancien_apres_remplacement, _ = module.lire_paie(
             ancien.id_paie, chemin_bd=chemin_bd
         )
 
@@ -1422,7 +1451,7 @@ class TestRefusInsertionDupliquee:
                 update={"id_paie": resultat.id_paie}
             )
 
-        paie_avant = module.lire_paie(
+        paie_avant, _ = module.lire_paie(
             resultat.id_paie, chemin_bd=st_chemin_bd_temporaire
         )
         cumuls_avant = module.lire_cumuls_ytd(
@@ -1441,7 +1470,7 @@ class TestRefusInsertionDupliquee:
             f"obtenu {excinfo.value!r} (Property 14, Req 11.6)."
         )
 
-        paie_apres = module.lire_paie(
+        paie_apres, _ = module.lire_paie(
             resultat.id_paie, chemin_bd=st_chemin_bd_temporaire
         )
         cumuls_apres = module.lire_cumuls_ytd(
@@ -1457,4 +1486,400 @@ class TestRefusInsertionDupliquee:
             "La tentative d'insertion dupliquée refusée ne doit muter "
             f"aucune ligne `cumuls_ytd` (Property 14), obtenu "
             f"{cumuls_apres!r}, attendu {cumuls_avant!r} (Req 11.6)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property 2 (Bug Condition) — Bug 2 : absence de persistance du
+# `PayrollInput` (exploration)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``heures-periode-et-persistance-brouillon``.
+# Design de référence : ``design.md`` §Bug Condition (Bug 2),
+# §Correctness Properties (Property 2), §Testing Strategy
+# « Exploratory Bug Condition Checking ».
+#
+# Tâche 2 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ces tests d'exploration DOIVENT
+# échouer sur le code non corrigé — la colonne `payload_input_json`
+# n'existe pas encore dans le DDL `paies`, et `lire_paie` retourne
+# encore un `PayrollResult` seul (pas un couple). Ces échecs confirment
+# `isBugCondition_Brouillon(X) = X.paie_deja_enregistree == true AND
+# X.payload_input_json_disponible == false` (toujours vrai sur le code
+# non corrigé).
+#
+# **NE PAS corriger ces tests ni le code lorsqu'ils échouent** — l'échec
+# est le résultat attendu de cette tâche (voir tâches 2, 6.6).
+#
+# _Requirements: 1.3, 1.4_
+
+
+class TestExplorationPersistancePayrollInput:
+    """Property 2 (Bug Condition) — exploration, Bug 2 (brouillon non
+    restituable).
+
+    Design (§Bug Condition Bug 2, §Correctness Properties Property 2,
+    §Testing Strategy « Exploratory Bug Condition Checking », cas 2 et
+    3) ; Requirements 1.3, 1.4.
+
+    Confirme, sur le code NON corrigé, que :
+
+    1. la colonne `payload_input_json` est absente du schéma `paies`
+       après `_creer_schema_si_absent` (Test 1, exemple) ;
+    2. `lire_paie(id_paie)` retourne un `PayrollResult` seul — la
+       déstructuration `resultat, payroll_input = lire_paie(id_paie)`
+       échoue par `TypeError` (Test 2, exemple).
+
+    Règle 04 : chaque test ouvre une connexion `":memory:"` ou une base
+    `tmp_path` — jamais la base de production — et n'utilise que des
+    identifiants fictifs `EMPnnn` (via `_st_un_payroll_result_emis`,
+    déjà défini par la tâche 3.1, réutilisé sans modification).
+    """
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 2: Bug Condition
+    def test_exemple_colonne_payload_input_json_absente_du_schema_paies(
+        self,
+    ) -> None:
+        """Test 1 (exemple) — Req 1.3.
+
+        `PRAGMA table_info(paies)` sur une connexion `":memory:"`
+        fraîche, après `_creer_schema_si_absent`, ne doit PAS contenir
+        de colonne nommée `payload_input_json` sur le code non
+        corrigé : le DDL `_DDL_PAIES` actuel ne définit que
+        `payload_json`, jamais les données d'entrée (`PayrollInput`).
+        """
+        module = _importer_module_register()
+
+        connexion = sqlite3.connect(":memory:")
+        try:
+            module._creer_schema_si_absent(connexion)
+            colonnes = {
+                ligne[1]
+                for ligne in connexion.execute(
+                    "PRAGMA table_info(paies)"
+                ).fetchall()
+            }
+        finally:
+            connexion.close()
+
+        assert "payload_input_json" not in colonnes, (
+            "Sur le code non corrigé, `payload_input_json` ne doit PAS "
+            f"figurer dans le schéma `paies`, colonnes obtenues : "
+            f"{colonnes!r} — si ce test échoue en PASSANT, la colonne "
+            "existe déjà et le Bug 2 pourrait être déjà corrigé "
+            "(Property 2, Req 1.3)."
+        )
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 2: Bug Condition
+    @given(resultat=_st_un_payroll_result_emis, saison=st_saison())
+    @settings_large_input
+    def test_exemple_lire_paie_retourne_payrollresult_seul_deballage_echoue(
+        self,
+        resultat: PayrollResult,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Test 2 (exemple) — Req 1.4.
+
+        Sur le code non corrigé, `lire_paie(id_paie)` retourne un
+        `PayrollResult` unique (pas un couple) : tenter de le
+        déstructurer en `(resultat_relu, payroll_input_relu) =
+        lire_paie(...)` doit échouer — confirme que le `PayrollInput`
+        n'est jamais restitué par la lecture.
+
+        **Constat empirique (contre-exemple documenté)** : le design
+        anticipait un `TypeError` (« cannot unpack non-iterable
+        PayrollResult »), formulation valable pour un objet Python
+        ordinaire non itérable. `PayrollResult` est un modèle Pydantic
+        v2, qui implémente nativement `__iter__` (itération sur les
+        paires `(nom_champ, valeur)`, utilisée par `dict(modele)`) — la
+        déstructuration `a, b = resultat` échoue donc bel et bien, mais
+        avec `ValueError: too many values to unpack (expected 2)`
+        (`PayrollResult` compte largement plus de 2 champs), pas
+        `TypeError`. Le test accepte les deux types pour rester robuste
+        à ce détail d'implémentation Pydantic, sans affaiblir la
+        confirmation du bug : dans les deux cas, aucun couple
+        `(PayrollResult, PayrollInput | None)` n'est jamais obtenu.
+
+        Chemin `chemin_bd` construit manuellement sous `tmp_path` (même
+        patron que `TestRemplacerPaie` — pas la fixture
+        `st_chemin_bd_temporaire`, qui n'est résolue qu'une seule fois
+        par invocation de test pytest et serait donc partagée entre
+        plusieurs exemples Hypothesis générés par cette même invocation,
+        provoquant des collisions d'`id_paie` déjà présent).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(resultat, saison, chemin_bd=chemin_bd)
+
+        with pytest.raises((TypeError, ValueError)):
+            resultat_relu, payroll_input_relu = module.lire_paie(
+                resultat.id_paie, chemin_bd=chemin_bd
+            )
+
+
+# ---------------------------------------------------------------------------
+# Property 4 (Preservation) — paies pré-correction, Action_Corriger,
+# non-régression golden (Bug 2)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``heures-periode-et-persistance-brouillon``.
+# Design de référence : ``design.md`` §Correctness Properties (Property 4),
+# §Preservation Requirements, §Testing Strategy « Preservation Checking ».
+#
+# Tâche 4 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ces tests de préservation DOIVENT
+# PASSER sur le code non corrigé — ils caractérisent le comportement de
+# référence que la correction (tâches 6.1 à 6.7) devra continuer à
+# produire pour les appels qui ne transmettent jamais de `PayrollInput`
+# (signature actuelle de `inserer_paie`/`remplacer_paie`, sans le
+# paramètre `payroll_input`/`nouveau_payroll_input` introduit par la
+# tâche 6.2) et pour l'Action_Corriger (`remplacer_paie`).
+#
+# **NE PAS écrire de nouveau test après la correction** — les tâches
+# 6.7 ré-exécutent strictement ces mêmes tests sur le code corrigé.
+#
+# _Requirements: 3.3, 3.4, 3.5, 3.6_
+
+
+class TestPreservationPaiesPreCorrection:
+    """Property 4 (Preservation) — comportement inchangé pour les paies
+    pré-correction et pour l'Action_Corriger.
+
+    Design (§Correctness Properties Property 4, §Preservation
+    Requirements, §Testing Strategy « Preservation Checking », cas 3) ;
+    Requirements 3.3, 3.4, 3.5, 3.6.
+
+    Confirme, sur le code NON corrigé (signature actuelle de
+    `inserer_paie`/`remplacer_paie`, sans `PayrollInput`), que :
+
+    1. toute insertion via `inserer_paie(resultat, saison,
+       chemin_bd=...)` (sans `PayrollInput` — cas normal, la colonne
+       `payload_input_json` n'existe même pas encore) est relue sans
+       exception via `lire_paie` (Test 1, property-based, Req 3.4) — le
+       test complémentaire vérifiant que `valeurs_effectives_depuis_paie`
+       appliqué à ce résultat relu ne restitue jamais les clés d'heures
+       est ajouté à `tests/app/logique_metier/test_formulaire_paie.
+       py::TestExplorationValeursEffectivesHeures` (classe créée en
+       tâche 2), seul endroit du dépôt où un `PayrollResult` porteur de
+       traces réelles compatibles avec `valeurs_effectives_depuis_paie`
+       est déjà disponible (`_st_un_payroll_result`, assemblé via
+       `assembler_paie` — les `PayrollResult` synthétiques de
+       `st_sequence_payroll_results_meme_employe_annee`, construits sans
+       passer par le moteur, portent des traces vides incompatibles avec
+       les clés `parametres_utilises`/`entrees` que cette fonction lit) ;
+    2. `remplacer_paie` sur une paie `EMISE` existante continue de
+       produire une nouvelle version incrémentée (`version + 1`) et un
+       `cumuls_ytd` recalculé à l'identique (Test 2, exemple, Req 3.3) ;
+    3. les golden tests et property-based tests existants du moteur
+       fiscal (`tests/test_golden_outputs.py`,
+       `tests/payroll_engine/test_gains_bruts.py`) ne sont pas modifiés
+       par ce bugfix (Test 3, non-régression, Req 3.5, 3.6).
+
+    Règle 04 : chaque test injecte un `chemin_bd` temporaire (`tmp_path`
+    / `st_chemin_bd_temporaire`) — jamais la base de production — et
+    n'utilise que des identifiants fictifs `EMPnnn` (via les stratégies
+    déjà existantes de `tests/strategies.py`).
+    """
+
+    # -----------------------------------------------------------------
+    # Test 1 (property-based) — insertion/relecture sans PayrollInput,
+    # aucune exception, aucune clé d'heures restituée (Req 3.4).
+    # -----------------------------------------------------------------
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 4: Preservation
+    @pytest.mark.property
+    @given(
+        sequence=st_sequence_payroll_results_meme_employe_annee(n_max=3),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_insertion_sans_payroll_input_relue_sans_exception_sans_cles_heures(
+        self,
+        sequence: tuple[PayrollResult, ...],
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 4, Test 1 (Preservation) — Req 3.4.
+
+        Pour toute séquence de `PayrollResult` insérée via
+        `inserer_paie(resultat, saison, chemin_bd=...)` (signature
+        actuelle, sans `PayrollInput`) sur une base neuve, chaque
+        relecture via `lire_paie` ne doit lever aucune exception et doit
+        rester un round-trip strict (`resultat_relu == resultat`,
+        Property 10 déjà couverte par la tâche 3.4, reproduite ici comme
+        comportement de référence explicitement rattaché à ce bugfix) —
+        comportement à préserver strictement identique après correction
+        pour ce type d'appel (aucun `PayrollInput` transmis). Le volet
+        « aucune clé d'heures restituée » de Property 4 est couvert par
+        `tests/app/logique_metier/test_formulaire_paie.py::
+        TestExplorationValeursEffectivesHeures` (voir docstring de
+        classe ci-dessus).
+
+        Réutilise `st_sequence_payroll_results_meme_employe_annee`
+        (déjà défini par `tests/strategies.py`, spec
+        `net-cumuls-registre`). Chemin `chemin_bd` construit manuellement
+        sous `tmp_path` (même patron que `TestRemplacerPaie`/
+        `TestExplorationPersistancePayrollInput`) — pas la fixture
+        `st_chemin_bd_temporaire`, qui n'est résolue qu'une seule fois
+        par invocation de test pytest et serait donc partagée entre
+        plusieurs exemples Hypothesis générés par cette même invocation,
+        provoquant des collisions d'`id_paie` déjà présent si deux
+        exemples tirent le même `employe_id`.
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        for resultat in sequence:
+            module.inserer_paie(
+                resultat, saison, chemin_bd=chemin_bd
+            )
+
+        for resultat in sequence:
+            resultat_relu, _ = module.lire_paie(
+                resultat.id_paie, chemin_bd=chemin_bd
+            )
+            assert resultat_relu == resultat, (
+                "`lire_paie` après `inserer_paie` sans `PayrollInput` doit "
+                f"rester un round-trip strict (Property 4), obtenu "
+                f"{resultat_relu!r}, attendu {resultat!r}."
+            )
+
+    # -----------------------------------------------------------------
+    # Test 2 (exemple) — `remplacer_paie` : version incrémentée et
+    # `cumuls_ytd` recalculé, signature actuelle (Req 3.3).
+    # -----------------------------------------------------------------
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 4: Preservation
+    @given(deux_resultats=_st_deux_payroll_results_memes_employe_annee, saison=st_saison())
+    @settings_large_input
+    def test_exemple_remplacer_paie_incremente_version_et_recalcule_cumuls(
+        self,
+        deux_resultats: tuple[PayrollResult, PayrollResult],
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 4, Test 2 (Preservation) — Req 3.3.
+
+        Sur le code non corrigé, `remplacer_paie(ancien_id,
+        nouveau_resultat, saison, chemin_bd=...)` (signature actuelle,
+        sans `nouveau_payroll_input`) continue de produire une nouvelle
+        version dont `version == nouveau_resultat.version` (déjà
+        incrémentée par l'appelant conformément à Req 13.3, cf.
+        `app/pages_ui/formulaire_paie.py::_section_corriger_paie` —
+        `nouvelle_version = ancienne_paie.version + 1`), et `cumuls_ytd`
+        est recalculé à l'identique de celui obtenu par une insertion
+        directe équivalente du nouveau résultat seul (même assertion que
+        `TestRemplacerPaie.test_remplacement_equivaut_a_insertion_
+        directe_du_nouveau`, tâche 3.3 — reproduite ici comme
+        comportement de référence à préserver par ce bugfix, sans
+        dupliquer les tests UI existants de `_section_corriger_paie`).
+        """
+        module = _importer_module_register()
+        ancien, nouveau = deux_resultats
+        nouveau_avec_version_incrementee = nouveau.model_copy(
+            update={"version": ancien.version + 1}
+        )
+
+        chemin_a = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        chemin_b = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(ancien, saison, chemin_bd=chemin_a)
+        module.remplacer_paie(
+            ancien.id_paie,
+            nouveau_avec_version_incrementee,
+            saison,
+            chemin_bd=chemin_a,
+        )
+
+        paie_remplacante_relue, _ = module.lire_paie(
+            nouveau_avec_version_incrementee.id_paie, chemin_bd=chemin_a
+        )
+        assert paie_remplacante_relue.version == ancien.version + 1, (
+            "`remplacer_paie` doit continuer de persister une nouvelle "
+            f"version incrémentée (`version + 1`), obtenu "
+            f"{paie_remplacante_relue.version!r}, attendu "
+            f"{ancien.version + 1!r} (Property 4, Req 3.3)."
+        )
+
+        cumuls_via_remplacement = module.lire_cumuls_ytd(
+            nouveau_avec_version_incrementee.employe_id,
+            nouveau_avec_version_incrementee.annee_fiscale,
+            chemin_bd=chemin_a,
+        )
+
+        module.inserer_paie(
+            nouveau_avec_version_incrementee, saison, chemin_bd=chemin_b
+        )
+        cumuls_via_insertion_directe = module.lire_cumuls_ytd(
+            nouveau_avec_version_incrementee.employe_id,
+            nouveau_avec_version_incrementee.annee_fiscale,
+            chemin_bd=chemin_b,
+        )
+
+        assert cumuls_via_remplacement == cumuls_via_insertion_directe, (
+            "`cumuls_ytd` après `remplacer_paie` doit continuer d'être "
+            "recalculé exactement comme une insertion directe équivalente "
+            f"du nouveau résultat seul (Property 4, Req 3.3), obtenu "
+            f"{cumuls_via_remplacement!r}, attendu "
+            f"{cumuls_via_insertion_directe!r}."
+        )
+
+    # -----------------------------------------------------------------
+    # Test 3 (exemple, non-régression) — les suites golden existantes
+    # ne sont pas modifiées par ce bugfix (Req 3.5, 3.6).
+    # -----------------------------------------------------------------
+
+    def test_exemple_suites_golden_existantes_non_modifiees_par_ce_bugfix(
+        self,
+    ) -> None:
+        """Property 4, Test 3 (Preservation, non-régression) — Req 3.5, 3.6.
+
+        Ce bugfix (`heures-periode-et-persistance-brouillon`) ne modifie
+        ni `tests/test_golden_outputs.py` ni
+        `tests/payroll_engine/test_gains_bruts.py` — les deux suites
+        continuent de passer, exécutées séparément (les golden tests sont
+        marqués `@pytest.mark.golden`/`@pytest.mark.property`, filtrables
+        indépendamment de cette suite via `pytest -m golden` ou en
+        exécutant ces deux fichiers directement, ex. `pytest
+        tests/test_golden_outputs.py tests/payroll_engine/
+        test_gains_bruts.py`).
+
+        Ce test ne ré-exécute pas ces deux suites en sous-processus (elles
+        sont déjà exécutées par la même invocation `pytest` que ce
+        fichier, dans `testpaths = ["tests"]` — les exécuter une seconde
+        fois ici serait redondant et ralentirait la suite sans apporter
+        de garantie supplémentaire). Il vérifie plutôt, par introspection
+        directe des fichiers, qu'aucune fonction de calcul fiscal
+        (`calcul_gains`) n'est importée ou appelée par les modules touchés
+        par ce bugfix (`app/logique_metier/formulaire_paie.py`,
+        `payroll_engine/register.py`) — confirmant que le moteur fiscal
+        (`payroll_engine/gains_bruts.py`, seul module couvert par
+        `test_gains_bruts.py`) reste totalement étranger à ce bugfix (Req
+        3.5, 3.6, design §Overview : « Aucune des deux ne modifie une
+        formule fiscale »).
+        """
+        chemin_register = (
+            Path(__file__).resolve().parents[2] / "payroll_engine" / "register.py"
+        )
+        contenu_register = chemin_register.read_text(encoding="utf-8")
+        assert "gains_bruts" not in contenu_register, (
+            "`payroll_engine/register.py` ne doit importer/référencer "
+            "aucun symbole de `payroll_engine/gains_bruts.py` — ce module "
+            "de calcul fiscal reste hors périmètre de ce bugfix (Property "
+            "4, Req 3.5, 3.6)."
+        )
+
+        chemin_formulaire_paie = (
+            Path(__file__).resolve().parents[2]
+            / "app"
+            / "logique_metier"
+            / "formulaire_paie.py"
+        )
+        contenu_formulaire_paie = chemin_formulaire_paie.read_text(encoding="utf-8")
+        assert "calcul_gains" not in contenu_formulaire_paie, (
+            "`app/logique_metier/formulaire_paie.py` ne doit ni importer "
+            "ni appeler `calcul_gains` — ce bugfix ne modifie aucune "
+            "formule fiscale (Property 4, Req 3.5, 3.6)."
         )

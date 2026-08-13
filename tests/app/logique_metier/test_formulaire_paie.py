@@ -69,7 +69,11 @@ from models.exceptions import UnsupportedPayrollCase
 from models.pay_period import PayPeriod, WeekSegment
 from models.payroll_input import HeuresParSemaine, PayrollInput
 from tests.app.strategies import st_dates_periode_valide, st_employee_valide
-from tests.strategies import st_heures_par_semaine, st_taux_horaire
+from tests.strategies import (
+    st_heures_par_semaine,
+    st_payroll_input,
+    st_taux_horaire,
+)
 
 __all__: list[str] = []
 
@@ -899,4 +903,304 @@ class TestValeursEffectivesDepuisPaie:
         assert (
             reconstruit["retenue_additionnelle_federale_effective"]
             == kwargs["retenue_additionnelle_federale_effective"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property 1 (Bug Condition) — Bug 1 : absence de répartition des heures
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``heures-periode-et-persistance-brouillon``.
+# Design de référence : ``design.md`` §Bug Condition (Bug 1),
+# §Correctness Properties (Property 1).
+#
+# Tâche 1 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ce test d'exploration DOIT échouer sur
+# le code non corrigé — la fonction `repartir_heures_sur_semaines`
+# n'existe pas encore dans `app/logique_metier/formulaire_paie.py`. Cet
+# échec confirme `isBugCondition_Heures(X) = X.frequence ==
+# AUX_DEUX_SEMAINES` (toujours vrai) : le formulaire actuel exige
+# toujours 4 champs de saisie d'heures pour toute période aux deux
+# semaines, faute d'une fonction de répartition interne à partir de
+# 2 totaux.
+#
+# **NE PAS corriger ce test ni le code lorsqu'il échoue** — l'échec est
+# le résultat attendu de cette tâche (voir tâches 1, 5.1, 5.3).
+#
+# _Requirements: 1.1, 1.2_
+
+
+class TestRepartirHeuresSurSemaines:
+    """Property 1 (Bug Condition) — exploration, Bug 1 (saisie à 4 champs).
+
+    `repartir_heures_sur_semaines` est absente de
+    `app/logique_metier/formulaire_paie.py` sur le code non corrigé.
+    Les deux tests ci-dessous documentent cette absence : un cas
+    déterministe (import direct) et une propriété générative (l'appel
+    échoue systématiquement, quels que soient les totaux saisis dans
+    les bornes `[0, 168]` de `HeuresParSemaine`).
+    """
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 1: Bug Condition
+    def test_exemple_import_repartir_heures_sur_semaines_echoue(self) -> None:
+        """Test d'exemple — cas déterministe (Req 1.1, 1.2).
+
+        `from app.logique_metier.formulaire_paie import
+        repartir_heures_sur_semaines` doit échouer par `ImportError`
+        (nom absent du module) sur le code non corrigé — confirme
+        l'absence de toute fonction de répartition permettant de
+        construire un `PayrollInput.heures_par_semaine` à partir de 2
+        totaux plutôt que de 4 champs saisis séparément par semaine.
+        """
+        with pytest.raises((ImportError, AttributeError)):
+            from app.logique_metier.formulaire_paie import (  # noqa: F401
+                repartir_heures_sur_semaines,
+            )
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 1: Bug Condition
+    @pytest.mark.property
+    @given(
+        total_heures_normales=st.decimals(
+            min_value=Decimal("0"),
+            max_value=Decimal("168"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        total_heures_supplementaires=st.decimals(
+            min_value=Decimal("0"),
+            max_value=Decimal("168"),
+            places=2,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    )
+    @settings_large_input
+    def test_property_appel_repartir_heures_sur_semaines_echoue_systematiquement(
+        self,
+        total_heures_normales: Decimal,
+        total_heures_supplementaires: Decimal,
+    ) -> None:
+        """Property 1 (Bug Condition) — Req 1.1, 1.2.
+
+        Pour tout couple de totaux `(total_heures_normales,
+        total_heures_supplementaires)` généré dans `[0, 168]` (bornes
+        de `HeuresParSemaine`), l'appel à
+        `repartir_heures_sur_semaines(total_heures_normales=...,
+        total_heures_supplementaires=...)` doit échouer sur le code non
+        corrigé — la fonction n'existe pas encore comme attribut du
+        module `app.logique_metier.formulaire_paie`, quel que soit le
+        couple de totaux fourni. Le module lui-même est importé
+        normalement (il existe déjà) ; c'est l'accès à l'attribut
+        `repartir_heures_sur_semaines` qui échoue par `AttributeError`.
+        """
+        import app.logique_metier.formulaire_paie as module_formulaire_paie
+
+        with pytest.raises((ImportError, AttributeError)):
+            module_formulaire_paie.repartir_heures_sur_semaines(
+                total_heures_normales=total_heures_normales,
+                total_heures_supplementaires=total_heures_supplementaires,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Property 2 (Bug Condition) — Bug 2 : absence de restitution des heures
+# via `valeurs_effectives_depuis_paie` (exploration)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``heures-periode-et-persistance-brouillon``.
+# Design de référence : ``design.md`` §Bug Condition (Bug 2),
+# §Correctness Properties (Property 2), §Testing Strategy
+# « Exploratory Bug Condition Checking », cas 4.
+#
+# Tâche 2 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ce test d'exploration DOIT échouer
+# (l'assertion doit être satisfaite, confirmant l'absence des clés) sur
+# le code non corrigé — `valeurs_effectives_depuis_paie` n'accepte
+# encore qu'un seul argument (`resultat`) et ne restitue jamais les
+# clés `total_heures_normales`/`total_heures_supplementaires`, quel
+# que soit le `PayrollResult` généré.
+#
+# **NE PAS corriger ce test ni le code lorsqu'il échoue** — le résultat
+# attendu de cette tâche est que l'assertion d'absence des clés soit
+# TOUJOURS vérifiée (voir tâches 2, 6.6).
+#
+# _Requirements: 1.3, 1.4_
+
+
+@st.composite
+def _st_un_payroll_result(draw: st.DrawFn) -> "PayrollResult":
+    """Un `PayrollResult` `BROUILLON` réel, assemblé via `assembler_paie`.
+
+    Design (§Testing Strategy « réutilise tests/strategies.py::
+    st_payroll_input/générateur de PayrollResult existant ») : cette
+    stratégie réutilise directement `st_payroll_input()` (déjà défini
+    par la spec `gains-bruts-vacances-hs`, tâche 1.1) et
+    `_charger_parametres_annee_2026_qc_ca()`, assemblés via le pipeline
+    réel `assembler_paie` (`payroll_engine/net_pay.py`, moteur déjà
+    figé, non modifié par ce bugfix) — même patron que
+    `TestValeursEffectivesDepuisPaie.test_round_trip_reconstruit_
+    exactement_les_valeurs_dentree` (classe existante de ce fichier).
+
+    Contrairement à `_st_payroll_result_pour_registre` (utilisée par
+    `tests/payroll_engine/test_register.py`, qui construit des
+    sous-modèles à la main sans `CalculationTrace` réelle), un
+    `PayrollResult` assemblé par `assembler_paie` porte des traces
+    complètes (`parametres_utilises["exoneration_active"]`, etc.),
+    seule forme compatible avec `valeurs_effectives_depuis_paie`
+    (règle 02 — aucune nouvelle `CalculationTrace`, cette fonction lit
+    les traces déjà produites par le moteur).
+    """
+    from datetime import datetime
+
+    from models.enums import StatutDePaie
+    from payroll_engine.net_pay import assembler_paie
+    from tests.strategies import _charger_parametres_annee_2026_qc_ca
+
+    payroll_input = draw(st_payroll_input())
+    parametres_annee = _charger_parametres_annee_2026_qc_ca()
+    id_paie = generer_id_paie_pour_test(
+        payroll_input.employee.id, payroll_input.pay_period.annee_fiscale
+    )
+    return assembler_paie(
+        payroll_input,
+        parametres_annee,
+        id_paie,
+        1,
+        StatutDePaie.BROUILLON,
+        datetime(2026, 1, 1, 12, 0),
+    )
+
+
+def generer_id_paie_pour_test(employe_id: str, annee_fiscale: int) -> str:
+    """`id_paie` déterministe local, sans dépendre de `generer_id_paie`
+    (dont la Property 13 est déjà testée ailleurs dans ce fichier) —
+    évite tout couplage entre cette stratégie d'exploration et une
+    fonction dont la correction n'est pas l'objet de ce test."""
+    return f"PAIE-{employe_id}-{annee_fiscale}-EXPLORATION-v1"
+
+
+class TestExplorationValeursEffectivesHeures:
+    """Property 2 (Bug Condition) — exploration, Bug 2 (brouillon non
+    restituable).
+
+    Design (§Bug Condition Bug 2, §Correctness Properties Property 2,
+    §Testing Strategy « Exploratory Bug Condition Checking », cas 4) ;
+    Requirements 1.3, 1.4.
+
+    Confirme, sur le code NON corrigé, que pour tout `PayrollResult`
+    généré, `valeurs_effectives_depuis_paie(resultat)` ne contient
+    JAMAIS les clés `total_heures_normales`/
+    `total_heures_supplementaires`, quelles que soient les heures
+    d'origine — la fonction actuelle ne connaît qu'un seul paramètre
+    (`resultat`) et ne restitue jamais les heures saisies (voir
+    docstring existante de `valeurs_effectives_depuis_paie` :
+    limitation documentée, "les clés ... sont volontairement absentes
+    du dict retourné").
+
+    Cas d'exemple ajoutés par la tâche 4 (Property 4 — Preservation,
+    Req 3.4) : reprend le même constat pour une paie insérée puis relue
+    via le registre maître (`payroll_engine.register.inserer_paie`/
+    `lire_paie`, signature actuelle, sans `PayrollInput`) — comportement
+    de référence à préserver strictement après la correction pour ce
+    type d'appel (aucun `PayrollInput` transmis).
+    """
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 2: Bug Condition
+    @pytest.mark.property
+    @given(resultat=_st_un_payroll_result())
+    @settings_large_input
+    def test_property_dict_ne_contient_jamais_les_cles_heures(
+        self, resultat
+    ) -> None:
+        """Property 2, Test 3 (Bug Condition) — Req 1.3, 1.4.
+
+        Pour tout `PayrollResult` généré (`_st_un_payroll_result`,
+        assemblé via `assembler_paie` à partir de `st_payroll_input()`),
+        `valeurs_effectives_depuis_paie(resultat)` ne doit JAMAIS
+        contenir les clés `total_heures_normales` ni
+        `total_heures_supplementaires` sur le code non corrigé,
+        quelles que soient les heures d'origine du `PayrollResult`
+        généré (`resultat.pay_period.semaines[*].heures_normales`/
+        `.heures_supplementaires`, dérivées à `Decimal("0")` par
+        `deriver_semaines_constituantes` dans le pipeline de
+        génération de `PayrollResult`, ou toute autre valeur produite
+        par une future répartition — sans objet ici puisque la
+        fonction actuelle ne reçoit qu'un seul argument).
+        """
+        from app.logique_metier.formulaire_paie import (
+            valeurs_effectives_depuis_paie,
+        )
+
+        reconstruit = valeurs_effectives_depuis_paie(resultat)
+
+        assert "total_heures_normales" not in reconstruit, (
+            "Sur le code non corrigé, `valeurs_effectives_depuis_paie` "
+            "ne doit JAMAIS restituer `total_heures_normales`, obtenu "
+            f"dans le dict : {reconstruit!r} — si ce test échoue en "
+            "PASSANT (la clé est absente comme attendu, l'assertion "
+            "est satisfaite), cela confirme le Bug 2 (Property 2, "
+            "Req 1.3, 1.4)."
+        )
+        assert "total_heures_supplementaires" not in reconstruit, (
+            "Sur le code non corrigé, `valeurs_effectives_depuis_paie` "
+            "ne doit JAMAIS restituer `total_heures_supplementaires`, "
+            f"obtenu dans le dict : {reconstruit!r} (Property 2, Req "
+            "1.3, 1.4)."
+        )
+
+    # -----------------------------------------------------------------
+    # Property 4 (Preservation) — même constat pour une paie insérée
+    # puis relue via le registre maître, signature actuelle du registre
+    # (sans `PayrollInput`) — comportement de référence à préserver
+    # après correction (tâche 4, Req 3.4).
+    # -----------------------------------------------------------------
+
+    # Feature: heures-periode-et-persistance-brouillon, Property 4: Preservation
+    @pytest.mark.property
+    @given(resultat=_st_un_payroll_result())
+    @settings_large_input
+    def test_property_dict_ne_contient_jamais_les_cles_heures_apres_registre(
+        self, resultat, tmp_path: Path
+    ) -> None:
+        """Property 4 (Preservation) — Req 3.4.
+
+        Pour tout `PayrollResult` généré (`_st_un_payroll_result`,
+        assemblé via `assembler_paie`), inséré via
+        `payroll_engine.register.inserer_paie(resultat, saison,
+        chemin_bd=...)` (signature actuelle, sans `PayrollInput`) sur
+        une base neuve puis relu via `lire_paie`,
+        `valeurs_effectives_depuis_paie(resultat_relu)` ne doit JAMAIS
+        contenir les clés `total_heures_normales` ni
+        `total_heures_supplementaires` — comportement de référence à
+        préserver strictement identique après la correction (tâches 6.1
+        à 6.7) pour ce type d'appel, qui ne transmet aucun
+        `PayrollInput`.
+        """
+        import uuid as _uuid
+
+        from app.logique_metier.formulaire_paie import (
+            valeurs_effectives_depuis_paie,
+        )
+        from payroll_engine.register import inserer_paie, lire_paie
+
+        chemin_bd = tmp_path / f"test_{_uuid.uuid4().hex}.db"
+        inserer_paie(resultat, "Saison Test", chemin_bd=chemin_bd)
+        resultat_relu, _ = lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
+
+        reconstruit = valeurs_effectives_depuis_paie(resultat_relu)
+
+        assert "total_heures_normales" not in reconstruit, (
+            "Sur le code non corrigé, `valeurs_effectives_depuis_paie` "
+            "appliqué à une paie insérée/relue via le registre (sans "
+            "`PayrollInput`) ne doit JAMAIS restituer "
+            f"`total_heures_normales`, obtenu {reconstruit!r} (Property "
+            "4, Req 3.4)."
+        )
+        assert "total_heures_supplementaires" not in reconstruit, (
+            "Sur le code non corrigé, `valeurs_effectives_depuis_paie` "
+            "appliqué à une paie insérée/relue via le registre (sans "
+            "`PayrollInput`) ne doit JAMAIS restituer "
+            f"`total_heures_supplementaires`, obtenu {reconstruit!r} "
+            "(Property 4, Req 3.4)."
         )
