@@ -3,7 +3,7 @@ name = "camp-lilyso-payroll"
 version = "0.1.0"
 description = "Moteur de paie interne du Camp LilySO — reproduction locale des calculs WebRAS et ARC pour salariés saisonniers au Québec."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<4.0"
 license = { text = "Proprietary — usage interne Camp LilySO" }
 authors = [
     { name = "Camp LilySO" }
