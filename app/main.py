@@ -26,9 +26,24 @@ invoquées, exclusivement depuis `app/logique_metier/**` et
 
 from __future__ import annotations
 
-import streamlit as st
+import sys
+from pathlib import Path
 
-from app.pages_ui import (
+# Garantit que la racine du dépôt (contenant `app/`, `models/`,
+# `payroll_engine/`) est résolvable comme package top-level, quelle que
+# soit la façon dont Streamlit invoque ce script (`streamlit run
+# app/main.py` n'ajoute pas nécessairement la racine du dépôt à
+# `sys.path`, contrairement à `python -m streamlit run ...` depuis la
+# racine) — nécessaire notamment sur Streamlit Community Cloud, où le
+# projet n'est plus installé comme package Python depuis la désactivation
+# du mode package de Poetry (`package-mode = false`, pyproject.toml).
+_RACINE_DEPOT = str(Path(__file__).resolve().parent.parent)
+if _RACINE_DEPOT not in sys.path:
+    sys.path.insert(0, _RACINE_DEPOT)
+
+import streamlit as st  # noqa: E402
+
+from app.pages_ui import (  # noqa: E402
     bulletin_paie,
     fiche_employe_detaillee,
     formulaire_paie,
@@ -36,7 +51,7 @@ from app.pages_ui import (
     nouvel_employe,
     tableau_de_bord,
 )
-from app.pages_ui._navigation import configurer_pages
+from app.pages_ui._navigation import configurer_pages  # noqa: E402
 
 st.set_page_config(
     page_title="Camp LilySO — Paie",
