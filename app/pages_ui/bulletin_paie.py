@@ -135,9 +135,17 @@ def render() -> None:
         st.error(f"{resultat_paie.type_exception}: {resultat_paie.message}")
         return
     # `lire_paie` retourne désormais un couple (PayrollResult,
-    # PayrollInput | None) — le PayrollInput n'est pas utilisé dans ce
-    # module (bulletin affiché à partir du seul PayrollResult).
-    paie, _ = resultat_paie
+    # PayrollInput | None) — le PayrollInput persisté (bugfix
+    # `heures-periode-et-persistance-brouillon`) est la SEULE source des
+    # heures réellement saisies : `PayrollResult.pay_period.semaines`
+    # (`WeekSegment.heures_normales`/`heures_supplementaires`) est
+    # toujours à `Decimal("0")` par construction
+    # (`deriver_semaines_constituantes`, `app/logique_metier/
+    # formulaire_paie.py`) — jamais renseigné par le moteur. Si
+    # `payroll_input` est `None` (paie enregistrée avant ce bugfix,
+    # colonne `payload_input_json` non renseignée), les heures restent
+    # non récupérables — comportement de préservation assumé.
+    paie, payroll_input = resultat_paie
     paie: PayrollResult = paie
 
     resultat_employe = executer_avec_capture(
@@ -213,24 +221,51 @@ def render() -> None:
     # ------------------------------------------------------------------
     st.subheader("Heures travaillées et salaire")
 
-    heures_normales_totales = sum(
-        (s.heures_normales for s in semaines), start=Decimal("0")
-    )
-    heures_supp_totales = sum(
-        (s.heures_supplementaires for s in semaines), start=Decimal("0")
-    )
+    if payroll_input is not None:
+        # Paie post-correction (bugfix `heures-periode-et-persistance-
+        # brouillon`) — les heures réellement saisies sont récupérables
+        # depuis le `PayrollInput` persisté (`payload_input_json`),
+        # jamais depuis `PayrollResult.pay_period.semaines` (toujours à
+        # zéro par construction).
+        heures_normales_totales = sum(
+            (s.heures_normales for s in payroll_input.heures_par_semaine),
+            start=Decimal("0"),
+        )
+        heures_supp_totales = sum(
+            (s.heures_supplementaires for s in payroll_input.heures_par_semaine),
+            start=Decimal("0"),
+        )
+    else:
+        # Paie pré-correction (`payload_input_json` NULL, colonne
+        # ajoutée après l'enregistrement de cette paie) — les heures
+        # d'origine ne sont pas récupérables ; comportement de
+        # préservation assumé (design §Correctness Properties,
+        # Property 4).
+        heures_normales_totales = None
+        heures_supp_totales = None
 
     col_salaire, col_cotisations = st.columns(2)
     with col_salaire:
         st.write("**Salaire**")
-        st.write(
-            f"Heures normales : {heures_normales_totales} h "
-            f"× {_taux_horaire_affiche(paie.gains.salaire_regulier, heures_normales_totales)} $/h"
-        )
-        st.write(
-            f"Heures supplémentaires : {heures_supp_totales} h "
-            f"× {_taux_horaire_affiche(paie.gains.heures_supplementaires_montant, heures_supp_totales)} $/h"
-        )
+        if heures_normales_totales is None:
+            st.warning(
+                "Heures non récupérables pour cette paie (enregistrée "
+                "avant l'ajout de la persistance des heures saisies)."
+            )
+            st.write(f"Heures normales — montant : {paie.gains.salaire_regulier} $")
+            st.write(
+                "Heures supplémentaires — montant : "
+                f"{paie.gains.heures_supplementaires_montant} $"
+            )
+        else:
+            taux_normal = _taux_horaire_affiche(
+                paie.gains.salaire_regulier, heures_normales_totales
+            )
+            taux_supp = _taux_horaire_affiche(
+                paie.gains.heures_supplementaires_montant, heures_supp_totales
+            )
+            st.write(f"Heures normales : {heures_normales_totales} h × {taux_normal} $/h")
+            st.write(f"Heures supplémentaires : {heures_supp_totales} h × {taux_supp} $/h")
         st.write(f"Total salaire : {paie.gains.salaire_regulier + paie.gains.heures_supplementaires_montant} $")
         st.write("**Indemnités**")
         st.write(f"Jours fériés : {paie.gains.jours_feries_manuels} $")
