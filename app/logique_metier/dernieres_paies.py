@@ -50,6 +50,28 @@ from pathlib import Path
 
 from models.payroll_result import PayrollResult
 from payroll_engine.register import chemin_bd_production
+from payroll_engine.stockage_distant import telecharger_si_absent
+
+
+def _telecharger_si_absent_sauf_memoire(chemin_bd: str | Path) -> None:
+    """Applique :func:`telecharger_si_absent` sauf pour ``":memory:"``.
+
+    Bug corrigé après livraison (synchronisation distante manquante) :
+    ce module contourne délibérément `payroll_engine.register._connexion`
+    (décision n° 5, ci-dessus) — seul point d'appel de
+    `telecharger_si_absent` avant cette correction. Sur un hébergement à
+    système de fichiers éphémère (Streamlit Community Cloud), un
+    conteneur qui vient de redémarrer n'a pas encore `payroll.db` en
+    local : `sqlite3.connect` créait alors silencieusement un fichier
+    vide (aucune table `paies`), interprété par ce module comme
+    « aucune paie enregistrée » — masquant l'existence de paies déjà
+    persistées dans le bucket distant. Cette fonction reproduit le même
+    garde-fou que `_connexion` (`payroll_engine/register.py`) : jamais
+    appliqué pour `":memory:"`, qui n'a aucun fichier disque à
+    synchroniser.
+    """
+    if chemin_bd != ":memory:":
+        telecharger_si_absent(Path(chemin_bd))
 
 
 def derniere_annee_paie(
@@ -65,6 +87,7 @@ def derniere_annee_paie(
     repropagée sans interception (décision n° 5). Retourne également
     `None` si aucune paie n'existe pour ``employe_id``.
     """
+    _telecharger_si_absent_sauf_memoire(chemin_bd)
     try:
         connexion = sqlite3.connect(str(chemin_bd))
         try:
@@ -127,6 +150,7 @@ def lire_resumes_paies(
     .net`, converti en `str` — jamais reconverti en `float` (règle 01).
     Le résultat est trié par `(annee_fiscale, date_creation)`.
     """
+    _telecharger_si_absent_sauf_memoire(chemin_bd)
     try:
         connexion = sqlite3.connect(str(chemin_bd))
         try:
