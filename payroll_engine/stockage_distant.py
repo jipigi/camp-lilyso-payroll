@@ -59,6 +59,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+#: Garde-fou pour n'émettre qu'une seule fois par processus le log
+#: d'avertissement "section [b2] absente/inaccessible" (voir
+#: :func:`_config_b2`) — une liste à un élément plutôt qu'une variable
+#: globale simple, pour rester mutable depuis l'intérieur de la fonction
+#: sans `global`.
+_AVERTISSEMENT_CONFIG_DEJA_EMIS = [False]
+
 
 def _config_b2() -> dict[str, Any] | None:
     """Retourne la configuration ``[b2]`` de ``st.secrets``, ou ``None``.
@@ -70,9 +77,28 @@ def _config_b2() -> dict[str, Any] | None:
     """
     try:
         import streamlit as st
+    except ImportError:
+        # Streamlit non installé (environnement de test/CI sans le groupe
+        # optionnel `ui`) — cas nominal silencieux, aucun log.
+        return None
 
+    try:
         return dict(st.secrets["b2"])
-    except Exception:
+    except Exception as exc:
+        # Toute autre situation (absence de `secrets.toml`, section
+        # `[b2]` absente, `st.secrets` mal formé) est journalisée une
+        # seule fois par processus — utile pour diagnostiquer, via les
+        # logs Streamlit Cloud, un problème de configuration des
+        # Secrets, sans spammer les exécutions locales/tests répétées ni
+        # lever d'exception vers l'appelant (comportement no-op
+        # préservé).
+        if not _AVERTISSEMENT_CONFIG_DEJA_EMIS[0]:
+            _AVERTISSEMENT_CONFIG_DEJA_EMIS[0] = True
+            print(
+                f"[stockage_distant] Section [b2] absente/inaccessible de "
+                f"st.secrets — synchronisation distante désactivée pour cette "
+                f"session : {exc!r}"
+            )
         return None
 
 
