@@ -27,6 +27,7 @@ dev = [
 ]
 ui = [
     "streamlit>=1.36",
+    "boto3>=1.34",
 ]
 pdf = [
     "reportlab>=4.0",

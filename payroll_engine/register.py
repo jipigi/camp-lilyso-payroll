@@ -88,6 +88,7 @@ from models.cumuls import CumulsYTD
 from models.enums import StatutDePaie
 from models.payroll_input import PayrollInput
 from models.payroll_result import PayrollResult
+from payroll_engine.stockage_distant import telecharger_si_absent, televerser
 
 #: Les onze catégories monétaires `_CATEGORIES_MONETAIRES` de
 #: `models.cumuls.CumulsYTD`, dans le même ordre — reprises ici pour
@@ -421,18 +422,33 @@ def _connexion(chemin_bd: str | Path) -> Iterator[sqlite3.Connection]:
     chemin: str | Path = chemin_bd if chemin_bd == ":memory:" else Path(chemin_bd)
     if isinstance(chemin, Path):
         chemin.parent.mkdir(parents=True, exist_ok=True)
+        # Synchronisation best-effort depuis un stockage distant persistant
+        # (hébergement éphémère, ex. Streamlit Community Cloud) — no-op si
+        # aucun bucket n'est configuré ou si le fichier existe déjà
+        # localement (voir `app/logique_metier/stockage_distant.py`).
+        telecharger_si_absent(chemin)
 
     connexion = sqlite3.connect(str(chemin), isolation_level=None)
     connexion.execute("PRAGMA foreign_keys = ON")
+    transaction_reussie = False
     try:
         connexion.execute("BEGIN IMMEDIATE")
         yield connexion
         connexion.execute("COMMIT")
+        transaction_reussie = True
     except BaseException:
         connexion.execute("ROLLBACK")
         raise
     finally:
         connexion.close()
+        # Téléversement best-effort — uniquement après un `COMMIT` réussi
+        # (jamais après un `ROLLBACK`, pour ne pas propager un état
+        # transitoire/invalide vers le stockage distant). No-op si aucun
+        # bucket n'est configuré. Sur `":memory:"`, `isinstance(chemin,
+        # Path)` est déjà `False` : rien à synchroniser pour une base
+        # éphémère en mémoire.
+        if transaction_reussie and isinstance(chemin, Path):
+            televerser(chemin)
 
 
 # ---------------------------------------------------------------------------

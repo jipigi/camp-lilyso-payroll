@@ -31,6 +31,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from payroll_engine.stockage_distant import telecharger_si_absent, televerser
+
 
 def ecrire_atomique(chemin: Path, contenu: str) -> None:
     """Écrit ``contenu`` dans ``chemin`` de façon atomique (Req 2.6, 20.5).
@@ -83,6 +85,11 @@ def ecrire_atomique(chemin: Path, contenu: str) -> None:
         if not substitution_effectuee:
             chemin_temp.unlink(missing_ok=True)
 
+    # Synchronisation best-effort vers un stockage distant persistant
+    # (hébergement éphémère, ex. Streamlit Community Cloud) — no-op si
+    # aucun bucket n'est configuré (voir `stockage_distant.py`).
+    televerser(chemin)
+
 
 def lire_texte_ou_defaut(chemin: Path, defaut: str) -> str:
     """Lit ``chemin`` en UTF-8, ou retourne ``defaut`` si absent (Req 2.2, 20.7).
@@ -101,6 +108,7 @@ def lire_texte_ou_defaut(chemin: Path, defaut: str) -> str:
     pas utilisé ; ``open()`` est utilisé directement pour rester
     compatible avec toutes les versions supportées.
     """
+    telecharger_si_absent(chemin)
     if not chemin.exists():
         return defaut
     with open(chemin, "r", encoding="utf-8", newline="") as f:
