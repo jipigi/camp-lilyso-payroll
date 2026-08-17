@@ -155,14 +155,43 @@ def _client_et_bucket() -> tuple[Any, str] | None:
         return None
 
 
+def _est_objet_absent_du_bucket(exc: Exception) -> bool:
+    """``True`` si ``exc`` signifie « clé absente du bucket » (404), et
+    seulement ce cas précis — jamais une erreur réseau, d'authentification
+    ou de configuration.
+
+    Distinction critique (voir :func:`telecharger_si_absent`) : seule
+    l'absence confirmée de l'objet distant justifie de poursuivre avec un
+    fichier local vide. Toute autre erreur (timeout, 5xx, identifiants
+    invalides) doit interrompre l'opération plutôt que de risquer un
+    écrasement silencieux des données déjà présentes dans le bucket au
+    prochain :func:`televerser`.
+    """
+    code_http = getattr(exc, "response", {}).get("ResponseMetadata", {}).get(
+        "HTTPStatusCode"
+    )
+    code_erreur = getattr(exc, "response", {}).get("Error", {}).get("Code")
+    return code_http == 404 or code_erreur in ("404", "NoSuchKey", "NotFound")
+
+
 def telecharger_si_absent(chemin: Path) -> None:
     """Télécharge ``chemin`` depuis le bucket s'il est absent localement.
 
-    No-op si ``chemin`` existe déjà localement, si la synchronisation
-    n'est pas configurée, ou si aucun objet distant ne porte ce nom
-    (cas nominal du tout premier démarrage — le fichier local sera alors
-    créé normalement par l'appelant, ex. schéma SQLite/annuaire JSON
-    vide).
+    No-op si ``chemin`` existe déjà localement, ou si la synchronisation
+    n'est pas configurée. Si l'objet distant est confirmé absent (premier
+    lancement, cas nominal), le fichier local sera créé normalement par
+    l'appelant (ex. schéma SQLite/annuaire JSON vide).
+
+    **Sécurité des données** : toute erreur qui n'est PAS une confirmation
+    d'absence de l'objet (timeout réseau, panne temporaire, identifiants
+    invalides, etc.) lève :class:`RuntimeError` plutôt que de poursuivre
+    silencieusement — un système de fichiers éphémère qui continuerait
+    avec un fichier local neuf dans ce cas verrait ce fichier vide
+    re-téléversé par :func:`televerser`, écrasant irrémédiablement les
+    données déjà persistées dans le bucket (incident constaté : une base
+    contenant des paies réelles remplacée par un fichier vide après un
+    redémarrage de conteneur ayant rencontré une erreur réseau
+    transitoire au téléchargement).
     """
     if chemin.exists():
         return
@@ -179,12 +208,33 @@ def telecharger_si_absent(chemin: Path) -> None:
             flush=True,
         )
     except Exception as exc:
+        if _est_objet_absent_du_bucket(exc):
+            print(
+                f"[stockage_distant] '{chemin.name}' absent du bucket "
+                f"'{bucket}' — premier lancement, poursuite avec un fichier "
+                f"local neuf.",
+                flush=True,
+            )
+            return
+        # Erreur non confirmée comme une absence d'objet (réseau,
+        # authentification, etc.) — on NE POURSUIT PAS avec un fichier
+        # local vide, qui serait ensuite re-téléversé et écraserait les
+        # données existantes du bucket. Le fichier partiel éventuellement
+        # créé par `download_file` est supprimé avant de relever.
+        chemin.unlink(missing_ok=True)
         print(
-            f"[stockage_distant] Téléchargement de '{chemin.name}' impossible "
-            f"(objet distant absent ou erreur réseau) — poursuite avec un "
-            f"fichier local neuf : {exc}",
+            f"[stockage_distant] ÉCHEC du téléchargement de '{chemin.name}' "
+            f"depuis le bucket '{bucket}' (cause non confirmée comme une "
+            f"absence d'objet) — interruption pour éviter d'écraser les "
+            f"données distantes : {exc!r}",
             flush=True,
         )
+        raise RuntimeError(
+            f"Impossible de synchroniser '{chemin.name}' depuis le stockage "
+            f"distant (bucket '{bucket}') — voir les logs pour la cause "
+            f"exacte. Opération interrompue pour préserver les données déjà "
+            f"persistées."
+        ) from exc
 
 
 def televerser(chemin: Path) -> None:
