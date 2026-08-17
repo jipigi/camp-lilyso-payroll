@@ -83,7 +83,7 @@ def _config_b2() -> dict[str, Any] | None:
         return None
 
     try:
-        return dict(st.secrets["b2"])
+        config = dict(st.secrets["b2"])
     except Exception as exc:
         # Toute autre situation (absence de `secrets.toml`, section
         # `[b2]` absente, `st.secrets` mal formé) est journalisée une
@@ -97,9 +97,19 @@ def _config_b2() -> dict[str, Any] | None:
             print(
                 f"[stockage_distant] Section [b2] absente/inaccessible de "
                 f"st.secrets — synchronisation distante désactivée pour cette "
-                f"session : {exc!r}"
+                f"session : {exc!r}",
+                flush=True,
             )
         return None
+
+    if not _AVERTISSEMENT_CONFIG_DEJA_EMIS[0]:
+        _AVERTISSEMENT_CONFIG_DEJA_EMIS[0] = True
+        print(
+            f"[stockage_distant] Section [b2] trouvée dans st.secrets — "
+            f"bucket={config.get('bucket')!r}, endpoint={config.get('endpoint')!r}.",
+            flush=True,
+        )
+    return config
 
 
 def _client_et_bucket() -> tuple[Any, str] | None:
@@ -138,7 +148,10 @@ def _client_et_bucket() -> tuple[Any, str] | None:
         )
         return client, config["bucket"]
     except Exception as exc:
-        print(f"[stockage_distant] Configuration B2 invalide, ignorée : {exc}")
+        print(
+            f"[stockage_distant] Configuration B2 invalide, ignorée : {exc}",
+            flush=True,
+        )
         return None
 
 
@@ -160,11 +173,17 @@ def telecharger_si_absent(chemin: Path) -> None:
     chemin.parent.mkdir(parents=True, exist_ok=True)
     try:
         client.download_file(bucket, chemin.name, str(chemin))
+        print(
+            f"[stockage_distant] '{chemin.name}' retéléchargé depuis le "
+            f"bucket '{bucket}'.",
+            flush=True,
+        )
     except Exception as exc:
         print(
             f"[stockage_distant] Téléchargement de '{chemin.name}' impossible "
             f"(objet distant absent ou erreur réseau) — poursuite avec un "
-            f"fichier local neuf : {exc}"
+            f"fichier local neuf : {exc}",
+            flush=True,
         )
 
 
@@ -180,8 +199,14 @@ def televerser(chemin: Path) -> None:
     client, bucket = resultat
     try:
         client.upload_file(str(chemin), bucket, chemin.name)
+        print(
+            f"[stockage_distant] '{chemin.name}' téléversé vers le bucket "
+            f"'{bucket}'.",
+            flush=True,
+        )
     except Exception as exc:
         print(
             f"[stockage_distant] Téléversement de '{chemin.name}' échoué "
-            f"(l'écriture locale reste valide pour cette session) : {exc}"
+            f"(l'écriture locale reste valide pour cette session) : {exc}",
+            flush=True,
         )
