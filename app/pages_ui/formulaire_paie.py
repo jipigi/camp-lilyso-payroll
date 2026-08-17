@@ -661,15 +661,62 @@ def _section_enregistrement(
             StatutDePaie.EMISE if statut_choisi == "EMISE" else StatutDePaie.BROUILLON
         )
         date_emission = datetime.now() if statut_final == StatutDePaie.EMISE else None
-        paie_a_inserer = PayrollResult(
-            **{
-                **paie_assemblee.model_dump(),
-                "statut": statut_final,
-                "date_emission": date_emission,
-            }
-        )
 
         def _inserer() -> str:
+            # Bug UI corrigé après livraison : `id_paie`/`version` sont
+            # figés au moment de l'assemblage (bouton « Assembler la
+            # paie »), avant tout choix de statut. Si l'opérateur change
+            # ensuite le statut (BROUILLON -> EMISE) sans réassembler,
+            # `paie_assemblee.id_paie` correspond déjà à une ligne
+            # insérée précédemment (ex. le brouillon lui-même) — le
+            # registre étant strictement append-only (aucune
+            # modification en place, traçabilité), une seconde
+            # insertion avec le même `id_paie` est refusée par
+            # `inserer_paie` (Req 11.6). Détection automatique : si
+            # `id_paie` existe déjà, une nouvelle version est régénérée
+            # ici (même mécanisme que `_assembler()` ci-dessus,
+            # `prochaine_version`) avant l'insertion, sans action
+            # supplémentaire requise de l'opérateur.
+            resultat_existant = executer_avec_capture(
+                lambda: lire_paie(
+                    paie_assemblee.id_paie, chemin_bd=chemin_bd_production()
+                )
+            )
+            if isinstance(resultat_existant, ErreurDomaineAffichable):
+                # `KeyError` attendue — `id_paie` n'existe pas encore,
+                # aucune régénération nécessaire.
+                id_paie_final = paie_assemblee.id_paie
+                version_finale = paie_assemblee.version
+            else:
+                resultat_resumes = executer_avec_capture(
+                    lambda: lire_resumes_paies(
+                        paie_assemblee.employe_id, chemin_bd=chemin_bd_production()
+                    )
+                )
+                resumes = (
+                    ()
+                    if isinstance(resultat_resumes, ErreurDomaineAffichable)
+                    else resultat_resumes
+                )
+                version_finale = prochaine_version(
+                    resumes, paie_assemblee.pay_period.numero_periode
+                )
+                id_paie_final = generer_id_paie(
+                    paie_assemblee.employe_id,
+                    paie_assemblee.annee_fiscale,
+                    paie_assemblee.pay_period.numero_periode,
+                    version_finale,
+                )
+
+            paie_a_inserer = PayrollResult(
+                **{
+                    **paie_assemblee.model_dump(),
+                    "id_paie": id_paie_final,
+                    "version": version_finale,
+                    "statut": statut_final,
+                    "date_emission": date_emission,
+                }
+            )
             inserer_paie(
                 paie_a_inserer,
                 saison,
