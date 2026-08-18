@@ -1,12 +1,36 @@
 """Bulletin_De_Paie — page de consultation en lecture seule d'une paie.
 
 Reproduit visuellement le gabarit officiel
-`intake/ressources/../fiches-paie/Bulletin-paie-gabarit.xlsx` (hors
-dépôt, règle 04) : identification employé/employeur, période, section
-salaire détaillée (heures normales/supplémentaires × taux, indemnités,
-brut), déductions fiscales (impôt fédéral/provincial, RRQ, AE, RQAP,
-total, NET), cotisations employeur pour information (RRQ, AE, RQAP,
-CNESST avec son taux, FSS, total).
+`intake/fiches-paie/Bulletin-paie-gabarit.xlsx` (hors dépôt, règle 04) :
+identification employé/employeur, période, section salaire détaillée
+(heures normales/supplémentaires x taux, indemnités, brut) et
+déductions fiscales (impôt fédéral/provincial, RRQ, AE, RQAP, total)
+côte à côte, salaire NET, puis — en toute dernière position, distincte
+du reste car destinée à l'information seulement — les cotisations
+employeur (RRQ, AE, RQAP, CNESST avec son taux, FSS, CNT, total).
+
+Hiérarchie visuelle à deux niveaux (discussion utilisateur) : les
+**sections** de premier niveau (« Identification », « Période »,
+« Heures travaillées et salaire », « Cotisation employeur ») portent un
+bandeau bleu plein (`_CSS_BULLETIN::.bulletin-section-titre`) ; les
+**sous-sections** qu'elles regroupent (« Salarié »/« Employeur »,
+« Salaire »/« Indemnités »/« Déductions fiscales ») sont en gras seul,
+sans fond de couleur (voir :func:`_sous_titre`).
+
+Bug UI corrigé après livraison (option retenue par l'utilisateur : mise
+en page HTML/CSS imprimable plutôt qu'un remplissage du gabarit Excel
+converti en PDF côté serveur — évite toute dépendance système
+supplémentaire sur Streamlit Community Cloud) : le corps du bulletin
+(à partir de la section « Identification ») est désormais rendu comme
+**un seul bloc HTML/CSS** (`st.markdown(..., unsafe_allow_html=True)`),
+reproduisant fidèlement la disposition à deux colonnes du gabarit
+officiel (Salarié/Employeur, Salaire/Cotisations employeur). L'opérateur
+imprime cette page (Ctrl+P du navigateur, « Enregistrer en PDF ») pour
+produire le document à transmettre à l'employé — aucune génération de
+fichier PDF côté serveur n'est introduite par ce changement. Des règles
+`@media print` masquent le chrome Streamlit (barre latérale, en-tête,
+boutons, encarts d'audit) pour qu'une impression ne contienne que le
+bulletin lui-même.
 
 Accès exclusivement par navigation contextuelle — jamais de ressaisie
 d'``id_paie`` par l'opérateur (décision explicite, discussion
@@ -18,11 +42,28 @@ sur l'élément de navigation latérale), un message explicite invite
 l'opérateur à naviguer depuis une fiche employé plutôt que d'afficher
 une page vide silencieusement.
 
-Bouton « Corriger cette paie » entre le titre et le contenu (haut de
-page) — visible uniquement si la paie est `EMISE` (seul statut que
-`payroll_engine.register.remplacer_paie` accepte de remplacer, Req 13.2
-du moteur) ; route vers le Formulaire_Paie en mode correction, avec
-l'``id_paie`` déjà chargé (jamais de ressaisie).
+Boutons d'action entre le titre et le contenu (haut de page), tous deux
+masqués à l'impression via un conteneur dédié
+(``st.container(key="bulletin_barre_actions")``, voir Règle UI 07 —
+`.kiro/steering/07-ui-boutons.md`) :
+
+- « Corriger cette paie » (visuel **secondaire**, Règle UI 07 — action
+  peu fréquente et destructive) — visible uniquement si la paie est
+  `EMISE` (seul statut que `payroll_engine.register.remplacer_paie`
+  accepte de remplacer, Req 13.2 du moteur) ; route vers le
+  Formulaire_Paie en mode correction, avec l'``id_paie`` déjà chargé
+  (jamais de ressaisie).
+- « Imprimer » (visuel **primaire**, Règle UI 07 — action principale de
+  cette page) — toujours visible, déclenche la commande d'impression du
+  navigateur (`window.print()`). Rendu via
+  `st.components.v1.html` plutôt que `st.markdown` : le Markdown de
+  Streamlit passe son HTML par un assainisseur (DOMPurify) qui retire
+  systématiquement les attributs `onclick`, rendant tout bouton HTML
+  injecté par `st.markdown` inerte — seul `components.v1.html` (rendu
+  dans un `<iframe>` isolé, non assaini) exécute le JavaScript
+  nécessaire. `window.parent.print()` cible la fenêtre du navigateur
+  contenant l'application (et non l'iframe lui-même, qui n'a pas de
+  contenu à imprimer).
 
 Couche de rendu (`app/pages_ui/`) : ce module **peut** importer
 ``streamlit`` (Req 1.1, 1.3 ne s'appliquent qu'à
@@ -34,14 +75,24 @@ par `lire_paie` est enveloppée par `executer_avec_capture` — aucun
 ce module (Req 16.1, 16.3).
 
 Règle 02 (traçabilité) : ce module n'invente aucune nouvelle
-`CalculationTrace` — le taux CNESST affiché est lu directement depuis
-`CalculationTrace.parametres_utilises["taux_total_cnesst"]` déjà
-produite par `assembler_paie`. Les deux « taux horaire » affichés
-(heures normales, heures supplémentaires) sont des **calculs d'affichage
-purs** (montant ÷ heures, division inverse de la multiplication faite
-par `payroll_engine.gains_bruts.calcul_gains`), pas une nouvelle règle
+`CalculationTrace`. Le bulletin imprimable affiche chaque montant déjà
+calculé par `assembler_paie`, sans trace détaillée (mise en page fidèle
+au gabarit officiel, qui n'expose pas ce niveau de détail) ; la
+consultation de chaque `CalculationTrace` reste possible via la section
+« Détails des calculs (audit) », masquée à l'impression, qui réutilise
+`_afficher_trace_montant` (même patron que `formulaire_paie.py`). Les
+deux « taux horaire » affichés (heures normales, heures
+supplémentaires) sont des **calculs d'affichage purs** (montant ÷
+heures, division inverse de la multiplication faite par
+`payroll_engine.gains_bruts.calcul_gains`), pas une nouvelle règle
 fiscale — si le nombre d'heures d'une catégorie est nul, le taux
 correspondant est affiché comme absent plutôt que de diviser par zéro.
+
+Règle 04 (données sensibles) : chaque champ personnel interpolé dans le
+bloc HTML (prénom, nom, NAS, titre d'emploi) est échappé via
+`html.escape` avant insertion — défense en profondeur contre une saisie
+contenant des caractères HTML spéciaux (``&``, ``<``, ``>``), même si
+ces champs proviennent de saisies internes de confiance.
 
 Champs du gabarit non disponibles dans les modèles du moteur, résolus
 par décision explicite (discussion utilisateur) :
@@ -49,21 +100,25 @@ par décision explicite (discussion utilisateur) :
 - **Informations employeur** (nom, adresse, ville, code postal, numéro
   NQE) — constantes fixes de l'organisation, centralisées dans
   `app/config_employeur.py` plutôt que codées en dur ici.
-- **NAS de l'employé** — lu depuis `FicheCoordonnees.nas`
+- **Prénom / Nom / NAS de l'employé** — lus depuis
+  `FicheCoordonnees.prenom`/`.nom`/`.nas`
   (`app/logique_metier/annuaire_coordonnees.py`), jamais transmis au
-  moteur de calcul (règle 04) ; affiché tel quel s'il existe, sinon
-  indication explicite d'absence.
-- **Prénom et Nom séparés** — décision explicite : `Employee.
-  nom_affichage` reste affiché sur une seule ligne, sous le libellé
-  « Nom complet » (pas de séparation Prénom/Nom, contrairement au
-  gabarit).
+  moteur de calcul (règle 04) ; si `FicheCoordonnees` est absente ou que
+  `prenom`/`nom` n'y sont pas renseignés, `Employee.nom_affichage` est
+  découpé sur le premier espace comme repli (même convention que la
+  migration de l'ancien champ `nom_complet_reel`, voir
+  `annuaire_coordonnees.py::_migrer_nom_complet_reel_si_present`).
 """
 
 from __future__ import annotations
 
+import base64
+import html
 from decimal import Decimal
+from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from app.config_employeur import CONFIG_EMPLOYEUR
 from app.logique_metier.annuaire_coordonnees import lire_coordonnees
@@ -77,6 +132,195 @@ from payroll_engine.register import chemin_bd_production, lire_paie
 #: afficher — écrite par la page appelante avant `st.switch_page`,
 #: jamais ressaisie par l'opérateur sur cette page.
 CLE_ID_PAIE_CIBLE = "bulletin_id_paie_cible"
+
+#: Chemin du logo de l'organisation, déjà versionné et utilisé comme
+#: icône de page (`app/main.py::st.set_page_config`) — réutilisé ici
+#: tel quel, jamais dupliqué depuis `intake/` (zone d'atterrissage hors
+#: dépôt, règle 04).
+_CHEMIN_LOGO = Path(__file__).resolve().parent.parent / "assets" / "logo-camp-lilyso.png"
+
+
+def _logo_en_data_uri() -> str | None:
+    """Encode le logo en data URI base64 pour l'en-tête du bulletin.
+
+    Un ``<img src="app/assets/...">`` ne fonctionnerait pas dans le
+    bloc HTML injecté par `st.markdown` (chemin de fichier local, pas
+    une URL servie) — l'encodage en data URI intègre l'image
+    directement dans le HTML, fonctionnel aussi bien à l'écran qu'à
+    l'impression. Retourne ``None`` si le fichier est absent (aucune
+    exception : l'en-tête s'affiche alors sans logo plutôt que de
+    faire échouer tout le rendu du bulletin).
+    """
+    if not _CHEMIN_LOGO.exists():
+        return None
+    contenu = _CHEMIN_LOGO.read_bytes()
+    encode = base64.b64encode(contenu).decode("ascii")
+    return f"data:image/png;base64,{encode}"
+
+#: CSS partagé du bulletin imprimable — injecté une seule fois en tête
+#: du bloc HTML (voir :func:`_construire_html_bulletin`). Les règles
+#: `@media print` ciblent les attributs `data-testid` stables exposés
+#: par Streamlit pour son propre chrome (en-tête, barre latérale,
+#: barre d'outils) ainsi que les widgets natifs de cette page
+#: (bouton de correction, expanders d'audit) — masqués uniquement à
+#: l'impression, toujours visibles à l'écran.
+_CSS_BULLETIN = """
+<style>
+@media print {
+    [data-testid="stHeader"], [data-testid="stSidebar"],
+    [data-testid="stToolbar"], [data-testid="stDecoration"],
+    [data-testid="stButton"], [data-testid="stExpander"],
+    [data-testid="stCaptionContainer"], .bulletin-hors-impression,
+    .st-key-bulletin_barre_actions {
+        display: none !important;
+    }
+    .bulletin-conteneur { border: none !important; }
+    /* Le fond de couleur de l'application (thème Streamlit,
+       `.streamlit/config.toml::backgroundColor`) consommerait de
+       l'encre sans apporter d'information au bulletin imprimé — forcé
+       en blanc uniquement à l'impression, jamais à l'écran. */
+    html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"],
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"] {
+        background: #ffffff !important;
+    }
+    /* Marges verticales resserrées à l'impression uniquement (écran
+       inchangé) — objectif demandé par l'utilisateur : faire tenir le
+       salaire NET sur la première page plutôt qu'en haut d'une
+       deuxième page, sans réduire l'écran à l'usage quotidien. */
+    .bulletin-conteneur { margin: 0 auto !important; padding: 10px 30px !important; }
+    .bulletin-entete { margin-bottom: 10px !important; padding-bottom: 6px !important; }
+    .bulletin-section-titre { margin: 8px 0 5px 0 !important; padding: 4px 12px !important; }
+    table.bulletin-lignes td { padding: 1px 4px !important; }
+    .bulletin-net { margin-top: 10px !important; padding: 8px 18px !important; }
+    .bulletin-sous-titre-espace { margin-top: 8px !important; }
+    .bulletin-section-titre-fin { margin-top: 20px !important; }
+}
+.bulletin-conteneur {
+    max-width: 880px;
+    margin: 8px auto 24px auto;
+    padding: 28px 36px;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    background: #ffffff;
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #1a1a1a;
+}
+.bulletin-entete {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 3px solid #2c5f8a;
+}
+.bulletin-entete img {
+    width: 50px;
+    height: auto;
+}
+.bulletin-titre-principal {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #2c5f8a;
+}
+.bulletin-section-titre {
+    background: #2c5f8a;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 6px 12px;
+    margin: 18px 0 8px 0;
+    border-radius: 4px;
+}
+/* Espacement additionnel avant la section « Cotisation employeur »,
+   qui suit directement l'encadré du salaire NET — sans cette marge,
+   la section de fin de bulletin (information secondaire) semblait
+   accolée au NET (résultat le plus important pour l'employé). */
+.bulletin-section-titre-fin { margin-top: 32px; }
+.bulletin-deux-colonnes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 32px;
+}
+.bulletin-colonne { flex: 1; min-width: 260px; }
+.bulletin-sous-titre {
+    display: block;
+    margin: 0 0 4px 0;
+}
+.bulletin-sous-titre-espace { margin-top: 14px; }
+table.bulletin-lignes { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.bulletin-lignes td { padding: 3px 4px; vertical-align: top; }
+table.bulletin-lignes td.libelle { color: #333333; }
+table.bulletin-lignes td.valeur {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+table.bulletin-lignes tr.bulletin-total td {
+    border-top: 1px solid #999999;
+    font-weight: 700;
+    padding-top: 6px;
+}
+table.bulletin-lignes tr.bulletin-total-fort td {
+    font-weight: 700;
+    font-size: 15px;
+    color: #2c5f8a;
+}
+/* Variante neutre du total fort — « Total des déductions » n'est pas
+   le résultat final visé par l'employé (contrairement au salaire BRUT
+   ou au total des cotisations employeur) ; le bleu de mise en
+   emphase serait trompeur ici (discussion utilisateur). */
+table.bulletin-lignes tr.bulletin-total-fort-neutre td {
+    font-weight: 700;
+    font-size: 15px;
+    color: #1a1a1a;
+}
+.bulletin-net {
+    margin-top: 18px;
+    padding: 12px 18px;
+    background: #eaf3ea;
+    border: 1px solid #a7d0a7;
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 17px;
+    font-weight: 700;
+    color: #1e6b1e;
+}
+</style>
+"""
+
+
+#: Bouton « Imprimer » — HTML/JS autonome rendu via
+#: `st.components.v1.html` (voir docstring de module : `st.markdown`
+#: assainit et retire tout `onclick`). Visuel primaire (Règle UI 07)
+#: répliqué en CSS plutôt que réutilisé depuis le thème Streamlit — un
+#: bouton HTML natif dans un `<iframe>` n'a pas accès aux classes
+#: générées par Streamlit (`stBaseButton-primary`). `window.parent`
+#: cible la fenêtre de l'application (celle qui porte le bulletin),
+#: pas l'``<iframe>`` isolé du composant lui-même (qui n'a aucun
+#: contenu à imprimer).
+_BOUTON_IMPRIMER_HTML = """
+<button
+    onclick="window.parent.print();"
+    style="
+        width: 100%;
+        height: 38px;
+        background-color: #1f2c3b;
+        color: #FFFFFF;
+        border: 1px solid #1f2c3b;
+        border-radius: 8px;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 14px;
+        font-weight: 400;
+        cursor: pointer;
+    "
+    onmouseover="this.style.opacity=0.85;"
+    onmouseout="this.style.opacity=1;"
+>Imprimer</button>
+"""
 
 
 def _taux_horaire_affiche(montant: Decimal, heures: Decimal) -> str:
@@ -97,9 +341,10 @@ def _taux_horaire_affiche(montant: Decimal, heures: Decimal) -> str:
 def _afficher_trace_montant(libelle: str, montant_avec_trace: MontantAvecTrace) -> None:
     """Affiche un montant avec sa trace consultable (règle 02).
 
-    Même patron que `formulaire_paie.py::_afficher_trace` — consultation
-    sans altération ni reformulation de la trace produite par
-    `assembler_paie`.
+    Réservé à la section « Détails des calculs (audit) », masquée à
+    l'impression (voir docstring de module) — même patron que
+    `formulaire_paie.py::_afficher_trace`, consultation sans altération
+    ni reformulation de la trace produite par `assembler_paie`.
     """
     trace = montant_avec_trace.trace
     st.write(f"{libelle} : {montant_avec_trace.montant} $")
@@ -109,13 +354,294 @@ def _afficher_trace_montant(libelle: str, montant_avec_trace: MontantAvecTrace) 
         st.write(f"Paramètres utilisés : {dict(trace.parametres_utilises)}")
 
 
+def _retirer_indentation(bloc_html: str) -> str:
+    """Supprime l'indentation de chaque ligne de ``bloc_html`` (bug UI).
+
+    Le Markdown de Streamlit interprète toute ligne indentée de 4
+    espaces ou plus comme un bloc de code littéral (règle CommonMark),
+    ce qui empêchait le rendu HTML même avec `unsafe_allow_html=True`.
+    Purement une transformation de mise en forme du texte — aucun
+    contenu n'est modifié, seul l'espacement de bord de ligne est
+    retiré.
+    """
+    return "\n".join(ligne.lstrip() for ligne in bloc_html.splitlines())
+
+
+def _diviser_nom_affichage(nom_affichage: str) -> tuple[str, str]:
+    """Découpe ``nom_affichage`` en ``(prenom, nom)`` — repli d'affichage seul.
+
+    Utilisé uniquement lorsque `FicheCoordonnees.prenom`/`.nom` ne sont
+    pas renseignés (fiche absente, ou champs vides) — même convention
+    que la migration de l'ancien champ `nom_complet_reel`
+    (`annuaire_coordonnees.py::_migrer_nom_complet_reel_si_present`) :
+    découpe sur le premier espace, tout le libellé au prénom si aucun
+    espace n'est présent.
+    """
+    parties = nom_affichage.split(" ", 1)
+    return (parties[0], parties[1] if len(parties) > 1 else "")
+
+
+def _ligne(libelle: str, valeur: str, *, css_ligne: str = "") -> str:
+    """Génère une ligne ``<tr>`` libellé/valeur du bulletin imprimable.
+
+    ``libelle`` est déjà échappé par l'appelant si nécessaire (les
+    libellés de ce module sont tous des littéraux fixes, jamais des
+    données personnelles) ; ``valeur`` doit être pré-échappée par
+    l'appelant si elle porte une donnée personnelle en texte libre
+    (voir `html.escape` dans :func:`_construire_html_bulletin`).
+    """
+    classe = f' class="{css_ligne}"' if css_ligne else ""
+    return (
+        f"<tr{classe}><td class='libelle'>{libelle}</td>"
+        f"<td class='valeur'>{valeur}</td></tr>"
+    )
+
+
+def _sous_titre(texte: str, *, marge_haut: bool = False) -> str:
+    """Titre de **sous-section** du bulletin — gras seul, sans bandeau.
+
+    Distinct des titres de **section** (bandeau bleu plein,
+    `_CSS_BULLETIN::.bulletin-section-titre`) — convention clarifiée
+    avec l'utilisateur (discussion) : les sections de premier niveau
+    (« Identification », « Période », « Heures travaillées et
+    salaire », « Cotisation employeur ») portent le bandeau bleu ; les
+    sous-sections qu'elles regroupent (« Salarié »/« Employeur »,
+    « Salaire »/« Indemnités »/« Déductions fiscales ») sont en gras
+    seul, sans fond de couleur, pour marquer une hiérarchie visuelle
+    claire entre les deux niveaux. Toujours rendu en `display: block`
+    (classe `.bulletin-sous-titre`, plutôt que le `display: inline`
+    par défaut de `<strong>`) avec une marge basse minime — un
+    `<strong>` inline laissait un espace visuellement trop important
+    avant le tableau suivant (bug UI signalé pour « Salaire » et
+    « Déductions fiscales »). L'espacement additionnel de
+    ``marge_haut`` (classe `.bulletin-sous-titre-espace`, cumulée) sert
+    à séparer deux sous-sections empilées dans une même colonne (ex.
+    « Indemnités » sous « Salaire ») et se resserre à l'impression
+    (voir `_CSS_BULLETIN::@media print`, marges verticales réduites
+    afin que le salaire NET tienne sur la première page imprimée).
+    """
+    classes = "bulletin-sous-titre" + (" bulletin-sous-titre-espace" if marge_haut else "")
+    return f'<strong class="{classes}">{texte}</strong>'
+
+
+def _construire_html_bulletin(
+    *,
+    employe,
+    prenom_affiche: str,
+    nom_affiche: str,
+    nas_affiche: str,
+    paie: PayrollResult,
+    heures_normales_totales: Decimal | None,
+    heures_supp_totales: Decimal | None,
+) -> str:
+    """Construit le bloc HTML complet du bulletin imprimable (règle 04).
+
+    Chaque champ personnel en texte libre (prénom, nom, NAS, titre
+    d'emploi) est échappé via `html.escape` avant interpolation —
+    défense en profondeur contre une saisie contenant des caractères
+    HTML spéciaux. Les montants (`Decimal`) et dates ne nécessitent
+    aucun échappement (aucun caractère HTML spécial possible).
+    """
+    semaines = paie.pay_period.semaines
+    gains = paie.gains
+    ret = paie.retenues_employe
+    cot = paie.cotisations_employeur
+
+    # ------------------------------------------------------------------
+    # Bloc « Salaire » — heures, taux, indemnités, brut (design fidèle
+    # au gabarit, à l'exception du libellé dupliqué "Total salaire" du
+    # gabarit officiel — visiblement une coquille du modèle Excel —
+    # corrigé ici en "Total indemnités" pour la deuxième occurrence,
+    # cohérence déjà présente dans la version précédente de ce module.
+    # ------------------------------------------------------------------
+    if heures_normales_totales is None:
+        lignes_salaire = (
+            _ligne("Heures normales — montant", f"{gains.salaire_regulier} $")
+            + _ligne(
+                "Heures supplémentaires — montant",
+                f"{gains.heures_supplementaires_montant} $",
+            )
+        )
+    else:
+        taux_normal = _taux_horaire_affiche(
+            gains.salaire_regulier, heures_normales_totales
+        )
+        taux_supp = _taux_horaire_affiche(
+            gains.heures_supplementaires_montant, heures_supp_totales
+        )
+        lignes_salaire = (
+            _ligne("Heures normales", f"{heures_normales_totales} h")
+            + _ligne("Taux horaire", f"x {taux_normal} $/h")
+            + _ligne(
+                "Heures supplémentaires", f"+ {heures_supp_totales} h"
+            )
+            + _ligne("Taux horaire", f"x {taux_supp} $/h")
+        )
+
+    total_salaire = gains.salaire_regulier + gains.heures_supplementaires_montant
+    total_indemnites = gains.jours_feries_manuels + gains.vacances
+
+    # Colonne de gauche de la section « Heures travaillées et salaire » —
+    # sous-sections « Salaire » puis « Indemnités » l'une sous l'autre
+    # (emplacement conservé, discussion utilisateur).
+    html_colonne_salaire = f"""
+        {_sous_titre("Salaire")}
+        <table class="bulletin-lignes">
+            {lignes_salaire}
+            {_ligne("Total salaire", f"= {total_salaire} $", css_ligne="bulletin-total")}
+        </table>
+        {_sous_titre("Indemnités", marge_haut=True)}
+        <table class="bulletin-lignes">
+            {_ligne("Jours fériés", f"{gains.jours_feries_manuels} $")}
+            {_ligne("Congés annuels", f"{gains.vacances} $")}
+            {_ligne("Total indemnités", f"{total_indemnites} $", css_ligne="bulletin-total")}
+            {_ligne(
+                "Salaire BRUT (salaire + indemnités)",
+                f"{gains.brut_total} $",
+                css_ligne="bulletin-total-fort",
+            )}
+        </table>
+    """
+
+    # Colonne de droite de la section « Heures travaillées et salaire » —
+    # sous-section « Déductions fiscales » (remplace l'ancienne
+    # sous-section « Cotisation employeur », déplacée en section de fin
+    # de bulletin — discussion utilisateur).
+    html_colonne_deductions = f"""
+        {_sous_titre("Déductions fiscales")}
+        <table class="bulletin-lignes">
+            {_ligne("Impôt fédéral", f"{ret.impot_federal_retenu.montant} $")}
+            {_ligne("Impôt provincial", f"{ret.impot_qc_retenu.montant} $")}
+            {_ligne("Régime des rentes du Québec (RRQ)", f"{ret.rrq.montant} $")}
+            {_ligne("Assurance-emploi (AE)", f"{ret.ae.montant} $")}
+            {_ligne(
+                "Régime québécois d'assurance parentale (RQAP)",
+                f"{ret.rqap.montant} $",
+            )}
+            {_ligne(
+                "Total des déductions",
+                f"{ret.total_retenues_employe} $",
+                css_ligne="bulletin-total-fort-neutre",
+            )}
+        </table>
+    """
+
+    # ------------------------------------------------------------------
+    # Section « Cotisation employeur (pour information seulement) » —
+    # promue de sous-section à section de premier niveau, déplacée en
+    # toute dernière position du bulletin, après l'encadré du salaire
+    # NET (discussion utilisateur : information secondaire pour
+    # l'employé, ne doit pas concurrencer visuellement le NET).
+    # ------------------------------------------------------------------
+    taux_cnesst = cot.cnesst.trace.parametres_utilises.get("taux_total_cnesst")
+    libelle_cnesst = "Cotisation CNESST"
+    if taux_cnesst is not None:
+        libelle_cnesst += f" (taux {taux_cnesst})"
+    if cot.cnesst_en_attente_classification:
+        libelle_cnesst += " — classification en attente"
+
+    html_section_cotisations = f"""
+        <div class="bulletin-section-titre bulletin-section-titre-fin">
+            Cotisation employeur (pour information seulement)
+        </div>
+        <table class="bulletin-lignes">
+            {_ligne("Régime des rentes du Québec (RRQ)", f"{cot.rrq_employeur.montant} $")}
+            {_ligne("Assurance-emploi (AE)", f"{cot.ae_employeur.montant} $")}
+            {_ligne(
+                "Régime québécois d'assurance parentale (RQAP)",
+                f"{cot.rqap_employeur.montant} $",
+            )}
+            {_ligne(html.escape(libelle_cnesst), f"{cot.cnesst.montant} $")}
+            {_ligne("Fonds des services de santé (FSS)", f"{cot.fss.montant} $")}
+            {_ligne(
+                "Cotisation relative aux normes du travail (CNT)",
+                f"{cot.cnt.montant} $",
+            )}
+            {_ligne(
+                "Total cotisations employeur",
+                f"{cot.total_cotisations_employeur} $",
+                css_ligne="bulletin-total-fort",
+            )}
+        </table>
+    """
+
+    prenom_html = html.escape(prenom_affiche)
+    nom_html = html.escape(nom_affiche)
+    nas_html = html.escape(nas_affiche)
+    titre_emploi_html = html.escape(employe.titre_emploi)
+
+    logo_data_uri = _logo_en_data_uri()
+    logo_html = (
+        f'<img src="{logo_data_uri}" alt="Camp LilySO">'
+        if logo_data_uri is not None
+        else ""
+    )
+
+    return f"""
+    {_CSS_BULLETIN}
+    <div class="bulletin-conteneur">
+        <div class="bulletin-entete">
+            {logo_html}
+            <div class="bulletin-titre-principal">Bulletin de paie</div>
+        </div>
+
+        <div class="bulletin-section-titre">Identification</div>
+        <div class="bulletin-deux-colonnes">
+            <div class="bulletin-colonne">
+                {_sous_titre("Salarié")}
+                <table class="bulletin-lignes">
+                    {_ligne("Prénom", prenom_html)}
+                    {_ligne("Nom", nom_html)}
+                    {_ligne("NAS", nas_html)}
+                    {_ligne("Date d'embauche", str(employe.date_embauche))}
+                    {_ligne("Emploi", titre_emploi_html)}
+                </table>
+            </div>
+            <div class="bulletin-colonne">
+                {_sous_titre("Employeur")}
+                <table class="bulletin-lignes">
+                    {_ligne("Nom", html.escape(CONFIG_EMPLOYEUR.nom))}
+                    {_ligne("Adresse", html.escape(CONFIG_EMPLOYEUR.adresse))}
+                    {_ligne("Ville", html.escape(CONFIG_EMPLOYEUR.ville))}
+                    {_ligne("Code postal", html.escape(CONFIG_EMPLOYEUR.code_postal))}
+                    {_ligne("Numéro NQE", html.escape(CONFIG_EMPLOYEUR.numero_nqe))}
+                </table>
+            </div>
+        </div>
+
+        <div class="bulletin-section-titre">Période</div>
+        <table class="bulletin-lignes">
+            {_ligne(
+                "Période correspondant au paiement",
+                f"du {semaines[0].date_debut} au {semaines[-1].date_fin}",
+            )}
+            {_ligne("Date de paiement", str(paie.pay_period.date_paiement))}
+        </table>
+
+        <div class="bulletin-section-titre">Heures travaillées et salaire</div>
+        <div class="bulletin-deux-colonnes">
+            <div class="bulletin-colonne">{html_colonne_salaire.strip()}</div>
+            <div class="bulletin-colonne">{html_colonne_deductions.strip()}</div>
+        </div>
+
+        <div class="bulletin-net">
+            <span>Salaire NET (salaire brut - déductions)</span>
+            <span>{paie.net} $</span>
+        </div>
+
+        {html_section_cotisations}
+    </div>
+    """
+
+
 def render() -> None:
     """Rendu du Bulletin_De_Paie — consultation en lecture seule.
 
     Bouton « Corriger cette paie » entre le titre et le contenu (haut de
-    page, visible uniquement si la paie est `EMISE`), puis reproduction
-    du gabarit officiel : identification, période, salaire, déductions
-    fiscales, cotisations employeur.
+    page, visible uniquement si la paie est `EMISE`), puis bulletin
+    imprimable (HTML/CSS, un seul bloc `st.markdown`) reproduisant le
+    gabarit officiel, suivi d'une section d'audit (traces de calcul)
+    masquée à l'impression.
     """
     id_paie = st.session_state.get(CLE_ID_PAIE_CIBLE)
     if not id_paie:
@@ -160,73 +686,73 @@ def render() -> None:
     resultat_coordonnees = executer_avec_capture(
         lambda: lire_coordonnees(paie.employe_id)
     )
-    nas_affiche = "Non renseigné"
-    if not isinstance(resultat_coordonnees, ErreurDomaineAffichable):
-        if resultat_coordonnees is not None and resultat_coordonnees.nas:
-            nas_affiche = resultat_coordonnees.nas
+    fiche_coordonnees = (
+        None
+        if isinstance(resultat_coordonnees, ErreurDomaineAffichable)
+        else resultat_coordonnees
+    )
+    nas_affiche = (
+        fiche_coordonnees.nas
+        if fiche_coordonnees is not None and fiche_coordonnees.nas
+        else "Non renseigné"
+    )
+    if (
+        fiche_coordonnees is not None
+        and fiche_coordonnees.prenom
+        and fiche_coordonnees.nom
+    ):
+        prenom_affiche = fiche_coordonnees.prenom
+        nom_affiche = fiche_coordonnees.nom
+    else:
+        prenom_affiche, nom_affiche = _diviser_nom_affichage(employe.nom_affichage)
 
     # ------------------------------------------------------------------
-    # Titre + bouton d'action en haut à droite (entre le titre et le
-    # contenu — Req explicite de l'utilisateur).
+    # Titre + barre d'actions en haut à droite (entre le titre et le
+    # contenu — Req explicite de l'utilisateur). Toute la barre est
+    # masquée à l'impression via la clé de conteneur
+    # `bulletin_barre_actions` (voir `_CSS_BULLETIN`,
+    # `.st-key-bulletin_barre_actions`).
+    #
+    # Règle UI 07 (`.kiro/steering/07-ui-boutons.md`) : « Imprimer »
+    # (action principale de cette page) porte le visuel **primaire** ;
+    # « Corriger cette paie » (action secondaire, peu fréquente) porte
+    # le visuel **secondaire**. Avant ce changement, les deux boutons
+    # de l'application confondaient « bouton `type=\"primary\"` » et
+    # « action principale de la page » — cette page est la première à
+    # distinguer explicitement les deux visuels sur un même écran.
     # ------------------------------------------------------------------
-    col_titre, col_action = st.columns([3, 1])
+    # Bug UI corrigé après livraison : le titre de page est rendu en
+    # HTML natif (classe `bulletin-hors-impression`, masquable via
+    # `_CSS_BULLETIN`) plutôt que via `st.header` — le bulletin
+    # imprimable ci-dessous porte déjà son propre titre
+    # (`bulletin-titre-principal`), rendre les deux à l'impression
+    # aurait dupliqué le titre.
+    col_titre, col_actions = st.columns([3, 2])
     with col_titre:
-        st.header("Bulletin de paie")
-    with col_action:
-        if paie.statut == StatutDePaie.EMISE:
-            if st.button("Corriger cette paie", type="primary"):
+        st.markdown(
+            '<h2 class="bulletin-hors-impression">Bulletin de paie</h2>',
+            unsafe_allow_html=True,
+        )
+    with col_actions, st.container(key="bulletin_barre_actions"):
+        col_action_corriger, col_action_imprimer = st.columns(2)
+        with col_action_corriger:
+            if paie.statut == StatutDePaie.EMISE and st.button(
+                "Corriger cette paie", type="secondary"
+            ):
                 st.session_state["fp_corriger_ancien_id_precharge"] = id_paie
                 from app.pages_ui._navigation import page_formulaire_paie
 
                 st.switch_page(page_formulaire_paie)
-
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # Identification — Salarié / Employeur.
-    # ------------------------------------------------------------------
-    st.subheader("Identification")
-    col_salarie, col_employeur = st.columns(2)
-    with col_salarie:
-        st.write("**Salarié**")
-        st.write(f"Nom complet : {employe.nom_affichage}")
-        st.write(f"NAS : {nas_affiche}")
-        st.write(f"Date d'embauche : {employe.date_embauche}")
-        st.write(f"Emploi : {employe.titre_emploi}")
-    with col_employeur:
-        st.write("**Employeur**")
-        st.write(f"Nom : {CONFIG_EMPLOYEUR.nom}")
-        st.write(f"Adresse : {CONFIG_EMPLOYEUR.adresse}")
-        st.write(f"Ville : {CONFIG_EMPLOYEUR.ville}")
-        st.write(f"Code postal : {CONFIG_EMPLOYEUR.code_postal}")
-        st.write(f"Numéro NQE : {CONFIG_EMPLOYEUR.numero_nqe}")
-
-    st.divider()
+        with col_action_imprimer:
+            # `components.v1.html` (et non `st.markdown`) — voir
+            # docstring de module : seul ce mécanisme laisse passer
+            # l'attribut `onclick` nécessaire à `window.parent.print()`.
+            components.html(_BOUTON_IMPRIMER_HTML, height=48)
 
     # ------------------------------------------------------------------
-    # Période.
+    # Heures travaillées — source unique : le PayrollInput persisté.
     # ------------------------------------------------------------------
-    st.subheader("Période")
-    semaines = paie.pay_period.semaines
-    st.write(
-        f"Période correspondant au paiement : du "
-        f"{semaines[0].date_debut} au {semaines[-1].date_fin}"
-    )
-    st.write(f"Date de paiement : {paie.pay_period.date_paiement}")
-
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # Heures travaillées et salaire.
-    # ------------------------------------------------------------------
-    st.subheader("Heures travaillées et salaire")
-
     if payroll_input is not None:
-        # Paie post-correction (bugfix `heures-periode-et-persistance-
-        # brouillon`) — les heures réellement saisies sont récupérables
-        # depuis le `PayrollInput` persisté (`payload_input_json`),
-        # jamais depuis `PayrollResult.pay_period.semaines` (toujours à
-        # zéro par construction).
         heures_normales_totales = sum(
             (s.heures_normales for s in payroll_input.heures_par_semaine),
             start=Decimal("0"),
@@ -236,88 +762,64 @@ def render() -> None:
             start=Decimal("0"),
         )
     else:
-        # Paie pré-correction (`payload_input_json` NULL, colonne
-        # ajoutée après l'enregistrement de cette paie) — les heures
-        # d'origine ne sont pas récupérables ; comportement de
-        # préservation assumé (design §Correctness Properties,
-        # Property 4).
         heures_normales_totales = None
         heures_supp_totales = None
-
-    col_salaire, col_cotisations = st.columns(2)
-    with col_salaire:
-        st.write("**Salaire**")
-        if heures_normales_totales is None:
-            st.warning(
-                "Heures non récupérables pour cette paie (enregistrée "
-                "avant l'ajout de la persistance des heures saisies)."
-            )
-            st.write(f"Heures normales — montant : {paie.gains.salaire_regulier} $")
-            st.write(
-                "Heures supplémentaires — montant : "
-                f"{paie.gains.heures_supplementaires_montant} $"
-            )
-        else:
-            taux_normal = _taux_horaire_affiche(
-                paie.gains.salaire_regulier, heures_normales_totales
-            )
-            taux_supp = _taux_horaire_affiche(
-                paie.gains.heures_supplementaires_montant, heures_supp_totales
-            )
-            st.write(f"Heures normales : {heures_normales_totales} h × {taux_normal} $/h")
-            st.write(f"Heures supplémentaires : {heures_supp_totales} h × {taux_supp} $/h")
-        st.write(f"Total salaire : {paie.gains.salaire_regulier + paie.gains.heures_supplementaires_montant} $")
-        st.write("**Indemnités**")
-        st.write(f"Jours fériés : {paie.gains.jours_feries_manuels} $")
-        st.write(f"Congés annuels (vacances) : {paie.gains.vacances} $")
-        st.write(
-            "Total indemnités : "
-            f"{paie.gains.jours_feries_manuels + paie.gains.vacances} $"
+        st.warning(
+            "Heures non récupérables pour cette paie (enregistrée avant "
+            "l'ajout de la persistance des heures saisies)."
         )
-        st.write(f"**Salaire BRUT (salaire + indemnités) : {paie.gains.brut_total} $**")
-
-    with col_cotisations:
-        st.write("**Cotisation employeur (pour information seulement)**")
-        cot = paie.cotisations_employeur
-        _afficher_trace_montant("Régime des rentes du Québec (RRQ)", cot.rrq_employeur)
-        _afficher_trace_montant("Assurance-emploi (AE)", cot.ae_employeur)
-        _afficher_trace_montant(
-            "Régime québécois d'assurance parentale (RQAP)", cot.rqap_employeur
-        )
-        taux_cnesst = cot.cnesst.trace.parametres_utilises.get("taux_total_cnesst")
-        libelle_cnesst = "Cotisation CNESST"
-        if taux_cnesst is not None:
-            libelle_cnesst += f" (taux {taux_cnesst})"
-        if cot.cnesst_en_attente_classification:
-            libelle_cnesst += " — classification en attente"
-        _afficher_trace_montant(libelle_cnesst, cot.cnesst)
-        _afficher_trace_montant("Fonds des services de santé (FSS)", cot.fss)
-        _afficher_trace_montant(
-            "Cotisation relative aux normes du travail (CNT)", cot.cnt
-        )
-        st.write(f"**Total cotisations employeur : {cot.total_cotisations_employeur} $**")
-
-    st.divider()
 
     # ------------------------------------------------------------------
-    # Déductions fiscales.
+    # Bulletin imprimable — un seul bloc HTML/CSS.
+    #
+    # Bug UI corrigé après livraison : le Markdown de Streamlit interprète
+    # toute ligne indentée de 4 espaces ou plus comme un bloc de code
+    # littéral (règle CommonMark), *avant* même que `unsafe_allow_html`
+    # n'entre en jeu — l'imbrication des f-strings dans
+    # `_construire_html_bulletin` produit naturellement des lignes très
+    # indentées, ce qui affichait le HTML brut au lieu de le faire rendre
+    # par le navigateur. `_retirer_indentation` neutralise ce piège en
+    # supprimant l'indentation de chaque ligne avant l'appel à
+    # `st.markdown` — le CSS (`_CSS_BULLETIN`) ne dépend d'aucune
+    # indentation significative, cette opération est donc sans risque.
     # ------------------------------------------------------------------
-    st.subheader("Déductions fiscales")
-    ret = paie.retenues_employe
-    _afficher_trace_montant("Impôt fédéral", ret.impot_federal_retenu)
-    _afficher_trace_montant("Impôt provincial", ret.impot_qc_retenu)
-    _afficher_trace_montant("Régime des rentes du Québec (RRQ)", ret.rrq)
-    _afficher_trace_montant("Assurance-emploi (AE)", ret.ae)
-    _afficher_trace_montant(
-        "Régime québécois d'assurance parentale (RQAP)", ret.rqap
+    st.markdown(
+        _retirer_indentation(
+            _construire_html_bulletin(
+                employe=employe,
+                prenom_affiche=prenom_affiche,
+                nom_affiche=nom_affiche,
+                nas_affiche=nas_affiche,
+                paie=paie,
+                heures_normales_totales=heures_normales_totales,
+                heures_supp_totales=heures_supp_totales,
+            )
+        ),
+        unsafe_allow_html=True,
     )
-    st.write(f"**Total des déductions : {ret.total_retenues_employe} $**")
-    st.write(f"## Salaire NET (salaire brut - déductions) : {paie.net} $")
-
-    st.divider()
 
     # ------------------------------------------------------------------
-    # Statut / métadonnées de la paie (hors gabarit, utile à l'audit).
+    # Détails des calculs (audit) — traces consultables (règle 02),
+    # masquées à l'impression (`data-testid="stExpander"`).
+    # ------------------------------------------------------------------
+    with st.expander("Détails des calculs (audit)", expanded=False):
+        st.write("**Retenues employé**")
+        _afficher_trace_montant("Impôt fédéral", paie.retenues_employe.impot_federal_retenu)
+        _afficher_trace_montant("Impôt provincial", paie.retenues_employe.impot_qc_retenu)
+        _afficher_trace_montant("RRQ (employé)", paie.retenues_employe.rrq)
+        _afficher_trace_montant("AE (employé)", paie.retenues_employe.ae)
+        _afficher_trace_montant("RQAP (employé)", paie.retenues_employe.rqap)
+        st.write("**Cotisations employeur**")
+        _afficher_trace_montant("RRQ (employeur)", paie.cotisations_employeur.rrq_employeur)
+        _afficher_trace_montant("AE (employeur)", paie.cotisations_employeur.ae_employeur)
+        _afficher_trace_montant("RQAP (employeur)", paie.cotisations_employeur.rqap_employeur)
+        _afficher_trace_montant("CNESST", paie.cotisations_employeur.cnesst)
+        _afficher_trace_montant("FSS", paie.cotisations_employeur.fss)
+        _afficher_trace_montant("CNT", paie.cotisations_employeur.cnt)
+
+    # ------------------------------------------------------------------
+    # Statut / métadonnées de la paie (hors gabarit, utile à l'audit) —
+    # masqué à l'impression (`data-testid="stCaptionContainer"`).
     # ------------------------------------------------------------------
     st.caption(
         f"id_paie={paie.id_paie} | version={paie.version} | "

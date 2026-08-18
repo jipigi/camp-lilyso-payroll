@@ -219,9 +219,8 @@ def st_fiche_coordonnees_valide(draw: st.DrawFn) -> "FicheCoordonnees":  # noqa:
     employe_id = draw(_st_employe_id())
     nn = draw(st.integers(min_value=0, max_value=99))
 
-    nom_complet_reel = draw(
-        st.one_of(st.none(), st.just(f"Fictif Nom {nn:02d}"))
-    )
+    prenom = draw(st.one_of(st.none(), st.just(f"Fictif Prénom {nn:02d}")))
+    nom = draw(st.one_of(st.none(), st.just(f"Fictif Nom {nn:02d}")))
     nas = draw(st.one_of(st.none(), st.just(f"Fictif NAS {nn:02d}")))
     adresse_residentielle = draw(
         st.one_of(st.none(), st.just(f"Fictif Adresse {nn:02d}"))
@@ -233,7 +232,8 @@ def st_fiche_coordonnees_valide(draw: st.DrawFn) -> "FicheCoordonnees":  # noqa:
 
     return FicheCoordonnees(
         employe_id=employe_id,
-        nom_complet_reel=nom_complet_reel,
+        prenom=prenom,
+        nom=nom,
         nas=nas,
         adresse_residentielle=adresse_residentielle,
         courriel=courriel,

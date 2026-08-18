@@ -28,8 +28,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from payroll_engine.register import chemin_bd_production
 from app.logique_metier.stockage_json import ecrire_atomique, lire_texte_ou_defaut
+from payroll_engine.register import chemin_bd_production
 
 
 class FicheCoordonnees(BaseModel):
@@ -47,7 +47,8 @@ class FicheCoordonnees(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     employe_id: str = Field(..., min_length=1)
-    nom_complet_reel: str | None = None
+    prenom: str | None = None
+    nom: str | None = None
     nas: str | None = None
     adresse_residentielle: str | None = None
     courriel: str | None = None
@@ -64,6 +65,33 @@ def chemin_annuaire_coordonnees_production() -> Path:
     return chemin_bd_production().parent / "coordonnees.json"
 
 
+def _migrer_nom_complet_reel_si_present(element: dict) -> dict:
+    """Migre l'ancien champ ``nom_complet_reel`` vers ``prenom``/``nom``.
+
+    Bug UI corrigé après livraison (Req affichage du Bulletin_De_Paie —
+    scission Prénom/Nom, fidèle au gabarit officiel) : les fiches
+    enregistrées avant ce changement portent un champ unique
+    ``nom_complet_reel`` (ex. ``"Lily-Soleil Goydadin"``), incompatible
+    avec le nouveau schéma (``prenom``, ``nom`` distincts,
+    ``extra="forbid"``). Migration additive à la lecture, jamais à
+    l'écriture du fichier existant (règle 06 — immutabilité historique,
+    même principe que la colonne ``payload_input_json`` de
+    ``payroll_engine/register.py``) : découpe naïve sur le premier
+    espace (``"Prénom Reste-du-nom"``) — un nom complet sans espace est
+    entièrement affecté à ``prenom``, ``nom`` restant ``None``, plutôt
+    que de deviner une séparation incorrecte.
+    """
+    if "nom_complet_reel" not in element:
+        return element
+    element = dict(element)
+    nom_complet = element.pop("nom_complet_reel")
+    if nom_complet and "prenom" not in element and "nom" not in element:
+        parties = nom_complet.split(" ", 1)
+        element["prenom"] = parties[0]
+        element["nom"] = parties[1] if len(parties) > 1 else None
+    return element
+
+
 def lister_coordonnees(
     chemin_coordonnees: Path = chemin_annuaire_coordonnees_production(),
 ) -> tuple[FicheCoordonnees, ...]:
@@ -71,13 +99,16 @@ def lister_coordonnees(
 
     Même patron que `lister_employes` — tuple vide si le fichier n'existe
     pas encore (Req 20.7), aucune exception. Chaque élément du tableau
-    JSON brut est ré-encodé individuellement (``json.dumps``) puis
-    repassé à ``FicheCoordonnees.model_validate_json`` (décision n° 3).
+    JSON brut est d'abord migré (:func:`_migrer_nom_complet_reel_si_present`)
+    puis ré-encodé individuellement (``json.dumps``) et repassé à
+    ``FicheCoordonnees.model_validate_json`` (décision n° 3).
     """
     brut = lire_texte_ou_defaut(chemin_coordonnees, defaut="[]")
     elements = json.loads(brut)
     return tuple(
-        FicheCoordonnees.model_validate_json(json.dumps(element))
+        FicheCoordonnees.model_validate_json(
+            json.dumps(_migrer_nom_complet_reel_si_present(element))
+        )
         for element in elements
     )
 

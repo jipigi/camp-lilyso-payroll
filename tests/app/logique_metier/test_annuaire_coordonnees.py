@@ -92,7 +92,8 @@ class TestFicheCoordonneesSchemaMinimal:
         fiche = FicheCoordonnees(employe_id="EMP001")
 
         assert fiche.employe_id == "EMP001"
-        assert fiche.nom_complet_reel is None
+        assert fiche.prenom is None
+        assert fiche.nom is None
         assert fiche.nas is None
         assert fiche.adresse_residentielle is None
         assert fiche.courriel is None
@@ -271,3 +272,59 @@ class TestSeparationStricte:
         fiche = FicheCoordonnees(employe_id="EMP001", nas="123-abc-XYZ-non-formaté")
 
         assert fiche.nas == "123-abc-XYZ-non-formaté"
+
+
+# ---------------------------------------------------------------------------
+# Migration additive — ancien champ `nom_complet_reel` (bug UI corrigé
+# après livraison, scission Prénom/Nom fidèle au gabarit officiel)
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationNomCompletReel:
+    """`lister_coordonnees` migre l'ancien champ `nom_complet_reel` (Req 20.1, 20.2).
+
+    Les fiches enregistrées avant la scission Prénom/Nom portent un champ
+    unique `nom_complet_reel` dans le fichier JSON — incompatible avec le
+    nouveau schéma (`extra="forbid"`). Cette migration additive à la
+    lecture (jamais de réécriture du fichier historique) découpe le nom
+    complet sur le premier espace.
+    """
+
+    def test_ancien_format_nom_complet_reel_est_migre_vers_prenom_et_nom(
+        self, st_chemin_json_temporaire: Callable[[str], Path]
+    ) -> None:
+        import json as json_module
+
+        from app.logique_metier.annuaire_coordonnees import lister_coordonnees
+        from app.logique_metier.stockage_json import ecrire_atomique
+
+        chemin_coordonnees = st_chemin_json_temporaire("coordonnees")
+        ancien_contenu = json_module.dumps(
+            [{"employe_id": "EMP001", "nom_complet_reel": "Lily-Soleil Goydadin"}]
+        )
+        ecrire_atomique(chemin_coordonnees, ancien_contenu)
+
+        fiches = lister_coordonnees(chemin_coordonnees)
+
+        assert len(fiches) == 1
+        assert fiches[0].prenom == "Lily-Soleil"
+        assert fiches[0].nom == "Goydadin"
+
+    def test_ancien_format_nom_complet_reel_sans_espace_va_entierement_au_prenom(
+        self, st_chemin_json_temporaire: Callable[[str], Path]
+    ) -> None:
+        import json as json_module
+
+        from app.logique_metier.annuaire_coordonnees import lister_coordonnees
+        from app.logique_metier.stockage_json import ecrire_atomique
+
+        chemin_coordonnees = st_chemin_json_temporaire("coordonnees")
+        ancien_contenu = json_module.dumps(
+            [{"employe_id": "EMP001", "nom_complet_reel": "Madonna"}]
+        )
+        ecrire_atomique(chemin_coordonnees, ancien_contenu)
+
+        fiches = lister_coordonnees(chemin_coordonnees)
+
+        assert fiches[0].prenom == "Madonna"
+        assert fiches[0].nom is None

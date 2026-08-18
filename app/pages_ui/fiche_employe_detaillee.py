@@ -399,10 +399,15 @@ def _section_coordonnees(employe_id: str) -> None:
     fiche_existante: FicheCoordonnees | None = resultat_coordonnees
 
     with st.form(f"fed_formulaire_coordonnees_{employe_id}"):
-        nom_complet_reel = st.text_input(
-            "Nom complet réel",
-            value=(fiche_existante.nom_complet_reel or "") if fiche_existante else "",
-            key=f"fed_coord_nom_complet_{employe_id}",
+        prenom = st.text_input(
+            "Prénom",
+            value=(fiche_existante.prenom or "") if fiche_existante else "",
+            key=f"fed_coord_prenom_{employe_id}",
+        )
+        nom = st.text_input(
+            "Nom",
+            value=(fiche_existante.nom or "") if fiche_existante else "",
+            key=f"fed_coord_nom_{employe_id}",
         )
         nas = st.text_input(
             "NAS",
@@ -436,7 +441,8 @@ def _section_coordonnees(employe_id: str) -> None:
     def _construire_et_enregistrer() -> FicheCoordonnees:
         fiche = FicheCoordonnees(
             employe_id=employe_id,
-            nom_complet_reel=nom_complet_reel or None,
+            prenom=prenom or None,
+            nom=nom or None,
             nas=nas or None,
             adresse_residentielle=adresse_residentielle or None,
             courriel=courriel or None,
