@@ -124,14 +124,13 @@ table.bilan-fiscal-tableau td:not(:first-child) {
     white-space: nowrap;
 }
 tr.bilan-fiscal-entete th {
-    border-bottom: 2px solid #2c5f8a;
-    color: #2c5f8a;
+    background: #2c5f8a;
+    color: #ffffff;
     font-weight: 700;
 }
 tr.bilan-fiscal-section-entete td {
-    background: #2c5f8a;
-    color: #ffffff;
-    font-weight: 600;
+    font-weight: 700;
+    padding-top: 14px;
     text-align: left;
 }
 tr.bilan-fiscal-total td {
@@ -169,6 +168,25 @@ tr.bilan-fiscal-combine td.bilan-fiscal-combine-valeur {
     border-radius: 10px;
     white-space: nowrap;
 }
+.bilan-fiscal-non-applicable {
+    color: #999999;
+}
+</style>
+"""
+
+#: CSS scoped des en-têtes de colonnes du tableau des employés (bug UI
+#: signalé après démo) — fond bleu foncé, police blanche, même teinte
+#: que `_CSS_BILAN_FISCAL::tr.bilan-fiscal-entete` pour une cohérence
+#: visuelle entre les deux tableaux de cette page.
+_CSS_LISTE_EMPLOYES = """
+<style>
+.employes-entete-cellule {
+    background: #2c5f8a;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 6px 10px;
+    border-radius: 4px;
+}
 </style>
 """
 
@@ -202,14 +220,36 @@ def _montant_bilan_ou_indisponible(valeur: Decimal | None) -> str:
     return _montant_bilan(valeur)
 
 
-def _ligne_bilan_html(libelle: str, qc: Decimal, ca: Decimal) -> str:
+def _montant_ou_tiret(valeur: Decimal, *, applicable: bool) -> str:
+    """Formate la cellule d'une ligne mono-juridictionnelle (bug UI
+    signalé après démo) : la colonne dont la juridiction ne s'applique
+    jamais (ex. la colonne Canada pour le RRQ) affiche un tiret plutôt
+    que ``0,00 $`` — un montant à zéro suggérerait à tort qu'un calcul
+    a eu lieu pour cette juridiction, alors qu'elle ne s'applique
+    structurellement jamais à cette ligne."""
+    if not applicable:
+        return '<span class="bilan-fiscal-non-applicable">—</span>'
+    return _montant_bilan(valeur)
+
+
+def _ligne_bilan_html(
+    libelle: str,
+    qc: Decimal,
+    ca: Decimal,
+    *,
+    qc_applicable: bool = True,
+    ca_applicable: bool = True,
+) -> str:
     """Génère une ligne ``<tr>`` de détail (RRQ, RQAP, AE, etc.) — les
     deux colonnes de `LigneBilan` sont toujours calculables (jamais
-    `None`), donc jamais d'indicateur d'indisponibilité sur ces lignes."""
+    `None`), donc jamais d'indicateur d'indisponibilité sur ces lignes.
+    ``qc_applicable``/``ca_applicable`` distinguent la colonne réellement
+    attribuée (montant affiché) de celle qui ne s'applique jamais à
+    cette juridiction (tiret affiché, voir :func:`_montant_ou_tiret`)."""
     return (
         f"<tr><td>{libelle}</td>"
-        f"<td>{_montant_bilan(qc)}</td>"
-        f"<td>{_montant_bilan(ca)}</td></tr>"
+        f"<td>{_montant_ou_tiret(qc, applicable=qc_applicable)}</td>"
+        f"<td>{_montant_ou_tiret(ca, applicable=ca_applicable)}</td></tr>"
     )
 
 
@@ -237,15 +277,22 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
     lignes_retenues = "".join(
         [
             _ligne_bilan_html(
-                tableau.ligne_rrq.libelle, tableau.ligne_rrq.qc, tableau.ligne_rrq.ca
+                tableau.ligne_rrq.libelle,
+                tableau.ligne_rrq.qc,
+                tableau.ligne_rrq.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
                 tableau.ligne_rqap.libelle,
                 tableau.ligne_rqap.qc,
                 tableau.ligne_rqap.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
-                tableau.ligne_ae.libelle, tableau.ligne_ae.qc, tableau.ligne_ae.ca
+                tableau.ligne_ae.libelle,
+                tableau.ligne_ae.qc,
+                tableau.ligne_ae.ca,
+                qc_applicable=False,
             ),
             _ligne_bilan_html(
                 tableau.ligne_impot.libelle,
@@ -277,25 +324,37 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
                 tableau.ligne_rrq_employeur.libelle,
                 tableau.ligne_rrq_employeur.qc,
                 tableau.ligne_rrq_employeur.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
                 tableau.ligne_rqap_employeur.libelle,
                 tableau.ligne_rqap_employeur.qc,
                 tableau.ligne_rqap_employeur.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
                 tableau.ligne_ae_employeur.libelle,
                 tableau.ligne_ae_employeur.qc,
                 tableau.ligne_ae_employeur.ca,
+                qc_applicable=False,
             ),
             _ligne_bilan_html(
-                tableau.ligne_fss.libelle, tableau.ligne_fss.qc, tableau.ligne_fss.ca
+                tableau.ligne_fss.libelle,
+                tableau.ligne_fss.qc,
+                tableau.ligne_fss.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
-                libelle_cnesst, tableau.ligne_cnesst.qc, tableau.ligne_cnesst.ca
+                libelle_cnesst,
+                tableau.ligne_cnesst.qc,
+                tableau.ligne_cnesst.ca,
+                ca_applicable=False,
             ),
             _ligne_bilan_html(
-                tableau.ligne_cnt.libelle, tableau.ligne_cnt.qc, tableau.ligne_cnt.ca
+                tableau.ligne_cnt.libelle,
+                tableau.ligne_cnt.qc,
+                tableau.ligne_cnt.ca,
+                ca_applicable=False,
             ),
             _ligne_total_html(
                 "Total des cotisations",
@@ -327,7 +386,7 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
         <table class="bilan-fiscal-tableau">
             <thead>
                 <tr class="bilan-fiscal-entete">
-                    <th>Retenues et cotisations</th><th>QC</th><th>CA</th>
+                    <th>Retenues et cotisations</th><th>Québec</th><th>Canada</th>
                 </tr>
             </thead>
             <tbody>
@@ -364,15 +423,15 @@ def _afficher_bilan_fiscal() -> None:
     sur tout tuple d'entrée (design.md §Architecture décision n° 2),
     elles ne lèvent jamais d'exception.
     """
-    st.subheader("Bilan fiscal")
-
     resultat_paies = executer_avec_capture(lire_paies_emises)
     if isinstance(resultat_paies, ErreurDomaineAffichable):
+        st.header("Bilan fiscal")
         st.error(f"{resultat_paies.type_exception}: {resultat_paies.message}")
         return
     paies_emises = resultat_paies
 
     if not paies_emises:
+        st.header("Bilan fiscal")
         st.info("Aucune paie émise n'a été trouvée.")
         return
 
@@ -398,12 +457,18 @@ def _afficher_bilan_fiscal() -> None:
     # 3.4) sans écriture manuelle additionnelle après sa création.
     st.session_state[_CLE_PERIODE_LIBELLE] = libelle_resolu
 
-    _, col_selecteur = st.columns([3, 2])
+    # Titre à gauche, sélecteur de période à droite, sur la même ligne
+    # (bug UI signalé après démo) — même patron `st.columns` que
+    # l'alignement des en-têtes du tableau des employés.
+    col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
+    with col_titre:
+        st.header("Bilan fiscal")
     with col_selecteur:
         libelle_selectionne = st.selectbox(
             "Période",
             options=[option.libelle for option in options],
             key=_CLE_PERIODE_LIBELLE,
+            label_visibility="collapsed",
         )
 
     periode_selectionnee = next(
@@ -427,7 +492,8 @@ def render() -> None:
     Employe_Detaillee (Req 4.5, 4.6), et un bouton qui route vers la
     page dédiée de création d'un nouvel employé (Req 4.4).
     """
-    st.header("Tableau de bord — Employés")
+    st.title("Tableau de bord")
+    st.header("Employés")
 
     resultat_employes = executer_avec_capture(lister_employes)
     if isinstance(resultat_employes, ErreurDomaineAffichable):
@@ -437,14 +503,13 @@ def render() -> None:
 
     _afficher_liste_employes(employes)
 
-    st.divider()
-    _afficher_bilan_fiscal()
-
-    st.divider()
     if st.button("Ajouter un nouvel employé", type="primary"):
         from app.pages_ui._navigation import page_nouvel_employe
 
         st.switch_page(page_nouvel_employe)
+
+    st.divider()
+    _afficher_bilan_fiscal()
 
 
 def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
@@ -463,18 +528,33 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
 
     # En-têtes de colonnes — mêmes proportions que les lignes ci-dessous
     # (Req 4.2), pour que l'opérateur identifie chaque colonne sans
-    # deviner son contenu.
+    # deviner son contenu. Fond bleu foncé / police blanche (bug UI
+    # signalé après démo) — même teinte que les en-têtes du Tableau_
+    # Bilan_Fiscal (`_CSS_BILAN_FISCAL::tr.bilan-fiscal-entete`).
+    st.markdown(_CSS_LISTE_EMPLOYES, unsafe_allow_html=True)
     col_entete_id, col_entete_nom, col_entete_derniere_paie, col_entete_actions = (
         st.columns([2, 3, 3, 3])
     )
     with col_entete_id:
-        st.markdown("**No. d'employé**")
+        st.markdown(
+            '<div class="employes-entete-cellule">No. d\'employé</div>',
+            unsafe_allow_html=True,
+        )
     with col_entete_nom:
-        st.markdown("**Prénom et nom**")
+        st.markdown(
+            '<div class="employes-entete-cellule">Prénom et nom</div>',
+            unsafe_allow_html=True,
+        )
     with col_entete_derniere_paie:
-        st.markdown("**Dernière paie**")
+        st.markdown(
+            '<div class="employes-entete-cellule">Dernière paie</div>',
+            unsafe_allow_html=True,
+        )
     with col_entete_actions:
-        st.markdown("**Actions**")
+        st.markdown(
+            '<div class="employes-entete-cellule">Actions</div>',
+            unsafe_allow_html=True,
+        )
 
     for employe in employes:
         resultat_resumes = executer_avec_capture(
