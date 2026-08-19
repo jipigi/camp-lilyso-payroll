@@ -51,17 +51,17 @@ Chaque widget est lié par un ``key=`` explicite : un retour
 ``st.session_state``, préservant l'état de saisie de l'opérateur
 (Req 16.4).
 
-**Simplification documentée de l'Action_Corriger** : la sélection de la
-paie cible se fait par saisie directe de son ``id_paie`` (plutôt que par
-une liste déroulante alimentée par ``lire_historique_paie`` sur
-plusieurs critères croisés) — l'opérateur consulte l'écran « Historique
-et cumuls » (tâche 25.1) pour retrouver cet identifiant avant de revenir
-ici. Le pré-remplissage du formulaire de correction utilise
-``lire_paie`` pour relire la paie ciblée. Ce choix reste fonctionnel et
-complet au sens des Req 13.1 à 13.5 (sélection, pré-remplissage,
-réassemblage avec version incrémentée, confirmation explicite,
-confirmation du résultat), sans introduire de widget de recherche
-supplémentaire hors périmètre de cette tâche.
+**Simplification documentée de l'Action_Corriger** : la paie cible n'est
+jamais sélectionnée depuis cette page — elle est toujours atteinte via
+le bouton « Corriger cette paie » du Bulletin_De_Paie (bug UI signalé
+après démo : l'``id_paie`` ciblé n'est plus un champ de saisie
+modifiable, affiché en texte brut une fois la paie relue). Le
+pré-remplissage du formulaire de correction utilise ``lire_paie`` pour
+relire la paie ciblée. Ce choix reste fonctionnel et complet au sens
+des Req 13.1 à 13.5 (sélection, pré-remplissage, réassemblage avec
+version incrémentée, confirmation explicite, confirmation du résultat),
+sans introduire de widget de recherche supplémentaire hors périmètre de
+cette tâche.
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ from decimal import Decimal, InvalidOperation
 
 import streamlit as st
 
+from app.logique_metier.annuaire_coordonnees import lire_coordonnees
 from app.logique_metier.annuaire_employes import lister_employes
 from app.logique_metier.dernieres_paies import (
     filtrer_par_annee,
@@ -812,21 +813,37 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
     `bulletin_paie.py` avant `st.switch_page`, bouton « Corriger cette
     paie »), l'``id_paie`` est pré-rempli — jamais de ressaisie
     manuelle dans ce cas.
+
+    Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    l'``id_paie`` ciblé n'est plus un champ de saisie modifiable — il
+    est lu depuis la clé persistante ``st.session_state[
+    "fp_corriger_ancien_id_actif"]`` (transférée une seule fois depuis
+    ``fp_corriger_ancien_id_precharge`` par :func:`render`) et affiché
+    en texte brut, juste après les informations sur la paie ciblée
+    (voir plus bas). Root cause du bogue corrigé en même temps
+    (formulaire entièrement réinitialisé au moindre changement de
+    champ) : ``fp_corriger_ancien_id_precharge`` était directement
+    ``pop()``-é ici à chaque rendu de section — au premier `st.rerun()`
+    implicite déclenché par n'importe quel widget de ce formulaire (ex.
+    changer une date), cette clé n'existait déjà plus, si bien que
+    ``render()`` (qui lit cette même clé pour décider du mode Nouvelle
+    paie/Corriger) retombait sur le mode « Nouvelle paie » dès la
+    deuxième interaction — d'où la disparition totale du formulaire de
+    correction. La clé persistante ``fp_corriger_ancien_id_actif``
+    (jamais ``pop()``-ée pendant la saisie, seulement retirée après un
+    remplacement réussi, plus bas dans cette même fonction) élimine
+    cette réinitialisation intempestive.
     """
     st.subheader("Corriger une paie émise")
 
-    ancien_id_precharge = st.session_state.pop(
-        "fp_corriger_ancien_id_precharge", ""
-    )
-    ancien_id = st.text_input(
-        "id_paie de la paie EMISE à corriger",
-        value=ancien_id_precharge,
-        key="fp_corriger_ancien_id",
-    )
+    ancien_id = st.session_state.get("fp_corriger_ancien_id_actif")
     if not ancien_id:
+        # Cas défensif — ne devrait jamais survenir : `render()`
+        # n'invoque cette section que lorsque cette même clé est
+        # renseignée (voir docstring de `render`).
         st.info(
-            "Saisissez l'id_paie d'une paie EMISE (voir Historique et "
-            "cumuls annuels)."
+            "Aucune paie ciblée pour correction. Utilisez le bouton "
+            "« Corriger cette paie » du Bulletin_De_Paie."
         )
         return
 
@@ -853,13 +870,6 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         )
         return
 
-    st.write(
-        f"Paie ciblée : employé={ancienne_paie.employe_id} | "
-        f"année fiscale={ancienne_paie.annee_fiscale} | "
-        f"numéro de période={ancienne_paie.pay_period.numero_periode} | "
-        f"version actuelle={ancienne_paie.version}"
-    )
-
     try:
         employe_ciblee = next(
             e for e in employes if e.id == ancienne_paie.employe_id
@@ -871,6 +881,40 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
             "correction."
         )
         return
+
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # affichage simplifié — Prénom/Nom (lus depuis `FicheCoordonnees`,
+    # avec repli sur `nom_affichage` découpé si non renseignés, même
+    # patron que `bulletin_paie.py::_diviser_nom_affichage`), numéro de
+    # période et id_paie — plutôt que la ligne technique précédente
+    # (« Paie ciblée : employé=... | année fiscale=... | ... »). L'id
+    # de la paie reste affiché en texte brut, jamais modifiable (voir
+    # docstring de fonction).
+    resultat_coordonnees_ciblee = executer_avec_capture(
+        lambda: lire_coordonnees(employe_ciblee.id)
+    )
+    fiche_coordonnees_ciblee = (
+        None
+        if isinstance(resultat_coordonnees_ciblee, ErreurDomaineAffichable)
+        else resultat_coordonnees_ciblee
+    )
+    if (
+        fiche_coordonnees_ciblee is not None
+        and fiche_coordonnees_ciblee.prenom
+        and fiche_coordonnees_ciblee.nom
+    ):
+        nom_complet_ciblee = (
+            f"{fiche_coordonnees_ciblee.prenom} {fiche_coordonnees_ciblee.nom}"
+        )
+    else:
+        nom_complet_ciblee = employe_ciblee.nom_affichage
+
+    st.write(f"**Employé** : {nom_complet_ciblee}")
+    st.write(
+        "**Numéro de période** : "
+        f"{ancienne_paie.pay_period.numero_periode}"
+    )
+    st.write(f"**Id de la paie** : {ancien_id}")
 
     if ancienne_paie.annee_fiscale not in annees_disponibles:
         st.error(
@@ -1138,6 +1182,18 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
                     f"{resultat_remplacement.message}"
                 )
             else:
+                # Bug UI signalé après démo — sortie explicite du mode
+                # Corriger une fois le remplacement réussi : la clé
+                # persistante `fp_corriger_ancien_id_actif` (voir
+                # `render()`) et les valeurs transitoires de
+                # réassemblage sont retirées, pour que la page retombe
+                # naturellement en mode « Nouvelle paie » au prochain
+                # rendu plutôt que de rester bloquée sur cette même paie
+                # déjà corrigée.
+                st.session_state.pop("fp_corriger_ancien_id_actif", None)
+                st.session_state.pop("fp_corriger_paie_reassemblee", None)
+                st.session_state.pop("fp_corriger_ancien_id_cible", None)
+                st.session_state.pop("fp_corriger_payroll_input_reassemble", None)
                 # Req 13.4 — confirmation explicite de l'ancien et du
                 # nouvel id_paie.
                 st.success(
@@ -1186,12 +1242,26 @@ def render() -> None:
         )
         return
 
-    # Mode « Corriger » activé uniquement si une intention explicite de
-    # correction a été transmise par la page appelante — jamais par
-    # défaut, jamais via une bascule manuelle (décision explicite).
-    mode_correction = bool(
-        st.session_state.get("fp_corriger_ancien_id_precharge")
+    # Bug UI signalé après démo (root cause du formulaire de correction
+    # entièrement réinitialisé au moindre changement de champ) : la
+    # clé de pré-remplissage à usage unique
+    # (`fp_corriger_ancien_id_precharge`, écrite par `bulletin_paie.py`
+    # avant `st.switch_page`) est transférée UNE SEULE FOIS vers une
+    # clé persistante (`fp_corriger_ancien_id_actif`) — jamais `pop()`-ée
+    # à chaque rerun de `_section_corriger_paie` (c'était le bug :
+    # `pop()` y retirait la clé dès le premier rerun implicite déclenché
+    # par n'importe quel widget du formulaire, ex. changer une date, si
+    # bien que ce `mode_correction` retombait à `False` dès la deuxième
+    # interaction). La clé persistante ne redevient vide qu'à la sortie
+    # explicite du mode Corriger (succès de `remplacer_paie`, voir
+    # `_section_corriger_paie`).
+    ancien_id_precharge = st.session_state.pop(
+        "fp_corriger_ancien_id_precharge", None
     )
+    if ancien_id_precharge:
+        st.session_state["fp_corriger_ancien_id_actif"] = ancien_id_precharge
+
+    mode_correction = bool(st.session_state.get("fp_corriger_ancien_id_actif"))
 
     if mode_correction:
         _section_corriger_paie(employes, annees_disponibles)
