@@ -73,7 +73,9 @@ import streamlit as st
 
 from app.logique_metier.annuaire_employes import lister_employes
 from app.logique_metier.dernieres_paies import (
+    filtrer_par_annee,
     lire_resumes_paies,
+    numeros_periode_disponibles,
     prochaine_version,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
@@ -372,14 +374,37 @@ def _section_nouvelle_paie(
     # ------------------------------------------------------------------
     # Req 7 — période de paie et heures.
     # ------------------------------------------------------------------
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # le numéro de période n'est plus une saisie libre — valeur par
+    # défaut = dernier numéro de période déjà utilisé par cet employé
+    # pour cette année fiscale + 1 (1 si aucune paie existante), champ
+    # non modifiable (`disabled=True`) puisque l'opérateur n'a jamais
+    # besoin de le changer dans le flux normal. Un brouillon pré-rempli
+    # (``valeurs_precharge``) reste prioritaire — poursuite de saisie
+    # d'une paie déjà commencée, son numéro de période d'origine ne doit
+    # jamais être recalculé.
+    if valeurs_precharge:
+        numero_periode_defaut = int(valeurs_precharge["numero_periode"])
+    else:
+        resultat_resumes_pour_periode = executer_avec_capture(
+            lambda: lire_resumes_paies(employe_id, chemin_bd=chemin_bd_production())
+        )
+        resumes_pour_periode = (
+            ()
+            if isinstance(resultat_resumes_pour_periode, ErreurDomaineAffichable)
+            else filtrer_par_annee(resultat_resumes_pour_periode, annee_fiscale)
+        )
+        numeros_deja_utilises = numeros_periode_disponibles(resumes_pour_periode)
+        numero_periode_defaut = (
+            max(numeros_deja_utilises) + 1 if numeros_deja_utilises else 1
+        )
     numero_periode = st.number_input(
         "Numéro de période",
         min_value=1,
         max_value=nb_periodes_annuelles,
         step=1,
-        value=(
-            int(valeurs_precharge["numero_periode"]) if valeurs_precharge else 1
-        ),
+        value=numero_periode_defaut,
+        disabled=True,
         key="fp_nouvelle_numero_periode",
     )
     date_debut = st.date_input(
