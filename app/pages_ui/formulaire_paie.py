@@ -856,11 +856,25 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
             f"{resultat_ancienne_paie.message}"
         )
         return
-    # Le PayrollInput de la paie EMISE ciblée n'est pas utilisé pour
-    # pré-remplir les heures dans ce flux (design §Fix Implementation) —
-    # les heures du formulaire de correction restent à "0.00" par
-    # défaut.
-    ancienne_paie, _ = resultat_ancienne_paie
+    # Bug signalé après démo : les heures normales/supplémentaires de la
+    # paie ciblée n'étaient jamais rapatriées dans le formulaire de
+    # correction (`_` ignorait systématiquement le `PayrollInput`
+    # persisté retourné par `lire_paie`) — l'opérateur ne pouvait donc
+    # jamais modifier une paie sans devoir deviner/ressaisir les heures
+    # d'origine depuis zéro. `valeurs_effectives_depuis_paie` (même
+    # fonction déjà utilisée par `_section_nouvelle_paie` pour le
+    # pré-remplissage depuis un brouillon) reconstruit
+    # `total_heures_normales`/`total_heures_supplementaires` par simple
+    # sommation sur ce `PayrollInput` (Paie_Post_Correction — voir sa
+    # docstring) quand il est disponible ; à `None` uniquement pour les
+    # paies enregistrées avant l'introduction de cette persistance
+    # (Paie_Pre_Correction), cas où ces deux clés restent absentes du
+    # dict retourné et où l'opérateur doit être informé qu'une
+    # ressaisie est nécessaire.
+    ancienne_paie, payroll_input_ancienne_paie = resultat_ancienne_paie
+    valeurs_precharge_correction = valeurs_effectives_depuis_paie(
+        ancienne_paie, payroll_input_ancienne_paie
+    )
 
     if ancienne_paie.statut != StatutDePaie.EMISE:
         st.error(
@@ -962,17 +976,44 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         key="fp_corriger_date_paiement",
     )
 
+    # Bug corrigé — même message de restitution que
+    # `_section_nouvelle_paie` (Paie_Post_Correction si les deux clés
+    # sont présentes, Paie_Pre_Correction sinon).
+    if (
+        "total_heures_normales" in valeurs_precharge_correction
+        and "total_heures_supplementaires" in valeurs_precharge_correction
+    ):
+        st.info(
+            "Heures d'origine restituées depuis la paie ciblée — aucune "
+            "ressaisie nécessaire."
+        )
+    else:
+        st.warning(
+            "Heures par semaine non récupérables depuis la paie ciblée "
+            "(enregistrée avant l'introduction de cette fonctionnalité) "
+            "— veuillez les ressaisir ci-dessous."
+        )
     st.write("Heures — période complète (2 semaines)")
     total_heures_normales = st.text_input(
-        "Total heures normales (période)", value="0.00", key="fp_corriger_total_hn"
+        "Total heures normales (période)",
+        value=str(
+            valeurs_precharge_correction.get("total_heures_normales", "0.00")
+        ),
+        key="fp_corriger_total_hn",
     )
     total_heures_supplementaires = st.text_input(
         "Total heures supplémentaires (période)",
-        value="0.00",
+        value=str(
+            valeurs_precharge_correction.get(
+                "total_heures_supplementaires", "0.00"
+            )
+        ),
         key="fp_corriger_total_hs",
     )
     jours_feries_manuels = st.text_input(
-        "Jours fériés manuels ($)", value="0.00", key="fp_corriger_jours_feries"
+        "Jours fériés manuels ($)",
+        value=str(valeurs_precharge_correction["jours_feries_manuels"]),
+        key="fp_corriger_jours_feries",
     )
 
     taux_horaire_effectif = st.text_input(
