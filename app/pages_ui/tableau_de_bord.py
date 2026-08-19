@@ -38,10 +38,20 @@ Bug UI corrigé après livraison (Req 4.4, Req 4.5, Req 4.6) :
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 import streamlit as st
 
 from app.logique_metier.annuaire_employes import lister_employes
+from app.logique_metier.bilan_fiscal import (
+    TableauBilanFiscal,
+    construire_options_periode,
+    construire_tableau_bilan_fiscal,
+    determiner_periode_par_defaut,
+    filtrer_paies_par_periode,
+    lire_paies_emises,
+    resoudre_periode_a_afficher,
+)
 from app.logique_metier.dernieres_paies import (
     derniere_paie_creee,
     lire_resumes_paies,
@@ -67,6 +77,346 @@ _LIBELLES_STATUT: dict[str, str] = {
     "remplace_par": "Remplacée",
 }
 
+#: Clé de `st.session_state` portant le libellé de la Periode_Fiscale
+#: actuellement affichée/présélectionnée dans le Selecteur_De_Periode du
+#: Bilan_Fiscal — persiste le choix manuel de l'opérateur pour la durée
+#: de la session (Requirement 3.4 ; ``bilan-fiscal-employeur``
+#: design.md §Components §2). Cette clé est aussi le ``key=`` du
+#: `st.selectbox` de :func:`_afficher_bilan_fiscal` — Streamlit lie
+#: alors directement la sélection de l'opérateur à cette entrée de
+#: `st.session_state`, sans qu'aucune écriture manuelle ne survienne
+#: après l'instanciation du widget pour cette même clé (interdit par
+#: Streamlit).
+_CLE_PERIODE_LIBELLE = "bilan_fiscal_periode_libelle"
+
+#: CSS scoped du Bilan_Fiscal — même convention que
+#: `bulletin_paie.py::_CSS_BULLETIN` (classes préfixées, ici
+#: `bilan-fiscal-`, pour ne jamais entrer en collision avec les classes
+#: `bulletin-*`). Fournit : une ligne d'en-tête de colonnes
+#: (`.bilan-fiscal-entete`), un bandeau de section fusionné sur trois
+#: colonnes (`.bilan-fiscal-section-entete` — Requirements 6.1, 8.1),
+#: des lignes de total (`.bilan-fiscal-total`, `.bilan-fiscal-grand-
+#: total`), une ligne à cellule QC/CA fusionnée
+#: (`.bilan-fiscal-combine` — Requirement 9.3), un indicateur textuel
+#: d'indisponibilité (`.bilan-fiscal-indisponible` — Requirement 7.3,
+#: 9.4) et une puce visible de classification CNESST en attente
+#: (`.bilan-fiscal-badge-attente` — Requirement 8.8).
+_CSS_BILAN_FISCAL = """
+<style>
+.bilan-fiscal-conteneur {
+    margin: 8px 0 16px 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+table.bilan-fiscal-tableau {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+table.bilan-fiscal-tableau th,
+table.bilan-fiscal-tableau td {
+    padding: 6px 10px;
+    text-align: left;
+}
+table.bilan-fiscal-tableau th:not(:first-child),
+table.bilan-fiscal-tableau td:not(:first-child) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+tr.bilan-fiscal-entete th {
+    border-bottom: 2px solid #2c5f8a;
+    color: #2c5f8a;
+    font-weight: 700;
+}
+tr.bilan-fiscal-section-entete td {
+    background: #2c5f8a;
+    color: #ffffff;
+    font-weight: 600;
+    text-align: left;
+}
+tr.bilan-fiscal-total td {
+    border-top: 1px solid #999999;
+    font-weight: 700;
+}
+tr.bilan-fiscal-grand-total td {
+    border-top: 2px solid #2c5f8a;
+    font-weight: 700;
+    font-size: 15px;
+    color: #2c5f8a;
+}
+tr.bilan-fiscal-combine td {
+    font-weight: 700;
+    font-size: 15px;
+    background: #eaf3ea;
+    border: 1px solid #a7d0a7;
+}
+tr.bilan-fiscal-combine td.bilan-fiscal-combine-valeur {
+    text-align: right;
+}
+.bilan-fiscal-indisponible {
+    font-style: italic;
+    color: #999999;
+}
+.bilan-fiscal-badge-attente {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #8a5a00;
+    background: #fff3cd;
+    border: 1px solid #d9a300;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+</style>
+"""
+
+
+def _sans_indentation(bloc_html: str) -> str:
+    """Supprime l'indentation de chaque ligne de ``bloc_html`` (bug UI).
+
+    Même patron que `bulletin_paie.py::_retirer_indentation` — le
+    Markdown de Streamlit interprète toute ligne indentée de 4 espaces
+    ou plus comme un bloc de code littéral (règle CommonMark), ce qui
+    empêcherait le rendu HTML même avec `unsafe_allow_html=True`.
+    Purement une transformation de mise en forme du texte.
+    """
+    return "\n".join(ligne.lstrip() for ligne in bloc_html.splitlines())
+
+
+def _montant_bilan(valeur: Decimal) -> str:
+    """Formate un montant `Decimal` toujours calculable (`LigneBilan.qc`/
+    `.ca`) — deux décimales, même convention `f"{montant} $"` que
+    `bulletin_paie.py`. Aucune conversion `float` (règle 01) : ``valeur``
+    reste un `Decimal` jusqu'à cette interpolation finale en chaîne."""
+    return f"{valeur} $"
+
+
+def _montant_bilan_ou_indisponible(valeur: Decimal | None) -> str:
+    """Formate un montant de total potentiellement indisponible
+    (`Decimal | None` — Requirement 7.3, 9.4) : ``None`` devient un
+    indicateur textuel explicite plutôt qu'un montant calculé."""
+    if valeur is None:
+        return '<span class="bilan-fiscal-indisponible">Indisponible</span>'
+    return _montant_bilan(valeur)
+
+
+def _ligne_bilan_html(libelle: str, qc: Decimal, ca: Decimal) -> str:
+    """Génère une ligne ``<tr>`` de détail (RRQ, RQAP, AE, etc.) — les
+    deux colonnes de `LigneBilan` sont toujours calculables (jamais
+    `None`), donc jamais d'indicateur d'indisponibilité sur ces lignes."""
+    return (
+        f"<tr><td>{libelle}</td>"
+        f"<td>{_montant_bilan(qc)}</td>"
+        f"<td>{_montant_bilan(ca)}</td></tr>"
+    )
+
+
+def _ligne_total_html(
+    libelle: str, qc: Decimal | None, ca: Decimal | None, *, css_ligne: str
+) -> str:
+    """Génère une ligne ``<tr>`` de total (« Total des retenues », « Total
+    des cotisations », « Grand total ») — colonnes `Decimal | None`,
+    l'indisponibilité éventuelle de l'une ou l'autre étant affichée
+    indépendamment (Requirement 7.3, 9.4)."""
+    return (
+        f'<tr class="{css_ligne}"><td>{libelle}</td>'
+        f"<td>{_montant_bilan_ou_indisponible(qc)}</td>"
+        f"<td>{_montant_bilan_ou_indisponible(ca)}</td></tr>"
+    )
+
+
+def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
+    """Construit le bloc HTML du Tableau_Bilan_Fiscal (Requirements 5 à
+    9). Aucune donnée interpolée ici n'est une donnée personnelle
+    (uniquement des montants agrégés et des libellés fixes) — aucun
+    `html.escape` n'est nécessaire (design.md §Architecture décision
+    n° 3), à la différence de `bulletin_paie.py`.
+    """
+    lignes_retenues = "".join(
+        [
+            _ligne_bilan_html(
+                tableau.ligne_rrq.libelle, tableau.ligne_rrq.qc, tableau.ligne_rrq.ca
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_rqap.libelle,
+                tableau.ligne_rqap.qc,
+                tableau.ligne_rqap.ca,
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_ae.libelle, tableau.ligne_ae.qc, tableau.ligne_ae.ca
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_impot.libelle,
+                tableau.ligne_impot.qc,
+                tableau.ligne_impot.ca,
+            ),
+            _ligne_total_html(
+                "Total des retenues",
+                tableau.total_retenues_qc,
+                tableau.total_retenues_ca,
+                css_ligne="bilan-fiscal-total",
+            ),
+        ]
+    )
+
+    # Indication visible adjacente à la ligne CNESST si au moins une
+    # Paie_Agregee repose sur une classification en attente (Requirement
+    # 8.8) — jamais de donnée personnelle, uniquement un libellé fixe.
+    libelle_cnesst = tableau.ligne_cnesst.libelle
+    if tableau.cnesst_en_attente_classification:
+        libelle_cnesst += (
+            ' <span class="bilan-fiscal-badge-attente">'
+            "Classification en attente</span>"
+        )
+
+    lignes_cotisations = "".join(
+        [
+            _ligne_bilan_html(
+                tableau.ligne_rrq_employeur.libelle,
+                tableau.ligne_rrq_employeur.qc,
+                tableau.ligne_rrq_employeur.ca,
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_rqap_employeur.libelle,
+                tableau.ligne_rqap_employeur.qc,
+                tableau.ligne_rqap_employeur.ca,
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_ae_employeur.libelle,
+                tableau.ligne_ae_employeur.qc,
+                tableau.ligne_ae_employeur.ca,
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_fss.libelle, tableau.ligne_fss.qc, tableau.ligne_fss.ca
+            ),
+            _ligne_bilan_html(
+                libelle_cnesst, tableau.ligne_cnesst.qc, tableau.ligne_cnesst.ca
+            ),
+            _ligne_bilan_html(
+                tableau.ligne_cnt.libelle, tableau.ligne_cnt.qc, tableau.ligne_cnt.ca
+            ),
+            _ligne_total_html(
+                "Total des cotisations",
+                tableau.total_cotisations_qc,
+                tableau.total_cotisations_ca,
+                css_ligne="bilan-fiscal-total",
+            ),
+        ]
+    )
+
+    ligne_grand_total = _ligne_total_html(
+        "Grand total",
+        tableau.grand_total_qc,
+        tableau.grand_total_ca,
+        css_ligne="bilan-fiscal-grand-total",
+    )
+
+    # Cellule QC/CA fusionnée sur les deux colonnes (Requirement 9.3) —
+    # jamais une colonne supplémentaire du Tableau_Bilan_Fiscal
+    # (Requirement 5.1, inchangé : exactement trois colonnes).
+    ligne_grand_total_combine = (
+        '<tr class="bilan-fiscal-combine"><td>Grand total combiné (QC + CA)</td>'
+        f'<td colspan="2" class="bilan-fiscal-combine-valeur">'
+        f"{_montant_bilan_ou_indisponible(tableau.grand_total_combine)}</td></tr>"
+    )
+
+    return f"""
+    <div class="bilan-fiscal-conteneur">
+        <table class="bilan-fiscal-tableau">
+            <thead>
+                <tr class="bilan-fiscal-entete">
+                    <th>Retenues et cotisations</th><th>QC</th><th>CA</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr class="bilan-fiscal-section-entete">
+                    <td colspan="3">Retenues sur le salaire de l'employé</td>
+                </tr>
+                {lignes_retenues}
+                <tr class="bilan-fiscal-section-entete">
+                    <td colspan="3">Cotisations patronales</td>
+                </tr>
+                {lignes_cotisations}
+                {ligne_grand_total}
+                {ligne_grand_total_combine}
+            </tbody>
+        </table>
+    </div>
+    """
+
+
+def _afficher_bilan_fiscal() -> None:
+    """Section « Bilan fiscal » du Tableau_De_Bord (Requirement 1.1).
+
+    Orchestre `lire_paies_emises` (via `executer_avec_capture`),
+    `construire_options_periode`, `resoudre_periode_a_afficher`/
+    `determiner_periode_par_defaut`, un `st.selectbox` positionné en
+    haut à droite (Requirement 2.1), `filtrer_paies_par_periode`, et
+    `construire_tableau_bilan_fiscal`. Affiche le message d'absence
+    (Requirement 4.1) si `lire_paies_emises` retourne un tuple vide,
+    sans Selecteur_De_Periode ni Tableau_Bilan_Fiscal dans ce cas.
+
+    Seul `lire_paies_emises` est enveloppé par `executer_avec_capture` —
+    `construire_options_periode`, `filtrer_paies_par_periode` et
+    `construire_tableau_bilan_fiscal` sont des fonctions pures totales
+    sur tout tuple d'entrée (design.md §Architecture décision n° 2),
+    elles ne lèvent jamais d'exception.
+    """
+    st.subheader("Bilan fiscal")
+
+    resultat_paies = executer_avec_capture(lire_paies_emises)
+    if isinstance(resultat_paies, ErreurDomaineAffichable):
+        st.error(f"{resultat_paies.type_exception}: {resultat_paies.message}")
+        return
+    paies_emises = resultat_paies
+
+    if not paies_emises:
+        st.info("Aucune paie émise n'a été trouvée.")
+        return
+
+    options = construire_options_periode(paies_emises)
+    periode_par_defaut = determiner_periode_par_defaut(date.today(), options)
+
+    cle_deja_definie = _CLE_PERIODE_LIBELLE in st.session_state
+    valeur_en_session = st.session_state.get(_CLE_PERIODE_LIBELLE)
+    libelle_resolu = resoudre_periode_a_afficher(
+        cle_deja_definie, valeur_en_session, periode_par_defaut, options
+    )
+    if libelle_resolu is None:
+        # Cas dégénéré (design.md §Components §2) — en pratique jamais
+        # atteint tant qu'au moins une paie EMISE existe (`options` non
+        # vide à ce stade), mais couvert défensivement.
+        libelle_resolu = options[0].libelle
+
+    # Initialise/actualise `st.session_state` AVANT l'instanciation du
+    # `st.selectbox` ci-dessous — jamais après (interdit par Streamlit
+    # pour un widget lié par `key=`). Le `st.selectbox` met ensuite
+    # lui-même à jour cette même clé lors d'une sélection manuelle de
+    # l'opérateur, ce qui assure la persistance du choix (Requirement
+    # 3.4) sans écriture manuelle additionnelle après sa création.
+    st.session_state[_CLE_PERIODE_LIBELLE] = libelle_resolu
+
+    _, col_selecteur = st.columns([3, 2])
+    with col_selecteur:
+        libelle_selectionne = st.selectbox(
+            "Période",
+            options=[option.libelle for option in options],
+            key=_CLE_PERIODE_LIBELLE,
+        )
+
+    periode_selectionnee = next(
+        option.periode for option in options if option.libelle == libelle_selectionne
+    )
+    paies_periode = filtrer_paies_par_periode(paies_emises, periode_selectionnee)
+    tableau = construire_tableau_bilan_fiscal(paies_periode)
+
+    st.markdown(
+        _CSS_BILAN_FISCAL + _sans_indentation(_construire_html_bilan_fiscal(tableau)),
+        unsafe_allow_html=True,
+    )
+
 
 def render() -> None:
     """Affiche le Tableau_De_Bord — liste des employés et création (Req 4).
@@ -86,6 +436,9 @@ def render() -> None:
     employes = resultat_employes
 
     _afficher_liste_employes(employes)
+
+    st.divider()
+    _afficher_bilan_fiscal()
 
     st.divider()
     if st.button("Ajouter un nouvel employé", type="primary"):

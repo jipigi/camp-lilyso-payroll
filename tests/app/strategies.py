@@ -59,12 +59,52 @@ fictive ``EMPnnn`` ; tous les téléphones/courriels générés sont
 manifestement fictifs (préfixe ``555-01`` réservé aux exemples fictifs
 nord-américains, domaine ``example.invalid`` réservé par la RFC 2606 aux
 exemples ne devant jamais résoudre).
+
+Stratégies dédiées à la spec ``bilan-fiscal-employeur`` (design.md
+§Testing Strategy « Stratégies Hypothesis nécessaires », tâche 1.1) :
+
+- ``st_payroll_result_arbitraire(*, statut=None, date_paiement=None)`` —
+  variante généralisée de la stratégie privée
+  ``tests/strategies.py::_st_payroll_result_pour_registre``, acceptant
+  un ``statut`` et une ``date_paiement`` arbitraires (fixes ou eux-mêmes
+  des ``SearchStrategy``) au lieu de forcer ``EMISE`` et une période
+  dérivée uniquement de ``annee_fiscale`` — nécessaire pour les
+  Properties 1, 7, 8, 9, 11, 12, 13, 14 de cette spec, qui exigent de
+  faire varier indépendamment le statut et le mois/année de
+  ``pay_period.date_paiement``. **Réutilise directement, sans
+  duplication**, les helpers internes déjà existants de
+  ``tests/strategies.py`` (``_st_montant_registre``,
+  ``_st_decimal_monetaire``, ``_st_employe_id``, ``_st_annee_fiscale``,
+  ``_st_pay_period_deux_semaines``), importés au niveau module
+  (aliasés en ``*_registre`` pour éviter toute collision avec les
+  helpers homonymes déjà déclarés localement dans ce fichier, ex.
+  ``_st_employe_id`` utilisé par ``st_employee_valide``).
+- ``st_periode_fiscale()`` — génère une ``PeriodeFiscale`` arbitraire
+  (``mois=None`` pour une Annee_Complete, ou ``mois`` ∈ ``[1, 12]`` pour
+  un Mois_Fiscal), pour les Properties 4, 11. Import différé (règle 06,
+  TDD) de ``app.logique_metier.bilan_fiscal.PeriodeFiscale`` — ce module
+  n'existe pas encore (tâche 9.1 le crée) ; l'import est effectué **à
+  l'intérieur** du corps de la stratégie pour que l'import de ce fichier
+  de stratégies (et la collecte pytest des tests qui l'utilisent) ne
+  lève pas ``ModuleNotFoundError`` avant que le module cible existe.
+  L'appel effectif de cette stratégie continue de lever
+  ``ModuleNotFoundError`` tant que la tâche 9.1 n'est pas faite —
+  comportement attendu (règle 06).
+- ``st_cellule_montant_ou_indisponible()`` — ``st.one_of(st.none(),
+  _st_decimal_monetaire())`` (helper local de ce module), pour la
+  Property 10 (``calculer_total``), testée en isolation sans passer par
+  le pipeline complet.
+
+Règle 01 (pour ces trois stratégies) : chaque cellule monétaire générée
+reste un ``Decimal`` (jamais un ``float``) ; ``st_periode_fiscale`` ne
+porte aucun champ ``Decimal`` (``PeriodeFiscale`` n'a que des champs
+``int``/``int | None``) — la règle ne s'y applique donc pas.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable
@@ -72,14 +112,31 @@ from typing import Callable
 import pytest
 from hypothesis import strategies as st
 
+from models.cumuls import CumulsYTD
 from models.employee import Employee
-from models.enums import Juridiction
+from models.enums import Juridiction, StatutDePaie
+from models.payroll_result import (
+    CotisationsEmployeur,
+    GainsDecomposes,
+    PayrollResult,
+    RetenuesEmploye,
+)
+from tests.strategies import (
+    _st_annee_fiscale,
+    _st_decimal_monetaire as _st_decimal_monetaire_registre,
+    _st_employe_id as _st_employe_id_registre,
+    _st_montant_registre,
+    _st_pay_period_deux_semaines,
+)
 
 __all__ = [
     "st_employee_valide",
     "st_fiche_coordonnees_valide",
     "st_dates_periode_valide",
     "st_chemin_json_temporaire",
+    "st_payroll_result_arbitraire",
+    "st_periode_fiscale",
+    "st_cellule_montant_ou_indisponible",
 ]
 
 
@@ -298,3 +355,264 @@ def st_chemin_json_temporaire(tmp_path: Path) -> Callable[[str], Path]:
         return tmp_path / f"{prefixe}_{uuid.uuid4().hex}.json"
 
     return _fabrique
+
+
+# ===========================================================================
+# Stratégies dédiées à la spec ``bilan-fiscal-employeur``
+# (design.md §Testing Strategy « Stratégies Hypothesis nécessaires »,
+#  tâche 1.1)
+# ===========================================================================
+
+
+def _tirer_valeur_ou_strategie(
+    draw: st.DrawFn,
+    valeur: object,
+    strategie_defaut: "st.SearchStrategy[object]",
+) -> object:
+    """Résout un paramètre optionnel ``valeur: T | SearchStrategy[T] | None``.
+
+    Helper interne partagé par ``st_payroll_result_arbitraire`` pour les
+    deux paramètres ``statut`` et ``date_paiement`` (design §Testing
+    Strategy « Stratégies Hypothesis nécessaires ») :
+
+    - ``valeur is None`` → tire un exemple depuis ``strategie_defaut``
+      (l'appelant n'a exprimé aucune contrainte, la valeur varie
+      librement) ;
+    - ``valeur`` est déjà une ``SearchStrategy`` → tire un exemple depuis
+      cette stratégie fournie par l'appelant (contrainte partielle,
+      ex. ``st.sampled_from([...])``) ;
+    - sinon (valeur concrète, ex. ``StatutDePaie.EMISE`` ou une
+      ``date`` précise) → retournée telle quelle (contrainte totale,
+      aucun tirage).
+    """
+    if valeur is None:
+        return draw(strategie_defaut)
+    if isinstance(valeur, st.SearchStrategy):
+        return draw(valeur)
+    return valeur
+
+
+@st.composite
+def st_payroll_result_arbitraire(
+    draw: st.DrawFn,
+    *,
+    statut: "StatutDePaie | st.SearchStrategy[StatutDePaie] | None" = None,
+    date_paiement: "date | st.SearchStrategy[date] | None" = None,
+) -> PayrollResult:
+    """``PayrollResult`` arbitraire, statut et ``date_paiement`` libres.
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires ») :
+    variante généralisée de la stratégie privée
+    ``tests/strategies.py::_st_payroll_result_pour_registre`` (spec
+    ``net-cumuls-registre``), qui forçait ``statut=StatutDePaie.EMISE``
+    et laissait ``pay_period.date_paiement`` dériver uniquement du
+    tirage interne de ``_st_pay_period_deux_semaines``. Cette variante
+    accepte en plus :
+
+    - ``statut`` : une valeur fixe :class:`~models.enums.StatutDePaie`,
+      une ``SearchStrategy[StatutDePaie]`` (ex.
+      ``st.sampled_from([StatutDePaie.BROUILLON, StatutDePaie.ANNULEE])``),
+      ou ``None`` pour un tirage libre parmi les quatre statuts
+      (:func:`_tirer_valeur_ou_strategie`) ;
+    - ``date_paiement`` : une ``date`` fixe, une
+      ``SearchStrategy[date]``, ou ``None`` pour un tirage libre — permet
+      de faire varier indépendamment le mois/année de rattachement
+      (décision n° 1 des requirements : dérivé exclusivement de
+      ``PayPeriod.date_paiement``, jamais de ``annee_fiscale``).
+
+    Nécessaire pour les Properties 1, 7, 8, 9, 11, 12, 13, 14 de la spec
+    ``bilan-fiscal-employeur``, qui exigent de faire varier
+    indépendamment le statut d'une paie et le mois/année de
+    ``pay_period.date_paiement``, ce que l'ancienne stratégie ne
+    permettait pas (statut et période toujours fixés à ``EMISE`` /
+    dérivés de ``annee_fiscale``).
+
+    **Réutilisation directe, sans duplication** (design §Testing
+    Strategy) : les montants de ``RetenuesEmploye``/``CotisationsEmployeur``
+    et le drapeau ``cnesst_en_attente_classification`` sont générés en
+    réutilisant **tels quels** les helpers internes déjà existants de
+    ``tests/strategies.py`` — ``_st_montant_registre`` (construit chaque
+    ``MontantAvecTrace``) et ``_st_decimal_monetaire`` (borne chaque
+    montant à deux décimales, règle 01) — importés localement ci-dessous
+    plutôt que réimplémentés. ``_st_employe_id``, ``_st_annee_fiscale``
+    et ``_st_pay_period_deux_semaines`` sont réutilisés de la même
+    façon pour la structure ``PayPeriod`` (le champ ``date_paiement``
+    obtenu est ensuite remplacé via ``model_copy`` par la valeur résolue
+    de ce paramètre — ``PayPeriod`` n'impose aucun invariant croisé sur
+    ``date_paiement``, voir ``models/pay_period.py``).
+
+    La biconditionnelle ``statut`` ⟺ ``remplace_par_id`` ⟺
+    ``date_emission`` (Req 6.3-6.5, 6.7 de ``moteur-paie-contrats``) est
+    satisfaite par construction : ``remplace_par_id`` n'est renseigné
+    que pour ``StatutDePaie.REMPLACE_PAR`` ; ``date_emission`` est
+    toujours renseignée (autorisé pour les quatre statuts, requis pour
+    trois d'entre eux — Req 6.7).
+
+    Règle 01 : chaque montant reste un ``Decimal`` (jamais un ``float``).
+    """
+    employe_id = draw(_st_employe_id_registre())
+    annee_fiscale = draw(_st_annee_fiscale())
+
+    statut_resolu = _tirer_valeur_ou_strategie(
+        draw, statut, st.sampled_from(list(StatutDePaie))
+    )
+    date_paiement_resolue = _tirer_valeur_ou_strategie(
+        draw,
+        date_paiement,
+        st.dates(min_value=_DATE_MIN, max_value=_DATE_MAX),
+    )
+
+    pay_period = draw(_st_pay_period_deux_semaines(annee_fiscale=annee_fiscale))
+    pay_period = pay_period.model_copy(
+        update={"date_paiement": date_paiement_resolue}
+    )
+
+    rrq = draw(_st_decimal_monetaire_registre(max_value=Decimal("500.00")))
+    rqap = draw(_st_decimal_monetaire_registre(max_value=Decimal("100.00")))
+    ae = draw(_st_decimal_monetaire_registre(max_value=Decimal("200.00")))
+    impot_qc_retenu = draw(
+        _st_decimal_monetaire_registre(max_value=Decimal("1000.00"))
+    )
+    impot_federal_retenu = draw(
+        _st_decimal_monetaire_registre(max_value=Decimal("1000.00"))
+    )
+    impot_qc_formule = draw(
+        _st_decimal_monetaire_registre(max_value=Decimal("1000.00"))
+    )
+    impot_federal_formule = draw(
+        _st_decimal_monetaire_registre(max_value=Decimal("1000.00"))
+    )
+    total_retenues = rrq + rqap + ae + impot_qc_retenu + impot_federal_retenu
+
+    retenues_employe = RetenuesEmploye(
+        rrq=_st_montant_registre(rrq),
+        rqap=_st_montant_registre(rqap),
+        ae=_st_montant_registre(ae),
+        impot_qc_formule=_st_montant_registre(impot_qc_formule),
+        impot_qc_retenu=_st_montant_registre(impot_qc_retenu),
+        impot_federal_formule=_st_montant_registre(impot_federal_formule),
+        impot_federal_retenu=_st_montant_registre(impot_federal_retenu),
+        total_retenues_employe=total_retenues,
+    )
+
+    rrq_er = draw(_st_decimal_monetaire_registre(max_value=Decimal("500.00")))
+    rqap_er = draw(_st_decimal_monetaire_registre(max_value=Decimal("100.00")))
+    ae_er = draw(_st_decimal_monetaire_registre(max_value=Decimal("300.00")))
+    fss = draw(_st_decimal_monetaire_registre(max_value=Decimal("200.00")))
+    cnesst = draw(_st_decimal_monetaire_registre(max_value=Decimal("200.00")))
+    cnt = draw(_st_decimal_monetaire_registre(max_value=Decimal("50.00")))
+    total_cotisations = rrq_er + rqap_er + ae_er + fss + cnesst + cnt
+
+    cotisations_employeur = CotisationsEmployeur(
+        rrq_employeur=_st_montant_registre(rrq_er),
+        rqap_employeur=_st_montant_registre(rqap_er),
+        ae_employeur=_st_montant_registre(ae_er),
+        fss=_st_montant_registre(fss),
+        cnesst=_st_montant_registre(cnesst),
+        cnesst_en_attente_classification=draw(st.booleans()),
+        cnt=_st_montant_registre(cnt),
+        total_cotisations_employeur=total_cotisations,
+    )
+
+    # ``brut_total`` doit couvrir les cinq retenues effectivement retenues
+    # (sinon ``net = brut_total - total_retenues < 0``, refusé par
+    # ``ge=0``) — même patron que ``_st_payroll_result_pour_registre``.
+    marge_net = draw(_st_decimal_monetaire_registre(max_value=Decimal("2000.00")))
+    brut_total = total_retenues + marge_net
+    gains = GainsDecomposes(
+        salaire_regulier=brut_total,
+        heures_supplementaires_montant=Decimal("0.00"),
+        vacances=Decimal("0.00"),
+        jours_feries_manuels=Decimal("0.00"),
+        brut_total=brut_total,
+        multiplicateur_heures_supp=Decimal("1.5"),
+        seuil_heures_supp_hebdo=Decimal("40"),
+    )
+
+    net = brut_total - total_retenues
+    cout_employeur = brut_total + total_cotisations
+
+    # Suffixe tiré d'un espace large (``uuid.uuid4().hex``, même convention
+    # que ``st_chemin_json_temporaire`` ci-dessus) plutôt qu'un entier
+    # ``[1, 999]`` : ce dernier collisionnait trop facilement, à la fois
+    # entre éléments d'une même liste générée (plusieurs `PayrollResult`
+    # insérés dans le même registre SQLite append-only) et entre essais
+    # Hypothesis successifs réutilisant le même fichier de base temporaire
+    # (``st_chemin_bd_temporaire``, `HealthCheck.function_scoped_fixture`
+    # explicitement suppressed — voir ``tests/conftest.py``), provoquant un
+    # ``sqlite3.IntegrityError: UNIQUE constraint failed: paies.id_paie``
+    # sans rapport avec la logique testée.
+    id_paie = f"PAIE-{employe_id}-{annee_fiscale}-{uuid.uuid4().hex}"
+
+    # Biconditionnelle statut ⟺ remplace_par_id ⟺ date_emission
+    # (Req 6.3-6.5, 6.7 de ``moteur-paie-contrats``) — satisfaite par
+    # construction, voir docstring ci-dessus.
+    remplace_par_id = (
+        f"{id_paie}-REMPLACANTE"
+        if statut_resolu is StatutDePaie.REMPLACE_PAR
+        else None
+    )
+
+    return PayrollResult(
+        id_paie=id_paie,
+        version=1,
+        employe_id=employe_id,
+        annee_fiscale=annee_fiscale,
+        pay_period=pay_period,
+        gains=gains,
+        retenues_employe=retenues_employe,
+        cotisations_employeur=cotisations_employeur,
+        net=net,
+        cout_employeur=cout_employeur,
+        cumuls_fin=CumulsYTD.zero(employe_id=employe_id, annee_civile=annee_fiscale),
+        statut=statut_resolu,
+        remplace_par_id=remplace_par_id,
+        date_creation=datetime(2026, 6, 19, 12, 0, 0),
+        date_emission=datetime(2026, 6, 20, 12, 0, 0),
+    )
+
+
+@st.composite
+def st_periode_fiscale(draw: st.DrawFn) -> "PeriodeFiscale":  # noqa: F821
+    """``PeriodeFiscale`` arbitraire — Mois_Fiscal ou Annee_Complete.
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires ») :
+    tire une ``annee`` arbitraire puis ``mois`` soit ``None``
+    (Annee_Complete) soit un entier ∈ ``[1, 12]`` (Mois_Fiscal), pour les
+    Properties 4 (présélection par défaut) et 11 (filtrage exact par
+    Periode_Fiscale).
+
+    Import différé de :class:`~app.logique_metier.bilan_fiscal.PeriodeFiscale`
+    (règle 06, TDD) : ce module n'existe pas encore (tâche 9.1 le crée).
+    L'import est effectué **à l'intérieur** du corps de cette stratégie
+    pour que l'import de ``tests.app.strategies`` (et la collecte pytest
+    des tests qui l'utilisent) ne lève pas ``ModuleNotFoundError`` avant
+    que le module cible existe. L'appel effectif de cette stratégie
+    continue de lever ``ModuleNotFoundError`` tant que la tâche 9.1
+    n'est pas faite — comportement attendu et correct au titre de la
+    règle 06.
+    """
+    from app.logique_metier.bilan_fiscal import PeriodeFiscale
+
+    annee = draw(st.integers(min_value=2020, max_value=2035))
+    mois = draw(st.one_of(st.none(), st.integers(min_value=1, max_value=12)))
+    return PeriodeFiscale(annee=annee, mois=mois)
+
+
+def st_cellule_montant_ou_indisponible() -> st.SearchStrategy[Decimal | None]:
+    """``Decimal | None`` — une cellule de total, disponible ou non.
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires ») :
+    ``st.one_of(st.none(), _st_decimal_monetaire())`` (helper local de
+    ce module) pour la Property 10 (``calculer_total``), testée en
+    isolation sans passer par le pipeline complet — ``None`` représente
+    l'indicateur d'indisponibilité (Requirements 7.3, 9.4), une valeur
+    ``Decimal`` représente un montant agrégé disponible. La borne
+    supérieure (``1 000 000.00``) couvre largement l'ordre de grandeur
+    d'un total de Tableau_Bilan_Fiscal (agrégation de plusieurs
+    employés sur une Annee_Complete), sans signification métier propre.
+    """
+    return st.one_of(
+        st.none(),
+        _st_decimal_monetaire(max_value=Decimal("1000000.00")),
+    )
