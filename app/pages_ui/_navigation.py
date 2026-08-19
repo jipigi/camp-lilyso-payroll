@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import streamlit as st
+
 #: Attributs peuplés par :func:`configurer_pages`, appelée une seule
 #: fois par ``app/main.py`` avant ``navigation.run()``. ``None`` tant
 #: que ``app/main.py`` n'a pas encore exécuté cet appel — ne devrait
@@ -67,3 +69,22 @@ def configurer_pages(
     page_formulaire_paie = formulaire_paie
     page_historique = historique
     page_bulletin_paie = bulletin_paie
+
+
+def afficher_lien_retour_tableau_de_bord() -> None:
+    """Lien de retour « ← Tableau de bord », aligné à gauche, au-dessus
+    du titre de chaque page autre que le Tableau_De_Bord lui-même (bug
+    UI signalé après démo, demande explicite de l'utilisateur).
+
+    Centralisé ici plutôt que dupliqué dans chacun des cinq modules de
+    rendu (`nouvel_employe.py`, `fiche_employe_detaillee.py`,
+    `formulaire_paie.py`, `historique_et_cumuls.py`, `bulletin_paie.py`)
+    — un seul appel `st.page_link(page_tableau_de_bord, ...)` par page,
+    juste avant le premier `st.header`/`st.title` de chaque `render()`.
+    `st.page_link` (widget natif, pas un lien HTML brut) gère lui-même
+    la navigation réelle vers le Tableau_De_Bord — jamais de
+    `st.switch_page` manuel nécessaire ici.
+    """
+    st.page_link(
+        page_tableau_de_bord, label="Tableau de bord", icon=":material/arrow_back:"
+    )

@@ -55,6 +55,28 @@ class FicheCoordonnees(BaseModel):
     telephone: str | None = None
 
 
+def formater_nas(valeur: str) -> str:
+    """Formate un NAS saisi selon le gabarit ``999 999 999`` (bug UI
+    signalé après démo — mise en forme visible dans le champ de saisie).
+
+    Retire tout caractère non numérique de ``valeur``, tronque à 9
+    chiffres (longueur d'un NAS canadien), puis regroupe par blocs de 3
+    séparés par une espace — y compris un dernier bloc partiel si moins
+    de 9 chiffres ont été saisis (ex. ``"12345"`` → ``"123 45"``),
+    puisque cette fonction est destinée à être rappelée à chaque
+    caractère saisi (`on_change`), pas seulement sur une valeur complète.
+
+    Fonction pure de formatage d'affichage — ne valide ni la longueur ni
+    la conformité du NAS (aucune règle de validité du NAS, ex. algorithme
+    de Luhn, n'est implémentée par cette spec ni ailleurs dans le
+    projet) ; aucun import ``streamlit`` (règle 04, cohérent avec le
+    reste de ce module).
+    """
+    chiffres = "".join(caractere for caractere in valeur if caractere.isdigit())[:9]
+    blocs = [chiffres[i : i + 3] for i in range(0, len(chiffres), 3)]
+    return " ".join(blocs)
+
+
 def chemin_annuaire_coordonnees_production() -> Path:
     """Chemin de production de l'Annuaire_Coordonnees (Req 20.7, décision n° 2).
 

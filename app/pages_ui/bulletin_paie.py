@@ -116,6 +116,7 @@ import base64
 import html
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -124,6 +125,7 @@ from app.config_employeur import CONFIG_EMPLOYEUR
 from app.logique_metier.annuaire_coordonnees import lire_coordonnees
 from app.logique_metier.annuaire_employes import lire_employe
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
+from app.pages_ui._navigation import afficher_lien_retour_tableau_de_bord
 from models.enums import StatutDePaie
 from models.payroll_result import MontantAvecTrace, PayrollResult
 from payroll_engine.register import chemin_bd_production, lire_paie
@@ -170,7 +172,8 @@ _CSS_BULLETIN = """
     [data-testid="stHeader"], [data-testid="stSidebar"],
     [data-testid="stToolbar"], [data-testid="stDecoration"],
     [data-testid="stButton"], [data-testid="stExpander"],
-    [data-testid="stCaptionContainer"], .bulletin-hors-impression,
+    [data-testid="stCaptionContainer"], [data-testid="stPageLink"],
+    .bulletin-hors-impression,
     .st-key-bulletin_barre_actions {
         display: none !important;
     }
@@ -256,6 +259,19 @@ table.bulletin-lignes td.valeur {
     text-align: right;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+}
+a.bulletin-lien-fiche-employe {
+    color: #2c5f8a;
+    text-decoration: underline;
+}
+@media print {
+    /* Un lien de complétion de donnée n'a aucun sens sur un document
+       imprimé — affiché comme le texte "Non renseigné" brut, sans
+       soulignement ni couleur de lien, à l'impression uniquement. */
+    a.bulletin-lien-fiche-employe {
+        color: inherit;
+        text-decoration: none;
+    }
 }
 table.bulletin-lignes tr.bulletin-total td {
     border-top: 1px solid #999999;
@@ -424,12 +440,43 @@ def _sous_titre(texte: str, *, marge_haut: bool = False) -> str:
     return f'<strong class="{classes}">{texte}</strong>'
 
 
+def _lien_fiche_employe(employe_id: str, texte_affiche: str) -> str:
+    """Lien HTML vers la Fiche_Employe_Detaillee de ``employe_id`` (bug UI
+    signalé après démo) — utilisé sur le libellé « Non renseigné » d'une
+    donnée manquante (ex. NAS), pour permettre à l'opérateur de la
+    compléter sans devoir chercher manuellement l'employé concerné.
+
+    Navigation par URL réelle (``href``), pas `st.switch_page` (réservé
+    aux boutons Streamlit natifs, impossible à déclencher depuis un bloc
+    HTML injecté par `st.markdown` — le Markdown de Streamlit retire
+    `onclick`, mais laisse `href` intact). La page cible
+    (`fiche_employe_detaillee.py`) lit `employe_id` depuis
+    `st.query_params` en repli de `st.session_state` (voir sa docstring
+    de module) pour pré-sélectionner l'employé visé. ``employe_id`` est
+    un identifiant technique interne (`EMPnnn`), jamais une donnée
+    personnelle — encodé via `urllib.parse.quote` par précaution, aucun
+    `html.escape` supplémentaire nécessaire sur ``texte_affiche``
+    (l'appelant fournit toujours le littéral fixe « Non renseigné »,
+    jamais une donnée personnelle saisie librement).
+    """
+    # `target="_self"` — comportement par défaut demandé (jamais un
+    # nouvel onglet, sauf indication explicite) : sans cet attribut,
+    # Streamlit ouvre tout lien HTML injecté par `st.markdown` dans un
+    # nouvel onglet.
+    return (
+        f'<a class="bulletin-lien-fiche-employe" '
+        f'href="/fiche-employe?employe_id={quote(employe_id)}" target="_self">'
+        f"{texte_affiche}</a>"
+    )
+
+
 def _construire_html_bulletin(
     *,
     employe,
     prenom_affiche: str,
     nom_affiche: str,
     nas_affiche: str,
+    nas_manquant: bool,
     paie: PayrollResult,
     heures_normales_totales: Decimal | None,
     heures_supp_totales: Decimal | None,
@@ -441,6 +488,12 @@ def _construire_html_bulletin(
     défense en profondeur contre une saisie contenant des caractères
     HTML spéciaux. Les montants (`Decimal`) et dates ne nécessitent
     aucun échappement (aucun caractère HTML spécial possible).
+
+    ``nas_manquant`` (bug UI signalé après démo) : si vrai, le libellé
+    « Non renseigné » du NAS devient un lien cliquable vers la
+    Fiche_Employe_Detaillee de cet employé (:func:`_lien_fiche_employe`),
+    pour permettre de compléter cette donnée directement depuis le
+    bulletin plutôt que de devoir chercher l'employé manuellement.
     """
     semaines = paie.pay_period.semaines
     gains = paie.gains
@@ -471,11 +524,11 @@ def _construire_html_bulletin(
         )
         lignes_salaire = (
             _ligne("Heures normales", f"{heures_normales_totales} h")
-            + _ligne("Taux horaire", f"x {taux_normal} $/h")
+            + _ligne("Taux horaire", f"{taux_normal} $/h")
             + _ligne(
-                "Heures supplémentaires", f"+ {heures_supp_totales} h"
+                "Heures supplémentaires", f"{heures_supp_totales} h"
             )
-            + _ligne("Taux horaire", f"x {taux_supp} $/h")
+            + _ligne("Taux horaire", f"{taux_supp} $/h")
         )
 
     total_salaire = gains.salaire_regulier + gains.heures_supplementaires_montant
@@ -488,7 +541,7 @@ def _construire_html_bulletin(
         {_sous_titre("Salaire")}
         <table class="bulletin-lignes">
             {lignes_salaire}
-            {_ligne("Total salaire", f"= {total_salaire} $", css_ligne="bulletin-total")}
+            {_ligne("Total salaire", f"{total_salaire} $", css_ligne="bulletin-total")}
         </table>
         {_sous_titre("Indemnités", marge_haut=True)}
         <table class="bulletin-lignes">
@@ -567,7 +620,11 @@ def _construire_html_bulletin(
 
     prenom_html = html.escape(prenom_affiche)
     nom_html = html.escape(nom_affiche)
-    nas_html = html.escape(nas_affiche)
+    nas_html = (
+        _lien_fiche_employe(employe.id, html.escape(nas_affiche))
+        if nas_manquant
+        else html.escape(nas_affiche)
+    )
     titre_emploi_html = html.escape(employe.titre_emploi)
 
     logo_data_uri = _logo_en_data_uri()
@@ -643,7 +700,26 @@ def render() -> None:
     gabarit officiel, suivi d'une section d'audit (traces de calcul)
     masquée à l'impression.
     """
-    id_paie = st.session_state.get(CLE_ID_PAIE_CIBLE)
+    # Bug UI signalé après démo : en plus de `st.session_state` (écrit
+    # par un bouton Streamlit natif avant `st.switch_page`), l'``id_paie``
+    # cible est désormais aussi accepté via `st.query_params["id_paie"]`
+    # — nécessaire pour les liens HTML de la colonne « Actions » des
+    # tableaux Employés/Paies (`tableau_de_bord.py`,
+    # `fiche_employe_detaillee.py`, désormais de vrais éléments `<table>`
+    # sémantiques, Req demande explicite de l'utilisateur), qui ne
+    # peuvent écrire aucun `st.session_state` avant la navigation — même
+    # mécanisme déjà en place pour `employe_id` sur
+    # `fiche_employe_detaillee.py`.
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # lien de retour vers le Tableau_De_Bord au-dessus du titre de page
+    # — masqué à l'impression au même titre que le reste du chrome
+    # Streamlit (voir `_CSS_BULLETIN::@media print`, sélecteur
+    # `[data-testid="stPageLink"]`).
+    afficher_lien_retour_tableau_de_bord()
+
+    id_paie = st.session_state.get(CLE_ID_PAIE_CIBLE) or st.query_params.get(
+        "id_paie"
+    )
     if not id_paie:
         st.header("Bulletin de paie")
         st.info(
@@ -691,6 +767,7 @@ def render() -> None:
         if isinstance(resultat_coordonnees, ErreurDomaineAffichable)
         else resultat_coordonnees
     )
+    nas_manquant = fiche_coordonnees is None or not fiche_coordonnees.nas
     nas_affiche = (
         fiche_coordonnees.nas
         if fiche_coordonnees is not None and fiche_coordonnees.nas
@@ -790,6 +867,7 @@ def render() -> None:
                 prenom_affiche=prenom_affiche,
                 nom_affiche=nom_affiche,
                 nas_affiche=nas_affiche,
+                nas_manquant=nas_manquant,
                 paie=paie,
                 heures_normales_totales=heures_normales_totales,
                 heures_supp_totales=heures_supp_totales,

@@ -33,12 +33,24 @@ Bug UI corrigé après livraison (Req 4.4, Req 4.5, Req 4.6) :
    haut dans le même run de script) et ne correspondait pas au
    Requirement 4 AC4 (écran dédié). Extrait vers
    `app/pages_ui/nouvel_employe.py`, atteint via `st.switch_page`.
+
+Bug UI signalé après démo (demande explicite de l'utilisateur) : le
+tableau des employés (:func:`_afficher_liste_employes`) était un faux
+tableau construit avec `st.columns`/`<div>` — remplacé par un véritable
+élément HTML `<table>` sémantique. Les actions par ligne (« Ajouter une
+paie », « Voir la fiche », lien de la dernière paie), auparavant des
+`st.button` déclenchant `st.switch_page`, sont désormais des liens
+`<a href="...">` naviguant par paramètres d'URL (`st.query_params`) —
+un widget Streamlit natif ne pouvant pas être imbriqué dans un
+`<table>` HTML injecté par `st.markdown`.
 """
 
 from __future__ import annotations
 
-from datetime import date
+import html
+from datetime import date, datetime
 from decimal import Decimal
+from urllib.parse import quote
 
 import streamlit as st
 
@@ -57,14 +69,8 @@ from app.logique_metier.dernieres_paies import (
     lire_resumes_paies,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
-from app.pages_ui import bulletin_paie
 from models.employee import Employee
 from models.enums import StatutDePaie
-
-#: Clés de `st.session_state` transportant la sélection d'employé et
-#: d'année vers les pages voisines (Req 4.5, 4.6).
-_CLE_EMPLOYE_SELECTIONNE = "employe_id_selectionne"
-_CLE_ANNEE_PAIE_DEFAUT = "annee_paie_defaut"
 
 #: Libellés d'affichage des statuts de paie (`StatutDePaie`, valeurs
 #: internes en minuscules) — bug UI corrigé après livraison (Req 4.2) :
@@ -174,21 +180,126 @@ tr.bilan-fiscal-combine td.bilan-fiscal-combine-valeur {
 </style>
 """
 
-#: CSS scoped des en-têtes de colonnes du tableau des employés (bug UI
-#: signalé après démo) — fond bleu foncé, police blanche, même teinte
-#: que `_CSS_BILAN_FISCAL::tr.bilan-fiscal-entete` pour une cohérence
-#: visuelle entre les deux tableaux de cette page.
+#: CSS scoped du tableau HTML sémantique des employés (bug UI signalé
+#: après démo — remplacement d'un faux tableau construit avec des
+#: `<div>`/`st.columns` par un véritable élément `<table>`, structure
+#: sémantique correcte pour une liste de données tabulaires). Bug UI
+#: signalé après démo (2) : reprend désormais exactement le même patron
+#: visuel que le Tableau_Bilan_Fiscal (`_CSS_BILAN_FISCAL`) — même
+#: conteneur (`.employes-conteneur`), même absence de bordure par
+#: cellule (les bordures par cellule du premier essai rendaient un
+#: visuel incorrect), même en-tête bleu foncé/police blanche en gras.
 _CSS_LISTE_EMPLOYES = """
 <style>
-.employes-entete-cellule {
+.employes-conteneur {
+    margin: 8px 0 16px 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+}
+table.employes-tableau {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+table.employes-tableau th,
+table.employes-tableau td {
+    padding: 6px 10px;
+    text-align: left;
+}
+table.employes-tableau thead th {
     background: #2c5f8a;
     color: #ffffff;
+    font-weight: 700;
+}
+a.employes-lien-action {
+    color: #2c5f8a;
+    text-decoration: underline;
     font-weight: 600;
-    padding: 6px 10px;
-    border-radius: 4px;
+}
+a.employes-lien-nom {
+    color: inherit;
+    text-decoration: underline;
+    font-weight: 600;
+}
+/* Bouton secondaire HTML (bug UI signalé après démo, demande explicite
+   de l'utilisateur — colonne Actions du tableau des employés) : un
+   `st.button` natif ne peut pas être imbriqué dans un `<table>` HTML
+   injecté par `st.markdown` (même limitation que les liens d'action
+   ci-dessus) — ce lien réplique donc en CSS inline le visuel
+   **secondaire** du thème centralisé (`.streamlit/config.toml`, Règle
+   UI 07 — cas « hors widgets natifs Streamlit », même précédent que
+   `bulletin_paie.py::_BOUTON_IMPRIMER_HTML`) : fond clair, bordure
+   neutre, aucune couleur primaire (`#1f2c3b`) reproduite ici.
+*/
+a.employes-bouton-secondaire {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border: 1px solid rgba(49, 51, 63, 0.2);
+    border-radius: 0.5rem;
+    background: #ffffff;
+    color: inherit;
+    text-decoration: none;
+    font-weight: 400;
+    white-space: nowrap;
+}
+a.employes-bouton-secondaire:hover {
+    border-color: #2c5f8a;
+    color: #2c5f8a;
+}
+/* Bug UI signalé après démo (2, puis 3) : force le bouton « Ajouter un
+   nouvel employé » (`st.container(key="tdb_conteneur_bouton_ajouter_
+   employe")`) à s'aligner sur le bord droit réel de sa colonne — donc
+   sur le bord droit du tableau des employés ci-dessous, les deux
+   partageant la même largeur de page. `display: flex` + `justify-
+   content: flex-end` sur le conteneur ne suffisaient pas seuls : son
+   enfant direct (`element-container`, injecté par Streamlit) reçoit une
+   largeur à 100 % par défaut, ce qui neutralisait le `flex-end` (rien à
+   décaler, l'enfant occupait déjà toute la largeur) — largeur forcée à
+   `fit-content` sur cet enfant pour que le bouton ne prenne que sa
+   propre largeur, seule condition sous laquelle `flex-end` peut
+   effectivement le repousser à droite. */
+div.st-key-tdb_conteneur_bouton_ajouter_employe {
+    display: flex;
+    justify-content: flex-end;
+}
+div.st-key-tdb_conteneur_bouton_ajouter_employe > div[data-testid="element-container"] {
+    width: fit-content;
 }
 </style>
 """
+
+#: Noms de mois français en minuscules (bug UI signalé après démo —
+#: format court de date sans heure, ex. « 3 juillet 2026 ») — mêmes 12
+#: noms que `bilan_fiscal.py::_NOMS_MOIS`, dupliqués ici en minuscules
+#: (constante privée d'un autre module, orthographe différente requise
+#: par cet affichage).
+_NOMS_MOIS_MINUSCULES: dict[int, str] = {
+    1: "janvier",
+    2: "février",
+    3: "mars",
+    4: "avril",
+    5: "mai",
+    6: "juin",
+    7: "juillet",
+    8: "août",
+    9: "septembre",
+    10: "octobre",
+    11: "novembre",
+    12: "décembre",
+}
+
+
+def _formater_date_courte(valeur_iso: str) -> str:
+    """Formate une date/heure ISO (`date_creation`/`date_emission`,
+    chaînes produites par `datetime.isoformat()`) en date courte
+    française sans heure (bug UI signalé après démo — l'heure est
+    superflue pour ce contexte) : ``"<jour> <mois> <année>"``, ex.
+    ``"3 juillet 2026"`` (jour sans zéro initial, mois en minuscules).
+    """
+    valeur_date = datetime.fromisoformat(valeur_iso).date()
+    return (
+        f"{valeur_date.day} {_NOMS_MOIS_MINUSCULES[valeur_date.month]} "
+        f"{valeur_date.year}"
+    )
 
 
 def _sans_indentation(bloc_html: str) -> str:
@@ -493,7 +604,31 @@ def render() -> None:
     page dédiée de création d'un nouvel employé (Req 4.4).
     """
     st.title("Tableau de bord")
-    st.header("Employés")
+
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # le bouton « Ajouter un nouvel employé » est désormais aligné à
+    # droite du titre de section « Employés », sur la même ligne — même
+    # patron `st.columns` que l'alignement du sélecteur de période du
+    # Bilan_Fiscal (`_afficher_bilan_fiscal`).
+    col_titre_employes, col_bouton_ajouter_employe = st.columns(
+        [3, 2], vertical_alignment="center"
+    )
+    with col_titre_employes:
+        st.header("Employés")
+    with col_bouton_ajouter_employe:
+        # Bug UI signalé après démo (2) : `st.button` occupe par défaut
+        # uniquement la largeur de son texte, aligné à gauche de sa
+        # colonne — insuffisant pour atteindre le bord droit réel de la
+        # page/du tableau ci-dessous. `st.container(key=...)` expose une
+        # classe CSS stable (`.st-key-<key>`, même mécanisme que
+        # `bulletin_paie.py::bulletin_barre_actions`) ciblée par
+        # `_CSS_LISTE_EMPLOYES` pour forcer l'alignement à droite
+        # (`display: flex; justify-content: flex-end`).
+        with st.container(key="tdb_conteneur_bouton_ajouter_employe"):
+            if st.button("Ajouter un nouvel employé", type="primary"):
+                from app.pages_ui._navigation import page_nouvel_employe
+
+                st.switch_page(page_nouvel_employe)
 
     resultat_employes = executer_avec_capture(lister_employes)
     if isinstance(resultat_employes, ErreurDomaineAffichable):
@@ -503,13 +638,32 @@ def render() -> None:
 
     _afficher_liste_employes(employes)
 
-    if st.button("Ajouter un nouvel employé", type="primary"):
-        from app.pages_ui._navigation import page_nouvel_employe
-
-        st.switch_page(page_nouvel_employe)
-
     st.divider()
     _afficher_bilan_fiscal()
+
+
+def _lien_action_employe(*, href: str, texte: str) -> str:
+    """Lien HTML d'action de la colonne Actions du tableau des employés
+    (bug UI signalé après démo — remplacement des `st.button` par des
+    liens `<a>`, nécessaire pour qu'une ligne de tableau reste un `<tr>`
+    sémantique plutôt qu'un `st.columns` — un widget Streamlit natif ne
+    peut pas être imbriqué dans un `<table>` HTML injecté par
+    `st.markdown`).
+
+    Navigation par URL réelle (``href``), même patron que
+    `bulletin_paie.py::_lien_fiche_employe` — jamais `st.switch_page`
+    (réservé aux boutons Streamlit natifs, inatteignable depuis un bloc
+    HTML injecté). Les pages cibles lisent leurs identifiants
+    pré-remplis depuis `st.query_params`.
+    """
+    # `target="_self"` — comportement par défaut demandé (jamais un
+    # nouvel onglet, sauf indication explicite) : sans cet attribut,
+    # Streamlit ouvre tout lien HTML injecté par `st.markdown` dans un
+    # nouvel onglet.
+    return (
+        f'<a class="employes-lien-action" href="{href}" target="_self">'
+        f"{html.escape(texte)}</a>"
+    )
 
 
 def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
@@ -521,41 +675,30 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
     d'émission si Émise/Annulée/Remplacée (`date_emission`), date de
     dernier enregistrement si Brouillon (`date_creation`, seule date
     renseignée dans ce cas).
+
+    Bug UI signalé après démo — remplacement d'un faux tableau construit
+    avec `st.columns`/`<div>` par un véritable élément HTML `<table>`
+    (structure sémantique correcte pour une liste de données), même
+    patron que le Tableau_Bilan_Fiscal (`_construire_html_bilan_fiscal`) :
+    un seul bloc `st.markdown(..., unsafe_allow_html=True)`, en-têtes de
+    colonnes bleu foncé/police blanche conservées via
+    `_CSS_LISTE_EMPLOYES::table.employes-tableau thead th`. Les actions
+    par ligne (auparavant des `st.button`) sont désormais des liens
+    `<a>` naviguant par paramètres d'URL (`st.query_params`), un widget
+    Streamlit natif ne pouvant pas être imbriqué dans un `<table>` HTML
+    injecté. `html.escape` reste appliqué sur chaque cellule textuelle
+    dérivée d'une saisie opérateur (`nom_affichage`), défense en
+    profondeur même si ce champ ne porte aucune donnée personnelle
+    réelle (règle 04 — Prénom/Nom réels vivent exclusivement dans
+    `FicheCoordonnees`).
     """
     if not employes:
         st.info("Aucun employé enregistré dans l'Annuaire_Employes.")
         return
 
-    # En-têtes de colonnes — mêmes proportions que les lignes ci-dessous
-    # (Req 4.2), pour que l'opérateur identifie chaque colonne sans
-    # deviner son contenu. Fond bleu foncé / police blanche (bug UI
-    # signalé après démo) — même teinte que les en-têtes du Tableau_
-    # Bilan_Fiscal (`_CSS_BILAN_FISCAL::tr.bilan-fiscal-entete`).
     st.markdown(_CSS_LISTE_EMPLOYES, unsafe_allow_html=True)
-    col_entete_id, col_entete_nom, col_entete_derniere_paie, col_entete_actions = (
-        st.columns([2, 3, 3, 3])
-    )
-    with col_entete_id:
-        st.markdown(
-            '<div class="employes-entete-cellule">No. d\'employé</div>',
-            unsafe_allow_html=True,
-        )
-    with col_entete_nom:
-        st.markdown(
-            '<div class="employes-entete-cellule">Prénom et nom</div>',
-            unsafe_allow_html=True,
-        )
-    with col_entete_derniere_paie:
-        st.markdown(
-            '<div class="employes-entete-cellule">Dernière paie</div>',
-            unsafe_allow_html=True,
-        )
-    with col_entete_actions:
-        st.markdown(
-            '<div class="employes-entete-cellule">Actions</div>',
-            unsafe_allow_html=True,
-        )
 
+    lignes_html = []
     for employe in employes:
         resultat_resumes = executer_avec_capture(
             lambda employe_id=employe.id: lire_resumes_paies(employe_id)
@@ -567,85 +710,93 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
             derniere_paie = derniere_paie_creee(resultat_resumes)
             erreur_resumes = None
 
-        col_id, col_nom, col_derniere_paie, col_actions = st.columns([2, 3, 3, 3])
-
-        with col_id:
-            st.write(employe.id)
-        with col_nom:
-            st.write(employe.nom_affichage)
-        with col_derniere_paie:
-            if erreur_resumes is not None:
-                st.write(
-                    f"{erreur_resumes.type_exception}: {erreur_resumes.message}"
+        if erreur_resumes is not None:
+            cellule_derniere_paie = html.escape(
+                f"{erreur_resumes.type_exception}: {erreur_resumes.message}"
+            )
+        elif derniere_paie is None:
+            cellule_derniere_paie = "Aucune paie enregistrée"
+        else:
+            libelle_statut = _LIBELLES_STATUT.get(
+                derniere_paie.statut, derniere_paie.statut
+            )
+            date_pertinente = (
+                derniere_paie.date_emission
+                if derniere_paie.date_emission
+                else derniere_paie.date_creation
+            )
+            # Bug UI signalé après démo (demande explicite de
+            # l'utilisateur) : la date de la dernière paie n'affiche
+            # plus l'heure, superflue dans ce contexte — format court
+            # français ``"<jour> <mois> <année>"`` (`_formater_date_courte`).
+            # Bug UI corrigé après livraison (Req demande explicite de
+            # l'utilisateur) : le libellé de la dernière paie est un
+            # lien cliquable — route vers le Formulaire_Paie (mode
+            # correction pré-rempli) si BROUILLON, vers le
+            # Bulletin_De_Paie si EMISE/ANNULEE/REMPLACE_PAR.
+            if derniere_paie.statut == StatutDePaie.BROUILLON.value:
+                href_derniere_paie = (
+                    "/formulaire-paie"
+                    f"?employe_id={quote(employe.id)}"
+                    f"&id_paie={quote(derniere_paie.id_paie)}"
                 )
-            elif derniere_paie is None:
-                st.write("Aucune paie enregistrée")
             else:
-                libelle_statut = _LIBELLES_STATUT.get(
-                    derniere_paie.statut, derniere_paie.statut
+                href_derniere_paie = (
+                    f"/bulletin-paie?id_paie={quote(derniere_paie.id_paie)}"
                 )
-                date_pertinente = (
-                    derniere_paie.date_emission
-                    if derniere_paie.date_emission
-                    else derniere_paie.date_creation
-                )
-                # Bug UI corrigé après livraison (Req demande explicite
-                # de l'utilisateur) : le libellé de la dernière paie est
-                # désormais un lien cliquable — route vers le
-                # Formulaire_Paie (mode correction pré-rempli) si
-                # BROUILLON, vers le Bulletin_De_Paie si EMISE/ANNULEE/
-                # REMPLACE_PAR.
-                if st.button(
-                    f"{libelle_statut} — {date_pertinente}",
-                    key=f"derniere_paie_{employe.id}",
-                ):
-                    if derniere_paie.statut == StatutDePaie.BROUILLON.value:
-                        st.session_state["fp_employe_id_precharge"] = employe.id
-                        st.session_state["fp_nouvelle_id_paie_precharge"] = (
-                            derniere_paie.id_paie
-                        )
-                        from app.pages_ui._navigation import page_formulaire_paie
+            cellule_derniere_paie = _lien_action_employe(
+                href=href_derniere_paie,
+                texte=(
+                    f"{libelle_statut} — "
+                    f"{_formater_date_courte(date_pertinente)}"
+                ),
+            )
 
-                        st.switch_page(page_formulaire_paie)
-                    else:
-                        st.session_state[bulletin_paie.CLE_ID_PAIE_CIBLE] = (
-                            derniere_paie.id_paie
-                        )
-                        from app.pages_ui._navigation import page_bulletin_paie
+        # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+        # « Voir la fiche » est retiré de la colonne Actions — le nom de
+        # l'employé (colonne « Prénom et nom ») porte désormais ce même
+        # lien. Seule l'action « Ajouter une paie » reste dans la
+        # colonne Actions, sous forme de bouton **secondaire** (Règle UI
+        # 07 — action fréquente mais jamais l'action principale
+        # attendue de cet écran, contrairement à un futur bouton
+        # primaire dédié) plutôt que de lien souligné.
+        lien_nom = (
+            f'<a class="employes-lien-nom" '
+            f'href="/fiche-employe?employe_id={quote(employe.id)}" '
+            f'target="_self">'
+            f"{html.escape(employe.nom_affichage)}</a>"
+        )
+        cellule_actions = (
+            f'<a class="employes-bouton-secondaire" '
+            f'href="/formulaire-paie?employe_id={quote(employe.id)}" '
+            f'target="_self">'
+            "Ajouter une paie</a>"
+        )
 
-                        st.switch_page(page_bulletin_paie)
-        with col_actions:
-            if st.button(
-                "Ajouter une paie",
-                key=f"ajouter_paie_{employe.id}",
-                type="primary",
-            ):
-                st.session_state[_CLE_EMPLOYE_SELECTIONNE] = employe.id
-                st.session_state[_CLE_ANNEE_PAIE_DEFAUT] = date.today().year
-                # Bug UI corrigé après livraison : les deux boutons ne
-                # faisaient qu'écrire `st.session_state` sans jamais
-                # déclencher la navigation — `st.switch_page` complète
-                # ce raccourci en routant réellement vers la page
-                # « Nouvelle paie / correction » (Req 4.5). L'objet
-                # `Page` (pas un chemin de fichier) est requis ici car
-                # la page est définie par un callable
-                # (`app/pages_ui/_navigation.py`).
-                #
-                # Bug UI corrigé après livraison (2) : `formulaire_paie.py`
-                # ne lit jamais `_CLE_EMPLOYE_SELECTIONNE` pour
-                # pré-sélectionner l'employé dans la liste déroulante —
-                # il lit exclusivement `fp_employe_id_precharge` (même
-                # clé que le lien « Dernière paie » ci-dessus et que le
-                # bouton « Ajouter une paie » de la Fiche_Employe_
-                # Detaillee). Sans cette clé, la liste déroulante
-                # revenait toujours au premier employé de l'Annuaire.
-                st.session_state["fp_employe_id_precharge"] = employe.id
-                from app.pages_ui._navigation import page_formulaire_paie
+        lignes_html.append(
+            "<tr>"
+            f"<td>{html.escape(employe.id)}</td>"
+            f"<td>{lien_nom}</td>"
+            f"<td>{cellule_derniere_paie}</td>"
+            f"<td>{cellule_actions}</td>"
+            "</tr>"
+        )
 
-                st.switch_page(page_formulaire_paie)
-            if st.button("Voir la fiche", key=f"voir_fiche_{employe.id}"):
-                st.session_state[_CLE_EMPLOYE_SELECTIONNE] = employe.id
-                # Idem (Req 4.6) — route vers la Fiche_Employe_Detaillee.
-                from app.pages_ui._navigation import page_fiche_employe
-
-                st.switch_page(page_fiche_employe)
+    tableau_html = f"""
+    <div class="employes-conteneur">
+        <table class="employes-tableau">
+            <thead>
+                <tr>
+                    <th>No. d'employé</th>
+                    <th>Prénom et nom</th>
+                    <th>Dernière paie</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(lignes_html)}
+            </tbody>
+        </table>
+    </div>
+    """
+    st.markdown(_sans_indentation(tableau_html), unsafe_allow_html=True)

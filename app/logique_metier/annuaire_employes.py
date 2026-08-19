@@ -116,3 +116,37 @@ def lire_employe(
         if employe.id == id_employe:
             return employe
     raise KeyError(f"Aucune Fiche_Employe trouvée pour id={id_employe!r}.")
+
+
+#: Titres d'emploi de base du Camp LilySO (bug UI signalé après démo) —
+#: toujours proposés en premier par :func:`lister_titres_emploi_suggeres`,
+#: indépendamment de leur présence dans l'Annuaire_Employes.
+_TITRES_EMPLOI_BASE: tuple[str, ...] = (
+    "Monitrice en chef",
+    "Moniteur sauveteur",
+    "Monitrice",
+    "Moniteur",
+    "Assistant(e)",
+)
+
+
+def lister_titres_emploi_suggeres(
+    chemin_annuaire: Path = chemin_annuaire_employes_production(),
+) -> tuple[str, ...]:
+    """Titres d'emploi suggérés pour le champ « Titre d'emploi » (bug UI
+    signalé après démo) : les 5 titres de base du Camp LilySO
+    (:data:`_TITRES_EMPLOI_BASE`), toujours en tête et dans cet ordre
+    fixe, suivis de chaque titre déjà saisi dans l'Annuaire_Employes qui
+    n'en fait pas déjà partie — triés par ordre alphabétique, sans
+    doublon (un même titre saisi par plusieurs employés n'apparaît
+    qu'une fois).
+
+    Pure suggestion : le champ appelant reste un texte libre
+    (`st.selectbox(accept_new_options=True)`), cette fonction ne
+    restreint jamais les valeurs admissibles d'`Employee.titre_emploi`.
+    """
+    titres_existants = {
+        employe.titre_emploi for employe in lister_employes(chemin_annuaire)
+    }
+    titres_additionnels = sorted(titres_existants - set(_TITRES_EMPLOI_BASE))
+    return _TITRES_EMPLOI_BASE + tuple(titres_additionnels)

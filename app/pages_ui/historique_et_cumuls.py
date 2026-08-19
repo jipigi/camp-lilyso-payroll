@@ -52,6 +52,7 @@ from app.logique_metier.dernieres_paies import (
     numeros_periode_disponibles,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
+from app.pages_ui._navigation import afficher_lien_retour_tableau_de_bord
 from models.cumuls import CumulsYTD
 from payroll_engine.register import chemin_bd_production, lire_cumuls_ytd, lire_historique_paie
 
@@ -81,6 +82,7 @@ def render() -> None:
     `executer_avec_capture` — une erreur dans une section n'empêche pas
     l'affichage de l'autre.
     """
+    afficher_lien_retour_tableau_de_bord()
     st.header("Historique des paies et cumuls annuels")
 
     resultat_employes = executer_avec_capture(lambda: lister_employes())

@@ -88,6 +88,7 @@ from app.logique_metier.parametres_fiscaux import (
     charger_parametres_fusionnes,
     lister_annees_disponibles,
 )
+from app.pages_ui._navigation import afficher_lien_retour_tableau_de_bord
 from models.enums import StatutDePaie
 from models.payroll_input import PayrollInput
 from models.payroll_result import PayrollResult
@@ -255,32 +256,26 @@ def _section_nouvelle_paie(
     `app/logique_metier/formulaire_paie.py::valeurs_effectives_depuis_paie`,
     décision explicite : l'opérateur doit les ressaisir).
     """
-    st.subheader("Nouvelle paie")
-
-    options_employes = [e.id for e in employes]
-    employe_id_precharge = st.session_state.get("fp_employe_id_precharge")
-    index_employe_precharge = (
-        options_employes.index(employe_id_precharge)
-        if employe_id_precharge in options_employes
-        else 0
-    )
-    employe_id = st.selectbox(
-        "Employé",
-        options_employes,
-        index=index_employe_precharge,
-        key="fp_nouvelle_employe_id",
-    )
-    employe = next(e for e in employes if e.id == employe_id)
-
     # ------------------------------------------------------------------
     # Pré-remplissage depuis un brouillon existant, une seule fois par
     # navigation contextuelle (consommé puis retiré de session_state
-    # pour ne pas re-déclencher à chaque rerun de widget).
+    # pour ne pas re-déclencher à chaque rerun de widget). Calculé ici,
+    # avant le sous-titre « Nouvelle paie », car
+    # `annee_precharge`/`index_annee_precharge` (ci-dessous) en
+    # dépendent.
     # ------------------------------------------------------------------
     valeurs_precharge: dict[str, object] | None = None
+    # Bug UI signalé après démo : en plus de `st.session_state` (écrit
+    # par un bouton Streamlit natif avant `st.switch_page`), l'``id_paie``
+    # du brouillon ciblé est désormais aussi accepté via
+    # `st.query_params["id_paie"]` — nécessaire pour le lien HTML
+    # « Modifier » de la colonne Actions du tableau des Paies (désormais
+    # un vrai `<table>` sémantique, Req demande explicite de
+    # l'utilisateur), qui ne peut écrire aucun `st.session_state` avant
+    # la navigation.
     id_paie_brouillon_precharge = st.session_state.pop(
         "fp_nouvelle_id_paie_precharge", None
-    )
+    ) or st.query_params.get("id_paie")
     if id_paie_brouillon_precharge:
         resultat_brouillon = executer_avec_capture(
             lambda: lire_paie(
@@ -307,10 +302,23 @@ def _section_nouvelle_paie(
             )
 
     # ------------------------------------------------------------------
-    # Req 6 — sélection de l'année des paramètres fiscaux.
+    # Req 6 — sélection de l'année des paramètres fiscaux. Bug UI
+    # signalé après démo : positionné entre le titre « Formulaire de
+    # paie » (render()) et le sous-titre « Nouvelle paie » ci-dessous,
+    # plutôt qu'après la sélection de l'employé.
     # ------------------------------------------------------------------
+    # Bug UI signalé après démo : en plus du pré-remplissage depuis un
+    # brouillon existant, l'année fiscale est désormais aussi acceptée
+    # via `st.query_params["annee_fiscale"]` — écrite par le bouton
+    # « Ajouter une paie » de la section Paies de la Fiche_Employe_
+    # Detaillee (lien HTML, ne peut écrire aucun `st.session_state`
+    # avant la navigation), qui transmet ainsi l'année fiscale
+    # actuellement sélectionnée dans son propre filtre d'affichage.
+    annee_precharge_url = st.query_params.get("annee_fiscale")
     annee_precharge = (
-        valeurs_precharge["annee_fiscale"] if valeurs_precharge else None
+        valeurs_precharge["annee_fiscale"]
+        if valeurs_precharge
+        else (int(annee_precharge_url) if annee_precharge_url else None)
     )
     index_annee_precharge = (
         list(annees_disponibles).index(annee_precharge)
@@ -318,7 +326,8 @@ def _section_nouvelle_paie(
         else 0
     )
     annee_fiscale = st.selectbox(
-        "Année des paramètres fiscaux",
+        "Année des paramètres fiscaux pour déterminer les montants "
+        "personnels de base",
         annees_disponibles,
         index=index_annee_precharge,
         key="fp_nouvelle_annee",
@@ -337,6 +346,28 @@ def _section_nouvelle_paie(
         if parametres_annee.frequence_paie is not None
         else 27
     )
+
+    st.subheader("Nouvelle paie")
+
+    options_employes = [e.id for e in employes]
+    # Idem ci-dessus — repli sur `st.query_params["employe_id"]` pour les
+    # liens HTML « Modifier »/« Ajouter une paie » des tableaux
+    # sémantiques.
+    employe_id_precharge = st.session_state.get(
+        "fp_employe_id_precharge"
+    ) or st.query_params.get("employe_id")
+    index_employe_precharge = (
+        options_employes.index(employe_id_precharge)
+        if employe_id_precharge in options_employes
+        else 0
+    )
+    employe_id = st.selectbox(
+        "Employé",
+        options_employes,
+        index=index_employe_precharge,
+        key="fp_nouvelle_employe_id",
+    )
+    employe = next(e for e in employes if e.id == employe_id)
 
     # ------------------------------------------------------------------
     # Req 7 — période de paie et heures.
@@ -447,7 +478,7 @@ def _section_nouvelle_paie(
         key="fp_nouvelle_taux_vacances",
     )
     montant_tp1015_3 = st.text_input(
-        "Montant total TP-1015.3 effectif",
+        f"Montant personnel de base {annee_fiscale} au Québec",
         value=str(
             valeurs_precharge["montant_total_TP1015_3_effectif"]
             if valeurs_precharge
@@ -474,7 +505,7 @@ def _section_nouvelle_paie(
         key="fp_nouvelle_retenue_qc",
     )
     montant_td1 = st.text_input(
-        "Montant total TD1 effectif",
+        f"Montant personnel de base {annee_fiscale} au Canada",
         value=str(
             valeurs_precharge["montant_total_TD1_effectif"]
             if valeurs_precharge
@@ -891,7 +922,7 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         key="fp_corriger_taux_vacances",
     )
     montant_tp1015_3 = st.text_input(
-        "Montant total TP-1015.3 effectif",
+        f"Montant personnel de base {ancienne_paie.annee_fiscale} au Québec",
         value=str(employe_ciblee.montant_total_TP1015_3),
         key="fp_corriger_montant_tp",
     )
@@ -906,7 +937,7 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         key="fp_corriger_retenue_qc",
     )
     montant_td1 = st.text_input(
-        "Montant total TD1 effectif",
+        f"Montant personnel de base {ancienne_paie.annee_fiscale} au Canada",
         value=str(employe_ciblee.montant_total_TD1),
         key="fp_corriger_montant_td1",
     )
@@ -1109,6 +1140,7 @@ def render() -> None:
     ``ErreurDomaineAffichable`` ne réinitialise aucune valeur de
     ``st.session_state`` (Req 16.4).
     """
+    afficher_lien_retour_tableau_de_bord()
     st.header("Formulaire de paie")
 
     resultat_employes = executer_avec_capture(lambda: lister_employes())
