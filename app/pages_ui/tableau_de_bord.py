@@ -476,6 +476,12 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
         ]
     )
 
+    # Bug UI signalé après démo (4) — la ligne « Grand total » (colonnes
+    # QC/CA séparées) avait été retirée à tort (demande précédente de
+    # l'utilisateur, ensuite corrigée) : réintégrée, sous « Total des
+    # cotisations » — montants à verser à chaque palier de gouvernement
+    # (somme du Total des retenues et du Total des cotisations, par
+    # juridiction).
     ligne_grand_total = _ligne_total_html(
         "Grand total",
         tableau.grand_total_qc,
@@ -485,11 +491,30 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
 
     # Cellule QC/CA fusionnée sur les deux colonnes (Requirement 9.3) —
     # jamais une colonne supplémentaire du Tableau_Bilan_Fiscal
-    # (Requirement 5.1, inchangé : exactement trois colonnes).
+    # (Requirement 5.1, inchangé : exactement trois colonnes). Renommée
+    # « Grand total combiné des charges (QC + CA) » (précision : ce
+    # total ne porte que les retenues/cotisations, pas les salaires
+    # nets, désormais distingués par les deux lignes suivantes).
     ligne_grand_total_combine = (
-        '<tr class="bilan-fiscal-combine"><td>Grand total combiné (QC + CA)</td>'
+        '<tr class="bilan-fiscal-combine">'
+        "<td>Grand total combiné des charges (QC + CA)</td>"
         f'<td colspan="2" class="bilan-fiscal-combine-valeur">'
         f"{_montant_bilan_ou_indisponible(tableau.grand_total_combine)}</td></tr>"
+    )
+
+    # Bug UI signalé après démo (2) — « Total salaires nets » et « Masse
+    # salariale totale », toutes deux en cellule fusionnée QC+CA (même
+    # raison que ci-dessus), à la suite du Grand total combiné des
+    # charges.
+    ligne_total_salaires_nets = (
+        '<tr class="bilan-fiscal-combine"><td>Total salaires nets</td>'
+        f'<td colspan="2" class="bilan-fiscal-combine-valeur">'
+        f"{_montant_bilan_ou_indisponible(tableau.total_salaires_nets)}</td></tr>"
+    )
+    ligne_masse_salariale_totale = (
+        '<tr class="bilan-fiscal-combine"><td>Masse salariale totale</td>'
+        f'<td colspan="2" class="bilan-fiscal-combine-valeur">'
+        f"{_montant_bilan_ou_indisponible(tableau.masse_salariale_totale)}</td></tr>"
     )
 
     return f"""
@@ -511,6 +536,8 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
                 {lignes_cotisations}
                 {ligne_grand_total}
                 {ligne_grand_total_combine}
+                {ligne_total_salaires_nets}
+                {ligne_masse_salariale_totale}
             </tbody>
         </table>
     </div>

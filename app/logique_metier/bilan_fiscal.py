@@ -365,6 +365,18 @@ class TableauBilanFiscal:
     grand_total_ca: Decimal | None
     grand_total_combine: Decimal | None  # cellule fusionnée QC+CA, Requirement 9.3
 
+    total_salaires_nets: Decimal | None
+    """Bug UI signalé après démo (2) — somme des salaires nets
+    (`PayrollResult.net`) de la Periode_Fiscale sélectionnée, cellule
+    fusionnée QC+CA (un salaire net n'est jamais spécifique à une
+    juridiction)."""
+
+    masse_salariale_totale: Decimal | None
+    """Bug UI signalé après démo (2) — `grand_total_combine` +
+    `total_salaires_nets` : montant total requis pour couvrir à la fois
+    les retenues/cotisations remises aux autorités et les salaires nets
+    versés aux employés pour la période sélectionnée."""
+
 
 def construire_tableau_bilan_fiscal(
     paies_periode: tuple[PayrollResult, ...]
@@ -499,6 +511,14 @@ def construire_tableau_bilan_fiscal(
     grand_total_ca = calculer_total(total_retenues_ca, total_cotisations_ca)
     grand_total_combine = calculer_total(grand_total_qc, grand_total_ca)
 
+    # Bug UI signalé après démo (2) — « Total salaires nets » et « Masse
+    # salariale totale » (salaires nets + grand total combiné des
+    # charges).
+    total_salaires_nets = _arrondir_montant(
+        sum((p.net for p in paies_periode), Decimal("0"))
+    )
+    masse_salariale_totale = calculer_total(grand_total_combine, total_salaires_nets)
+
     return TableauBilanFiscal(
         ligne_rrq=ligne_rrq,
         ligne_rqap=ligne_rqap,
@@ -518,6 +538,8 @@ def construire_tableau_bilan_fiscal(
         grand_total_qc=grand_total_qc,
         grand_total_ca=grand_total_ca,
         grand_total_combine=grand_total_combine,
+        total_salaires_nets=total_salaires_nets,
+        masse_salariale_totale=masse_salariale_totale,
     )
 
 
