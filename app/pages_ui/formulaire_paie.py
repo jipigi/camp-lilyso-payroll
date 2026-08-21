@@ -786,9 +786,25 @@ def _section_enregistrement(
         if isinstance(resultat_insertion, ErreurDomaineAffichable):
             # Req 12.5 — ValueError affichée sans masquer l'état de saisie
             # (aucune clé de session_state n'est réinitialisée ici).
-            st.error(
-                f"{resultat_insertion.type_exception}: {resultat_insertion.message}"
-            )
+            # Bug corrigé après livraison (demande explicite de
+            # l'utilisateur) : défense en profondeur côté interface, en
+            # complément du garde-fou posé dans
+            # `payroll_engine.register.inserer_paie` — message explicite
+            # et actionnable si l'opérateur tente d'émettre une seconde
+            # fois une période déjà émise depuis ce flux « Nouvelle
+            # paie » (plutôt que via « Corriger cette paie », seul flux
+            # qui invalide correctement l'ancienne ligne EMISE).
+            if "Une paie EMISE" in resultat_insertion.message:
+                st.error(
+                    f"{resultat_insertion.message} Rendez-vous sur le "
+                    "Bulletin de paie de la période concernée et utilisez "
+                    "le bouton « Corriger cette paie »."
+                )
+            else:
+                st.error(
+                    f"{resultat_insertion.type_exception}: "
+                    f"{resultat_insertion.message}"
+                )
         else:
             # Req 12.4 — confirmation explicite de l'id_paie inséré.
             st.success(

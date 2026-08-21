@@ -27,7 +27,14 @@ La tâche 8.2 ajoute :
 
 - :func:`inserer_paie` — insertion append-only, quel que soit le
   statut, avec contrôle explicite d'unicité de `id_paie` et mise à
-  jour conditionnelle de `cumuls_ytd` (Req 11) ;
+  jour conditionnelle de `cumuls_ytd` (Req 11). Bug corrigé après
+  livraison (demande explicite de l'utilisateur) : refuse en outre
+  toute insertion `EMISE` si une AUTRE ligne `EMISE` existe déjà pour
+  la même Paie_Logique `(employe_id, annee_fiscale, numero_periode)` —
+  empêche deux paies `EMISE` actives simultanément pour la même
+  période (root cause : le flux « Nouvelle paie » de l'interface
+  pouvait ré-émettre une période déjà émise sans jamais passer par
+  `remplacer_paie`, qui seul invalide correctement l'ancienne ligne) ;
 - :func:`lire_cumuls_ytd` (et son helper interne
   :func:`_lire_cumuls_ytd_tx`) — lecture du cumul YTD courant, retourne
   `CumulsYTD.zero(...)` si absent (Req 10.4, 12.4) ;
@@ -696,6 +703,44 @@ def inserer_paie(
                 f"id_paie '{resultat.id_paie}' déjà présent — append-only, "
                 "aucune ré-insertion (Req 11.6)."
             )
+
+        # 1bis. Bug corrigé (demande explicite de l'utilisateur) — refus
+        #       si une AUTRE ligne EMISE existe déjà pour la même
+        #       Paie_Logique `(employe_id, annee_fiscale, numero_periode)`
+        #       et que `resultat` est lui-même EMISE. Root cause du bug :
+        #       `inserer_paie` ne contrôlait auparavant que l'unicité de
+        #       `id_paie` (toujours neuf via `prochaine_version`), jamais
+        #       l'unicité de la paie EMISE par période — le flux
+        #       « Nouvelle paie » (par opposition à « Corriger cette
+        #       paie », qui passe par `remplacer_paie` et marque bien
+        #       l'ancienne ligne `REMPLACE_PAR`) pouvait ainsi émettre une
+        #       seconde fois la même période sans jamais invalider la
+        #       première — deux lignes `EMISE` actives simultanément pour
+        #       la même Paie_Logique, faussant `lire_paies_emises`/le
+        #       Bilan_Fiscal (double comptage). Garde-fou posé ici,
+        #       au niveau le plus bas du registre — protège tout
+        #       appelant présent ou futur, pas seulement l'interface
+        #       Streamlit (défense en profondeur).
+        if resultat.statut == StatutDePaie.EMISE:
+            autre_emise = connexion.execute(
+                "SELECT id_paie FROM paies WHERE employe_id = ? AND "
+                "annee_fiscale = ? AND numero_periode = ? AND statut = ?",
+                (
+                    resultat.employe_id,
+                    resultat.annee_fiscale,
+                    resultat.pay_period.numero_periode,
+                    StatutDePaie.EMISE.value,
+                ),
+            ).fetchone()
+            if autre_emise is not None:
+                raise ValueError(
+                    f"Une paie EMISE ('{autre_emise[0]}') existe déjà pour "
+                    f"employe_id={resultat.employe_id!r}, "
+                    f"annee_fiscale={resultat.annee_fiscale}, "
+                    f"numero_periode={resultat.pay_period.numero_periode} — "
+                    "utilisez remplacer_paie(...) pour corriger une paie "
+                    "déjà émise plutôt que d'en insérer une nouvelle."
+                )
 
         # 2. Insertion append-only (Req 11.2) — quel que soit le statut.
         payload_input_json = (

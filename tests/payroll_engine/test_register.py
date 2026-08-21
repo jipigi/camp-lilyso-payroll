@@ -73,11 +73,20 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
+from datetime import date, datetime, timedelta
+
 from models._validators import _parse_json_reject_floats
 from models.cumuls import CumulsYTD
-from models.enums import StatutDePaie
-from models.payroll_result import PayrollResult
+from models.enums import FrequencePaie, StatutDePaie
+from models.pay_period import PayPeriod, WeekSegment
+from models.payroll_result import (
+    CotisationsEmployeur,
+    GainsDecomposes,
+    PayrollResult,
+    RetenuesEmploye,
+)
 from tests.strategies import (
+    _st_montant_registre,
     st_chemin_bd_temporaire,  # noqa: F401  (fixture pytest, résolue par nom de paramètre)
     st_saison,
     st_sequence_payroll_results_meme_employe_annee,
@@ -1490,6 +1499,210 @@ class TestRefusInsertionDupliquee:
 
 
 # ---------------------------------------------------------------------------
+# Bug corrigé après livraison — refus de deux paies EMISE simultanées pour
+# la même Paie_Logique (demande explicite de l'utilisateur).
+# ---------------------------------------------------------------------------
+
+
+def _payroll_result_valide(
+    *,
+    id_paie: str,
+    employe_id: str,
+    annee_fiscale: int,
+    numero_periode: int,
+    statut: StatutDePaie,
+) -> PayrollResult:
+    """``PayrollResult`` déterministe et valide, pour les tests d'exemple
+    du bug de double émission (pas de dépendance à Hypothesis — mêmes
+    valeurs fixes à chaque appel, seuls ``id_paie``/``numero_periode``/
+    ``statut`` varient selon les besoins du test). Même patron de
+    construction directe que ``_st_payroll_result_pour_registre``
+    (composition de sous-modèles, sans passer par le pipeline
+    ``net_pay.py``) — identités comptables satisfaites par construction.
+    """
+    montant_zero = Decimal("0.00")
+    retenues_employe = RetenuesEmploye(
+        rrq=_st_montant_registre(montant_zero),
+        rqap=_st_montant_registre(montant_zero),
+        ae=_st_montant_registre(montant_zero),
+        impot_qc_formule=_st_montant_registre(montant_zero),
+        impot_qc_retenu=_st_montant_registre(montant_zero),
+        impot_federal_formule=_st_montant_registre(montant_zero),
+        impot_federal_retenu=_st_montant_registre(montant_zero),
+        total_retenues_employe=montant_zero,
+    )
+    cotisations_employeur = CotisationsEmployeur(
+        rrq_employeur=_st_montant_registre(montant_zero),
+        rqap_employeur=_st_montant_registre(montant_zero),
+        ae_employeur=_st_montant_registre(montant_zero),
+        fss=_st_montant_registre(montant_zero),
+        cnesst=_st_montant_registre(montant_zero),
+        cnesst_en_attente_classification=False,
+        cnt=_st_montant_registre(montant_zero),
+        total_cotisations_employeur=montant_zero,
+    )
+    brut_total = Decimal("1000.00")
+    gains = GainsDecomposes(
+        salaire_regulier=brut_total,
+        heures_supplementaires_montant=montant_zero,
+        vacances=montant_zero,
+        jours_feries_manuels=montant_zero,
+        brut_total=brut_total,
+        multiplicateur_heures_supp=Decimal("1.5"),
+        seuil_heures_supp_hebdo=Decimal("40"),
+    )
+    date_debut = date(annee_fiscale, 7, 6)
+    date_fin = date_debut + timedelta(days=13)
+    pay_period = PayPeriod(
+        numero_periode=numero_periode,
+        date_debut=date_debut,
+        date_fin=date_fin,
+        date_paiement=date_fin + timedelta(days=5),
+        frequence=FrequencePaie.AUX_DEUX_SEMAINES,
+        nb_periodes_annuelles=27,
+        annee_fiscale=annee_fiscale,
+        semaines=(
+            WeekSegment(
+                date_debut=date_debut,
+                date_fin=date_debut + timedelta(days=6),
+                heures_normales=Decimal("80"),
+                heures_supplementaires=Decimal("0"),
+            ),
+            WeekSegment(
+                date_debut=date_debut + timedelta(days=7),
+                date_fin=date_fin,
+                heures_normales=Decimal("80"),
+                heures_supplementaires=Decimal("0"),
+            ),
+        ),
+    )
+    return PayrollResult(
+        id_paie=id_paie,
+        version=1,
+        employe_id=employe_id,
+        annee_fiscale=annee_fiscale,
+        pay_period=pay_period,
+        gains=gains,
+        retenues_employe=retenues_employe,
+        cotisations_employeur=cotisations_employeur,
+        net=brut_total,
+        cout_employeur=brut_total,
+        cumuls_fin=CumulsYTD.zero(employe_id=employe_id, annee_civile=annee_fiscale),
+        statut=statut,
+        remplace_par_id=None,
+        date_creation=datetime(annee_fiscale, 7, 6, 12, 0, 0),
+        date_emission=(
+            datetime(annee_fiscale, 7, 6, 12, 0, 0)
+            if statut == StatutDePaie.EMISE
+            else None
+        ),
+    )
+
+
+class TestRefusDoubleEmisePourMemePeriode:
+    """Bug UI signalé après démo (Bilan_Fiscal affichant des totaux
+    doublés) — root cause : `inserer_paie` ne contrôlait que l'unicité de
+    `id_paie` (toujours neuf), jamais l'unicité de la paie EMISE par
+    Paie_Logique `(employe_id, annee_fiscale, numero_periode)`. Le flux
+    « Nouvelle paie » de l'interface (par opposition à « Corriger cette
+    paie », qui passe par `remplacer_paie`) pouvait ainsi émettre une
+    seconde fois la même période sans jamais invalider la première.
+
+    Ces deux tests d'exemple couvrent directement la condition de bug au
+    niveau du registre (`inserer_paie`), indépendamment de l'interface
+    Streamlit qui l'invoque.
+    """
+
+    def test_exemple_seconde_insertion_emise_meme_periode_leve_value_error(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Une seconde `inserer_paie(..., statut=EMISE)` pour la même
+        Paie_Logique `(employe_id, annee_fiscale, numero_periode)` qu'une
+        ligne déjà EMISE doit lever `ValueError` — jamais une seconde
+        ligne EMISE active. `id_paie` distincts (append-only, `version`
+        différente) pour ne pas déclencher le refus Property 14
+        (`id_paie` déjà présent), qui couvre un cas différent.
+        """
+        module = _importer_module_register()
+
+        premiere = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        seconde = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+
+        module.inserer_paie(premiere, "Saison A", chemin_bd=st_chemin_bd_temporaire)
+
+        with pytest.raises(ValueError) as excinfo:
+            module.inserer_paie(
+                seconde, "Saison A", chemin_bd=st_chemin_bd_temporaire
+            )
+
+        assert "EMISE" in str(excinfo.value), (
+            "Le message de refus d'une seconde paie EMISE pour la même "
+            f"période doit mentionner EMISE, obtenu {excinfo.value!r}."
+        )
+
+        # Aucune mutation : seule `premiere` doit être présente et EMISE.
+        relue, _ = module.lire_paie(
+            premiere.id_paie, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert relue.statut == StatutDePaie.EMISE, (
+            "La tentative refusée ne doit pas altérer le statut de la "
+            f"paie déjà EMISE, obtenu {relue.statut!r}."
+        )
+        with pytest.raises(KeyError):
+            module.lire_paie(seconde.id_paie, chemin_bd=st_chemin_bd_temporaire)
+
+    def test_exemple_insertion_brouillon_meme_periode_apres_emise_reste_autorisee(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Le garde-fou ne cible QUE le statut EMISE — insérer un
+        BROUILLON pour une période déjà EMISE reste autorisé (ex. saisie
+        exploratoire d'une correction avant de passer par `remplacer_
+        paie`, ou poursuite normale d'un flux « Nouvelle paie » qui
+        n'émettrait pas immédiatement)."""
+        module = _importer_module_register()
+
+        premiere = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+
+        module.inserer_paie(premiere, "Saison A", chemin_bd=st_chemin_bd_temporaire)
+        # Ne doit lever aucune exception.
+        module.inserer_paie(
+            brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        relu, _ = module.lire_paie(
+            brouillon.id_paie, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert relu.statut == StatutDePaie.BROUILLON
+
+
+# ---------------------------------------------------------------------------
 # Property 2 (Bug Condition) — Bug 2 : absence de persistance du
 # `PayrollInput` (exploration)
 # ---------------------------------------------------------------------------
@@ -1731,12 +1944,33 @@ class TestPreservationPaiesPreCorrection:
         module = _importer_module_register()
         chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
 
+        # Bug corrigé après livraison (demande explicite de
+        # l'utilisateur) — `inserer_paie` refuse désormais une seconde
+        # ligne `EMISE` pour la même Paie_Logique `(employe_id,
+        # annee_fiscale, numero_periode)` (voir
+        # `TestRefusDoubleEmisePourMemePeriode`). `sequence` (générée
+        # par `st_sequence_payroll_results_meme_employe_annee`) ne
+        # garantit pas des `numero_periode` distincts entre ses
+        # éléments — ne conserver ici que le premier élément par
+        # `numero_periode` rencontré, pour ne pas violer cette
+        # invariante désormais imposée par le registre (comportement de
+        # préservation testé par Property 4 : round-trip sans
+        # `PayrollInput`, indépendant du nombre d'éléments distincts
+        # effectivement insérés).
+        sequence_periodes_distinctes = []
+        periodes_vues: set[int] = set()
         for resultat in sequence:
+            if resultat.pay_period.numero_periode in periodes_vues:
+                continue
+            periodes_vues.add(resultat.pay_period.numero_periode)
+            sequence_periodes_distinctes.append(resultat)
+
+        for resultat in sequence_periodes_distinctes:
             module.inserer_paie(
                 resultat, saison, chemin_bd=chemin_bd
             )
 
-        for resultat in sequence:
+        for resultat in sequence_periodes_distinctes:
             resultat_relu, _ = module.lire_paie(
                 resultat.id_paie, chemin_bd=chemin_bd
             )
