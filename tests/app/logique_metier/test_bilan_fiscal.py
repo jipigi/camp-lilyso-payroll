@@ -499,12 +499,36 @@ class TestLirePaiesEmises:
 
         chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
 
+        # Bug corrigé après livraison (demande explicite de
+        # l'utilisateur) — `inserer_paie` refuse désormais une seconde
+        # ligne EMISE pour la même Paie_Logique `(employe_id,
+        # annee_fiscale, numero_periode)` (voir
+        # `TestRefusDoubleEmisePourMemePeriode` de
+        # `tests/payroll_engine/test_register.py`). `paies_mixtes` ne
+        # garantit pas des périodes distinctes entre ses éléments EMISE
+        # — ignorer ici toute paie EMISE dont la période est déjà
+        # occupée par une EMISE déjà retenue, pour ne pas violer cette
+        # invariante désormais imposée par le registre (comportement de
+        # préservation : seul le sous-ensemble effectivement inséré doit
+        # apparaître dans l'ensemble de référence).
+        paies_effectivement_inserees: list[PayrollResult] = []
+        periodes_emises_occupees: set[tuple[str, int, int]] = set()
         for resultat in paies_mixtes:
+            if resultat.statut is StatutDePaie.EMISE:
+                cle_periode = (
+                    resultat.employe_id,
+                    resultat.annee_fiscale,
+                    resultat.pay_period.numero_periode,
+                )
+                if cle_periode in periodes_emises_occupees:
+                    continue
+                periodes_emises_occupees.add(cle_periode)
             inserer_paie(resultat, saison="", chemin_bd=chemin_bd)
+            paies_effectivement_inserees.append(resultat)
 
         ids_emises_attendus = {
             paie.id_paie
-            for paie in paies_mixtes
+            for paie in paies_effectivement_inserees
             if paie.statut is StatutDePaie.EMISE
         }
 
@@ -1193,7 +1217,7 @@ class TestPreservationDecimal:
     def test_pipeline_complet_ne_produit_jamais_une_cellule_non_decimal(
         self,
         paies_emises: tuple[PayrollResult, ...],
-        st_chemin_bd_temporaire,
+        tmp_path,
     ) -> None:
         """Property 13 (Req 11.2).
 
@@ -1228,18 +1252,54 @@ class TestPreservationDecimal:
             mois_annee_rattachement,
         )
 
+        # Bug corrigé après livraison (demande explicite de
+        # l'utilisateur) — `inserer_paie` refuse désormais une seconde
+        # ligne EMISE pour la même Paie_Logique `(employe_id,
+        # annee_fiscale, numero_periode)` (voir
+        # `TestRefusDoubleEmisePourMemePeriode` de
+        # `tests/payroll_engine/test_register.py`). ``paies_emises``
+        # (tous EMISE) ne garantit pas des périodes distinctes entre ses
+        # éléments — ne conserver que le premier élément par période
+        # rencontré, comportement de préservation pour cette property
+        # (l'absence de `float` ne dépend pas du nombre d'éléments
+        # effectivement insérés).
+        paies_periodes_distinctes = []
+        periodes_vues: set[tuple[str, int, int]] = set()
         for resultat in paies_emises:
-            inserer_paie(resultat, saison="", chemin_bd=st_chemin_bd_temporaire)
+            cle_periode = (
+                resultat.employe_id,
+                resultat.annee_fiscale,
+                resultat.pay_period.numero_periode,
+            )
+            if cle_periode in periodes_vues:
+                continue
+            periodes_vues.add(cle_periode)
+            paies_periodes_distinctes.append(resultat)
 
-        if paies_emises:
+        # Bug de test signalé après démo (indépendant du bug ci-dessus) :
+        # `st_chemin_bd_temporaire` est une fixture pytest résolue une
+        # seule fois par appel de fonction de test, donc partagée entre
+        # tous les essais Hypothesis d'un même `@given` — deux essais
+        # successifs réutilisaient donc la même base SQLite, provoquant
+        # des collisions d'`id_paie` déjà présent sans rapport avec la
+        # property sous test. `tmp_path` (elle aussi function-scoped,
+        # mais dont on ne réutilise ici que le répertoire) plus un
+        # suffixe `uuid.uuid4().hex` tiré à chaque exécution du corps du
+        # test garantit une base réellement neuve par essai (même patron
+        # que `TestLirePaiesEmises`/`TestEchecDeserialisation`).
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        for resultat in paies_periodes_distinctes:
+            inserer_paie(resultat, saison="", chemin_bd=chemin_bd)
+
+        if paies_periodes_distinctes:
             annee_reference, _ = mois_annee_rattachement(
-                paies_emises[0].pay_period.date_paiement
+                paies_periodes_distinctes[0].pay_period.date_paiement
             )
         else:
             annee_reference = 2026
         periode = PeriodeFiscale(annee=annee_reference, mois=None)
 
-        paies_lues = lire_paies_emises(chemin_bd=st_chemin_bd_temporaire)
+        paies_lues = lire_paies_emises(chemin_bd=chemin_bd)
         paies_filtrees = filtrer_paies_par_periode(paies_lues, periode)
         tableau = construire_tableau_bilan_fiscal(paies_filtrees)
 
@@ -1963,7 +2023,28 @@ class TestEchecDeserialisation:
 
         chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
 
+        # Bug corrigé après livraison (demande explicite de
+        # l'utilisateur) — `inserer_paie` refuse désormais une seconde
+        # ligne EMISE pour la même Paie_Logique `(employe_id,
+        # annee_fiscale, numero_periode)` (voir
+        # `TestRefusDoubleEmisePourMemePeriode` de
+        # `tests/payroll_engine/test_register.py`). ``paies_valides``
+        # (tous EMISE) ne garantit pas des périodes distinctes entre ses
+        # éléments — ne conserver que le premier élément par période
+        # rencontré, comportement de préservation pour cette property
+        # (le comportement testé — interruption sur ligne corrompue —
+        # ne dépend pas du nombre d'éléments valides effectivement
+        # insérés).
+        periodes_vues: set[tuple[str, int, int]] = set()
         for resultat in paies_valides:
+            cle_periode = (
+                resultat.employe_id,
+                resultat.annee_fiscale,
+                resultat.pay_period.numero_periode,
+            )
+            if cle_periode in periodes_vues:
+                continue
+            periodes_vues.add(cle_periode)
             inserer_paie(resultat, saison="", chemin_bd=chemin_bd)
 
         _inserer_ligne_paie_corrompue(chemin_bd, payload_json_corrompu)
