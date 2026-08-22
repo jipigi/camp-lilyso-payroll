@@ -54,23 +54,28 @@ from urllib.parse import quote
 
 import streamlit as st
 
+from app.logique_metier.annuaire_coordonnees import FicheCoordonnees, lire_coordonnees
 from app.logique_metier.annuaire_employes import lister_employes
 from app.logique_metier.bilan_fiscal import (
+    PeriodeFiscale,
     TableauBilanFiscal,
-    construire_options_periode,
+    construire_options_annee,
     construire_tableau_bilan_fiscal,
-    determiner_periode_par_defaut,
+    determiner_annee_par_defaut,
     filtrer_paies_par_periode,
     lire_paies_emises,
     resoudre_periode_a_afficher,
 )
 from app.logique_metier.dernieres_paies import (
-    derniere_paie_creee,
+    LignePaieResume,
     lire_resumes_paies,
+    paies_pour_colonne,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
+from app.logique_metier.tri_employes import trier_employes_pour_affichage
 from models.employee import Employee
 from models.enums import StatutDePaie
+from models.payroll_result import PayrollResult
 
 #: Libellés d'affichage des statuts de paie (`StatutDePaie`, valeurs
 #: internes en minuscules) — bug UI corrigé après livraison (Req 4.2) :
@@ -83,17 +88,20 @@ _LIBELLES_STATUT: dict[str, str] = {
     "remplace_par": "Remplacée",
 }
 
-#: Clé de `st.session_state` portant le libellé de la Periode_Fiscale
-#: actuellement affichée/présélectionnée dans le Selecteur_De_Periode du
-#: Bilan_Fiscal — persiste le choix manuel de l'opérateur pour la durée
-#: de la session (Requirement 3.4 ; ``bilan-fiscal-employeur``
-#: design.md §Components §2). Cette clé est aussi le ``key=`` du
-#: `st.selectbox` de :func:`_afficher_bilan_fiscal` — Streamlit lie
-#: alors directement la sélection de l'opérateur à cette entrée de
+#: Clé de `st.session_state` portant le libellé de l'Annee_Complete
+#: actuellement affichée/présélectionnée dans le Selecteur_De_Periode_
+#: Global — persiste le choix manuel de l'opérateur pour la durée de la
+#: session (spec ``tableau-de-bord-periode-globale``, design.md
+#: Décision 2). Ce sélecteur pilote désormais à la fois la section
+#: « Employés » et la section « Bilan fiscal » (auparavant local à cette
+#: seconde section uniquement, sous l'ancienne clé
+#: ``bilan_fiscal_periode_libelle``). Cette clé est aussi le ``key=`` du
+#: `st.selectbox` de :func:`_resoudre_annee_selectionnee` — Streamlit
+#: lie alors directement la sélection de l'opérateur à cette entrée de
 #: `st.session_state`, sans qu'aucune écriture manuelle ne survienne
 #: après l'instanciation du widget pour cette même clé (interdit par
 #: Streamlit).
-_CLE_PERIODE_LIBELLE = "bilan_fiscal_periode_libelle"
+_CLE_ANNEE_SELECTIONNEE_LIBELLE = "tdb_annee_selectionnee_libelle"
 
 #: CSS scoped du Bilan_Fiscal — même convention que
 #: `bulletin_paie.py::_CSS_BULLETIN` (classes préfixées, ici
@@ -544,81 +552,121 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
     """
 
 
-def _afficher_bilan_fiscal() -> None:
-    """Section « Bilan fiscal » du Tableau_De_Bord (Requirement 1.1).
+def _resoudre_annee_selectionnee() -> tuple[tuple[PayrollResult, ...] | None, int]:
+    """Résout le Selecteur_De_Periode_Global (spec
+    ``tableau-de-bord-periode-globale``, design.md Décision 2, 4).
 
-    Orchestre `lire_paies_emises` (via `executer_avec_capture`),
-    `construire_options_periode`, `resoudre_periode_a_afficher`/
-    `determiner_periode_par_defaut`, un `st.selectbox` positionné en
-    haut à droite (Requirement 2.1), `filtrer_paies_par_periode`, et
-    `construire_tableau_bilan_fiscal`. Affiche le message d'absence
-    (Requirement 4.1) si `lire_paies_emises` retourne un tuple vide,
-    sans Selecteur_De_Periode ni Tableau_Bilan_Fiscal dans ce cas.
+    Lit `lire_paies_emises` via `executer_avec_capture`. En cas de
+    succès : construit les options via `construire_options_annee`
+    (Requirements 1.1-1.3), la valeur par défaut via
+    `determiner_annee_par_defaut`, résout le libellé à afficher via
+    `resoudre_periode_a_afficher` (persistance du choix manuel de
+    l'opérateur pour la durée de la session, même mécanisme que
+    l'ancien sélecteur local — Requirement 1.4, 1.5), affiche le
+    `st.selectbox` correspondant, puis retourne
+    ``(paies_emises, annee_selectionnee)`` où ``annee_selectionnee`` est
+    l'entier extrait de la `PeriodeFiscale` associée au libellé choisi.
 
-    Seul `lire_paies_emises` est enveloppé par `executer_avec_capture` —
-    `construire_options_periode`, `filtrer_paies_par_periode` et
-    `construire_tableau_bilan_fiscal` sont des fonctions pures totales
-    sur tout tuple d'entrée (design.md §Architecture décision n° 2),
-    elles ne lèvent jamais d'exception.
+    En cas d'échec (`ErreurDomaineAffichable`) : affiche le message
+    d'erreur à l'emplacement du sélecteur, sans jamais interrompre le
+    reste du rendu de la page (Décision 4), et retourne
+    ``(None, date.today().year)`` — `None` signale à l'appelant de ne
+    pas rendre la section Bilan fiscal.
+
+    Note (tâche 8.1) : cette fonction n'est pas encore appelée depuis
+    `render()` — le câblage complet (retrait du sélecteur local de
+    `_afficher_bilan_fiscal`, transmission explicite de
+    `annee_selectionnee` à `_afficher_liste_employes`/
+    `_afficher_bilan_fiscal`) est réservé à la tâche 8.2. Le placement
+    visuel définitif (alignement fin au niveau du titre de page) sera
+    potentiellement affiné à cette même tâche ; la disposition
+    `st.columns` ci-dessous n'est qu'une disposition simple suffisante
+    pour cette étape intermédiaire.
     """
     resultat_paies = executer_avec_capture(lire_paies_emises)
     if isinstance(resultat_paies, ErreurDomaineAffichable):
-        st.header("Bilan fiscal")
-        st.error(f"{resultat_paies.type_exception}: {resultat_paies.message}")
-        return
+        col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
+        with col_selecteur:
+            st.error(f"{resultat_paies.type_exception}: {resultat_paies.message}")
+        return None, date.today().year
     paies_emises = resultat_paies
 
-    if not paies_emises:
-        st.header("Bilan fiscal")
-        st.info("Aucune paie émise n'a été trouvée.")
-        return
+    annee_courante = date.today().year
+    options = construire_options_annee(paies_emises, annee_courante)
+    periode_par_defaut = determiner_annee_par_defaut(annee_courante)
 
-    options = construire_options_periode(paies_emises)
-    periode_par_defaut = determiner_periode_par_defaut(date.today(), options)
-
-    cle_deja_definie = _CLE_PERIODE_LIBELLE in st.session_state
-    valeur_en_session = st.session_state.get(_CLE_PERIODE_LIBELLE)
+    cle_deja_definie = _CLE_ANNEE_SELECTIONNEE_LIBELLE in st.session_state
+    valeur_en_session = st.session_state.get(_CLE_ANNEE_SELECTIONNEE_LIBELLE)
     libelle_resolu = resoudre_periode_a_afficher(
         cle_deja_definie, valeur_en_session, periode_par_defaut, options
     )
     if libelle_resolu is None:
-        # Cas dégénéré (design.md §Components §2) — en pratique jamais
-        # atteint tant qu'au moins une paie EMISE existe (`options` non
-        # vide à ce stade), mais couvert défensivement.
+        # Cas dégénéré, jamais atteint en pratique — `options` contient
+        # toujours au moins l'Option_Annee_Courante_De_Repli.
         libelle_resolu = options[0].libelle
 
     # Initialise/actualise `st.session_state` AVANT l'instanciation du
     # `st.selectbox` ci-dessous — jamais après (interdit par Streamlit
-    # pour un widget lié par `key=`). Le `st.selectbox` met ensuite
-    # lui-même à jour cette même clé lors d'une sélection manuelle de
-    # l'opérateur, ce qui assure la persistance du choix (Requirement
-    # 3.4) sans écriture manuelle additionnelle après sa création.
-    st.session_state[_CLE_PERIODE_LIBELLE] = libelle_resolu
+    # pour un widget lié par `key=`).
+    st.session_state[_CLE_ANNEE_SELECTIONNEE_LIBELLE] = libelle_resolu
 
-    # Titre à gauche, sélecteur de période à droite, sur la même ligne
-    # (bug UI signalé après démo) — même patron `st.columns` que
-    # l'alignement des en-têtes du tableau des employés.
     col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
-    with col_titre:
-        st.header("Bilan fiscal")
     with col_selecteur:
         libelle_selectionne = st.selectbox(
-            "Période",
+            "Année",
             options=[option.libelle for option in options],
-            key=_CLE_PERIODE_LIBELLE,
+            key=_CLE_ANNEE_SELECTIONNEE_LIBELLE,
             label_visibility="collapsed",
         )
 
     periode_selectionnee = next(
         option.periode for option in options if option.libelle == libelle_selectionne
     )
-    paies_periode = filtrer_paies_par_periode(paies_emises, periode_selectionnee)
-    tableau = construire_tableau_bilan_fiscal(paies_periode)
+    return paies_emises, periode_selectionnee.annee
 
-    st.markdown(
-        _CSS_BILAN_FISCAL + _sans_indentation(_construire_html_bilan_fiscal(tableau)),
-        unsafe_allow_html=True,
+
+def _afficher_bilan_fiscal(
+    paies_emises: tuple[PayrollResult, ...],
+    periode_selectionnee: PeriodeFiscale,
+) -> None:
+    """Section « Bilan fiscal » du Tableau_De_Bord (Requirement 1.1, 2.1-2.3).
+
+    Ne construit plus son propre sélecteur (spec
+    ``tableau-de-bord-periode-globale``, design.md Décision 2) —
+    ``paies_emises`` et ``periode_selectionnee`` sont déjà résolus par
+    :func:`_resoudre_annee_selectionnee`, appelée une seule fois par
+    `render()` (Requirement 1.7). N'est pas rendue par l'appelant quand
+    la lecture de `lire_paies_emises` a échoué (`paies_emises is None`,
+    Décision 4) — cette fonction suppose donc toujours un tuple valide.
+
+    Plus d'early-return sur ``paies_emises`` vide (Décision 3) : le
+    Tableau_Bilan_Fiscal est toujours affiché, même intégralement à
+    zéro (Requirement 2.2).
+
+    `filtrer_paies_par_periode`, `construire_tableau_bilan_fiscal` et la
+    génération du HTML sont enveloppées dans un seul
+    `executer_avec_capture(lambda: ...)` (Décision 5, Requirement 2.3) —
+    bien que ces fonctions soient pures et totales aujourd'hui, ce seul
+    point de capture protège contre une régression future sans jamais
+    interrompre le reste de `render()` (la section « Employés » est déjà
+    rendue avant l'appel à cette fonction).
+    """
+    st.header("Bilan fiscal")
+
+    resultat_html = executer_avec_capture(
+        lambda: _sans_indentation(
+            _construire_html_bilan_fiscal(
+                construire_tableau_bilan_fiscal(
+                    filtrer_paies_par_periode(paies_emises, periode_selectionnee)
+                )
+            )
+        )
     )
+    if isinstance(resultat_html, ErreurDomaineAffichable):
+        st.error(f"{resultat_html.type_exception}: {resultat_html.message}")
+        return
+
+    st.markdown(_CSS_BILAN_FISCAL + resultat_html, unsafe_allow_html=True)
 
 
 def render() -> None:
@@ -631,6 +679,14 @@ def render() -> None:
     page dédiée de création d'un nouvel employé (Req 4.4).
     """
     st.title("Tableau de bord")
+
+    # Selecteur_De_Periode_Global résolu une seule fois, en haut de
+    # `render()`, avant le rendu de la section « Employés » (spec
+    # ``tableau-de-bord-periode-globale``, design.md Décision 2,
+    # Requirement 1.7). `paies_emises` vaut `None` si `lire_paies_emises`
+    # a échoué (Décision 4) — signale de ne pas rendre la section Bilan
+    # fiscal plus bas.
+    paies_emises, annee_selectionnee = _resoudre_annee_selectionnee()
 
     # Bug UI signalé après démo (demande explicite de l'utilisateur) :
     # le bouton « Ajouter un nouvel employé » est désormais aligné à
@@ -663,10 +719,18 @@ def render() -> None:
         return
     employes = resultat_employes
 
-    _afficher_liste_employes(employes)
+    # TODO(tâche 8.3) : `_afficher_liste_employes` n'accepte pas encore
+    # le paramètre `annee_selectionnee` — cette signature sera étendue
+    # à la tâche 8.3 (tri par Prénom Nom, retrait de la colonne « No.
+    # d'employé », Colonne_Paies enrichie). Câblage anticipé ici pour
+    # que `annee_selectionnee` soit déjà transmis dès que la tâche 8.3
+    # complète la signature.
+    _afficher_liste_employes(employes, annee_selectionnee=annee_selectionnee)
 
     st.divider()
-    _afficher_bilan_fiscal()
+    if paies_emises is not None:
+        periode_selectionnee = PeriodeFiscale(annee=annee_selectionnee, mois=None)
+        _afficher_bilan_fiscal(paies_emises, periode_selectionnee)
 
 
 def _lien_action_employe(*, href: str, texte: str) -> str:
@@ -693,92 +757,89 @@ def _lien_action_employe(*, href: str, texte: str) -> str:
     )
 
 
-def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
-    """Affiche une ligne par Fiche_Employe avec ses raccourcis (Req 4.1 à 4.6).
+def _texte_absence_paie(annee_selectionnee: int) -> str:
+    """Texte d'absence explicite de la Colonne_Paies (Req 5.4, 5.6).
 
-    Bug UI corrigé après livraison (Req 4.2) : chaque ligne affiche
-    désormais aussi le statut de la dernière paie créée pour l'employé
-    (Brouillon/Émise/Annulée/Remplacée) et la date pertinente — date
-    d'émission si Émise/Annulée/Remplacée (`date_emission`), date de
-    dernier enregistrement si Brouillon (`date_creation`, seule date
-    renseignée dans ce cas).
-
-    Bug UI signalé après démo — remplacement d'un faux tableau construit
-    avec `st.columns`/`<div>` par un véritable élément HTML `<table>`
-    (structure sémantique correcte pour une liste de données), même
-    patron que le Tableau_Bilan_Fiscal (`_construire_html_bilan_fiscal`) :
-    un seul bloc `st.markdown(..., unsafe_allow_html=True)`, en-têtes de
-    colonnes bleu foncé/police blanche conservées via
-    `_CSS_LISTE_EMPLOYES::table.employes-tableau thead th`. Les actions
-    par ligne (auparavant des `st.button`) sont désormais des liens
-    `<a>` naviguant par paramètres d'URL (`st.query_params`), un widget
-    Streamlit natif ne pouvant pas être imbriqué dans un `<table>` HTML
-    injecté. `html.escape` reste appliqué sur chaque cellule textuelle
-    dérivée d'une saisie opérateur (`nom_affichage`), défense en
-    profondeur même si ce champ ne porte aucune donnée personnelle
-    réelle (règle 04 — Prénom/Nom réels vivent exclusivement dans
-    `FicheCoordonnees`).
+    Utilisé aussi bien quand ``paies_pour_colonne`` retourne un tuple
+    vide (lecture réussie, aucune paie pour l'année sélectionnée) que
+    lorsque l'employé n'a aucune paie du tout — même texte dans les
+    deux cas (Requirement 5.4 : peu importe que l'employé possède ou
+    non d'autres paies hors de l'année sélectionnée).
     """
-    if not employes:
-        st.info("Aucun employé enregistré dans l'Annuaire_Employes.")
-        return
+    return f"Aucune paie pour {annee_selectionnee}"
 
-    st.markdown(_CSS_LISTE_EMPLOYES, unsafe_allow_html=True)
 
-    lignes_html = []
-    for employe in employes:
-        resultat_resumes = executer_avec_capture(
-            lambda employe_id=employe.id: lire_resumes_paies(employe_id)
+def _ligne_colonne_paie_html(employe_id: str, resume: LignePaieResume) -> str:
+    """Génère une ligne cliquable de la Colonne_Paies pour ``resume``
+    (Req 5.2) : statut (Brouillon/Émise) et date de paiement, sous forme
+    de lien — même navigation que l'ancienne cellule « Dernière paie »
+    (Formulaire_Paie en mode correction si Paie_Brouillon, Bulletin_De_Paie
+    si Paie_Emise).
+    """
+    libelle_statut = _LIBELLES_STATUT.get(resume.statut, resume.statut)
+    texte = f"{libelle_statut} — {_formater_date_courte(resume.date_paiement)}"
+    if resume.statut == StatutDePaie.BROUILLON.value:
+        href = (
+            "/formulaire-paie"
+            f"?employe_id={quote(employe_id)}"
+            f"&id_paie={quote(resume.id_paie)}"
         )
-        if isinstance(resultat_resumes, ErreurDomaineAffichable):
-            derniere_paie = None
-            erreur_resumes: ErreurDomaineAffichable | None = resultat_resumes
-        else:
-            derniere_paie = derniere_paie_creee(resultat_resumes)
-            erreur_resumes = None
+    else:
+        href = f"/bulletin-paie?id_paie={quote(resume.id_paie)}"
+    return _lien_action_employe(href=href, texte=texte)
 
-        if erreur_resumes is not None:
-            cellule_derniere_paie = html.escape(
-                f"{erreur_resumes.type_exception}: {erreur_resumes.message}"
-            )
-        elif derniere_paie is None:
-            cellule_derniere_paie = "Aucune paie enregistrée"
-        else:
-            libelle_statut = _LIBELLES_STATUT.get(
-                derniere_paie.statut, derniere_paie.statut
-            )
-            date_pertinente = (
-                derniere_paie.date_emission
-                if derniere_paie.date_emission
-                else derniere_paie.date_creation
-            )
-            # Bug UI signalé après démo (demande explicite de
-            # l'utilisateur) : la date de la dernière paie n'affiche
-            # plus l'heure, superflue dans ce contexte — format court
-            # français ``"<jour> <mois> <année>"`` (`_formater_date_courte`).
-            # Bug UI corrigé après livraison (Req demande explicite de
-            # l'utilisateur) : le libellé de la dernière paie est un
-            # lien cliquable — route vers le Formulaire_Paie (mode
-            # correction pré-rempli) si BROUILLON, vers le
-            # Bulletin_De_Paie si EMISE/ANNULEE/REMPLACE_PAR.
-            if derniere_paie.statut == StatutDePaie.BROUILLON.value:
-                href_derniere_paie = (
-                    "/formulaire-paie"
-                    f"?employe_id={quote(employe.id)}"
-                    f"&id_paie={quote(derniere_paie.id_paie)}"
-                )
-            else:
-                href_derniere_paie = (
-                    f"/bulletin-paie?id_paie={quote(derniere_paie.id_paie)}"
-                )
-            cellule_derniere_paie = _lien_action_employe(
-                href=href_derniere_paie,
-                texte=(
-                    f"{libelle_statut} — "
-                    f"{_formater_date_courte(date_pertinente)}"
-                ),
-            )
 
+def _contenu_colonne_paies_html(
+    employe_id: str,
+    resultat_resumes: tuple[LignePaieResume, ...] | ErreurDomaineAffichable,
+    *,
+    annee_selectionnee: int,
+) -> str:
+    """Contenu HTML complet de la Colonne_Paies pour un employé (Req 5.2
+    à 5.6).
+
+    Isolation d'erreur (Req 5.5) : si ``resultat_resumes`` est une
+    `ErreurDomaineAffichable` (lecture de `lire_resumes_paies` échouée
+    pour cet employé), retourne le texte d'erreur — sans affecter les
+    autres lignes du tableau (chaque appel est indépendant). Sinon
+    (lecture réussie), retourne une ligne par paie de
+    `paies_pour_colonne(resultat_resumes, annee_selectionnee)`, séparées
+    par `<br>`, ou le texte d'absence explicite (:func:`_texte_absence_paie`)
+    si ce filtrage ne retourne aucune paie — jamais le texte d'erreur
+    dans ce dernier cas (Req 5.6).
+    """
+    if isinstance(resultat_resumes, ErreurDomaineAffichable):
+        return html.escape(
+            f"{resultat_resumes.type_exception}: {resultat_resumes.message}"
+        )
+
+    lignes_paies = paies_pour_colonne(resultat_resumes, annee_selectionnee)
+    if not lignes_paies:
+        return html.escape(_texte_absence_paie(annee_selectionnee))
+
+    return "<br>".join(
+        _ligne_colonne_paie_html(employe_id, resume) for resume in lignes_paies
+    )
+
+
+def _construire_html_liste_employes(
+    employes_tries: tuple[Employee, ...],
+    contenu_colonne_paies_par_employe: dict[str, str],
+) -> str:
+    """Construit le bloc HTML complet du tableau des employés (Req 3, 4,
+    5) — fonction pure, même patron que `_construire_html_bilan_fiscal` :
+    ne dépend ni de `streamlit` ni d'aucune lecture disque, reçoit les
+    employés déjà triés (`trier_employes_pour_affichage`) et le contenu
+    HTML déjà résolu de la Colonne_Paies de chacun
+    (:func:`_contenu_colonne_paies_html`), testable par Hypothesis.
+
+    Colonne « No. d'employé » entièrement retirée (Req 3.1) : ni
+    `<th>`, ni `<td>` par ligne. `employe.id` continue d'alimenter les
+    attributs `href` des liens de la ligne (colonne « Prénom et nom »,
+    colonne « Actions »), jamais affiché comme texte visible (Req 3.2).
+    """
+    lignes_html = []
+    for employe in employes_tries:
         # Bug UI signalé après démo (demande explicite de l'utilisateur) :
         # « Voir la fiche » est retiré de la colonne Actions — le nom de
         # l'employé (colonne « Prénom et nom ») porte désormais ce même
@@ -799,24 +860,23 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
             f'target="_self">'
             "Ajouter une paie</a>"
         )
+        contenu_paies = contenu_colonne_paies_par_employe[employe.id]
 
         lignes_html.append(
             "<tr>"
-            f"<td>{html.escape(employe.id)}</td>"
             f"<td>{lien_nom}</td>"
-            f"<td>{cellule_derniere_paie}</td>"
+            f"<td>{contenu_paies}</td>"
             f"<td>{cellule_actions}</td>"
             "</tr>"
         )
 
-    tableau_html = f"""
+    return f"""
     <div class="employes-conteneur">
         <table class="employes-tableau">
             <thead>
                 <tr>
-                    <th>No. d'employé</th>
                     <th>Prénom et nom</th>
-                    <th>Dernière paie</th>
+                    <th>Paies</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -826,4 +886,59 @@ def _afficher_liste_employes(employes: tuple[Employee, ...]) -> None:
         </table>
     </div>
     """
+
+
+def _afficher_liste_employes(
+    employes: tuple[Employee, ...], *, annee_selectionnee: int
+) -> None:
+    """Affiche une ligne par Fiche_Employe avec ses raccourcis (Req 3, 4, 5).
+
+    Tri par Prénom Nom (Req 4) : lit une `FicheCoordonnees` par employé
+    via `lire_coordonnees` (aucun mécanisme de repli explicite — une
+    exception de lecture se propage sans interception, cohérent avec le
+    design de cette fonctionnalité), construit le dictionnaire
+    `{employe_id: FicheCoordonnees}` des seules fiches trouvées, puis
+    appelle `trier_employes_pour_affichage` avant de construire les
+    lignes.
+
+    Colonne_Paies (Req 5) : réutilise le même appel `lire_resumes_paies`
+    déjà effectué historiquement par cette fonction (aucun appel SQL
+    supplémentaire), enveloppé par `executer_avec_capture` — une
+    éventuelle `ErreurDomaineAffichable` est isolée à la ligne de
+    l'employé concerné (Req 5.5), sans affecter les autres lignes.
+
+    Bug UI signalé après démo — véritable élément HTML `<table>`
+    sémantique (même patron que le Tableau_Bilan_Fiscal), construit par
+    la fonction pure :func:`_construire_html_liste_employes` (Req 3, 4,
+    5 — testable par Hypothesis sans dépendance à `streamlit`/aux
+    lectures disque). Les actions par ligne sont des liens `<a>`
+    naviguant par paramètres d'URL (`st.query_params`), un widget
+    Streamlit natif ne pouvant pas être imbriqué dans un `<table>` HTML
+    injecté par `st.markdown`.
+    """
+    if not employes:
+        st.info("Aucun employé enregistré dans l'Annuaire_Employes.")
+        return
+
+    st.markdown(_CSS_LISTE_EMPLOYES, unsafe_allow_html=True)
+
+    fiches: dict[str, FicheCoordonnees] = {}
+    for employe in employes:
+        fiche = lire_coordonnees(employe.id)
+        if fiche is not None:
+            fiches[employe.id] = fiche
+    employes_tries = trier_employes_pour_affichage(employes, fiches)
+
+    contenu_colonne_paies_par_employe: dict[str, str] = {}
+    for employe in employes_tries:
+        resultat_resumes = executer_avec_capture(
+            lambda employe_id=employe.id: lire_resumes_paies(employe_id)
+        )
+        contenu_colonne_paies_par_employe[employe.id] = _contenu_colonne_paies_html(
+            employe.id, resultat_resumes, annee_selectionnee=annee_selectionnee
+        )
+
+    tableau_html = _construire_html_liste_employes(
+        employes_tries, contenu_colonne_paies_par_employe
+    )
     st.markdown(_sans_indentation(tableau_html), unsafe_allow_html=True)

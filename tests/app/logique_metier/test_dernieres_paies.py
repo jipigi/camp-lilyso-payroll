@@ -62,6 +62,7 @@ n'utilise que des identifiants fictifs `EMPnnn`.
 from __future__ import annotations
 
 import ast
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,7 @@ from hypothesis import strategies as st
 
 from models.payroll_result import PayrollResult
 from payroll_engine.register import inserer_paie
+from tests.app.strategies import st_ligne_paie_resume_arbitraire
 from tests.strategies import (
     st_chemin_bd_temporaire,  # noqa: F401  (fixture pytest, résolue par nom de paramètre)
     st_saison,
@@ -910,3 +912,197 @@ class TestLireResumesPaies:
                     "jamais appeler `_creer_schema_si_absent` ni aucune "
                     "autre fonction privée de `register.py`."
                 )
+
+
+# ---------------------------------------------------------------------------
+# Property 6 — Filtrage et ordre exacts de la Colonne_Paies
+# ---------------------------------------------------------------------------
+#
+# Feature: tableau-de-bord-periode-globale, Property 6: Filtrage et ordre exacts de la Colonne_Paies
+#
+# *Pour tout* tuple de `LignePaieResume` (statuts, dates de paiement et
+# numéros de période arbitraires) et *toute* année, le résultat de
+# `paies_pour_colonne(resumes, annee)` contient exactement les résumés
+# de statut `BROUILLON`/`EMISE` dont l'année de `date_paiement`
+# correspond (aucun résumé d'une autre année, aucun résumé d'un autre
+# statut), tous les `BROUILLON` précédant tous les `EMISE`, chaque
+# groupe étant trié par date de paiement décroissante puis
+# `LignePaieResume.numero_periode` croissant en cas d'égalité.
+#
+# _Requirements: 5.2, 5.3, 5.4_
+# _Design: §Components §2 (`dernieres_paies.py`) ; §Correctness Properties 6_
+
+
+class TestPaiesPourColonne:
+    """Property 6 — filtrage et ordre exacts de la Colonne_Paies."""
+
+    # Feature: tableau-de-bord-periode-globale, Property 6: Filtrage et ordre exacts de la Colonne_Paies
+    @pytest.mark.property
+    @given(
+        resumes=st.lists(
+            st_ligne_paie_resume_arbitraire(), min_size=0, max_size=10
+        ).map(tuple),
+        annee_test=st.integers(min_value=2020, max_value=2035),
+    )
+    @settings_large_input
+    def test_filtre_exactement_brouillon_emise_de_lannee_ordre_statut_puis_date_puis_periode(
+        self,
+        resumes: tuple,
+        annee_test: int,
+    ) -> None:
+        """Property 6 (Req 5.2, 5.3, 5.4).
+
+        Compare `paies_pour_colonne(resumes, annee_test)` à une
+        implémentation de référence construite indépendamment en Python
+        pur : filtrage sur `statut ∈ {"brouillon", "emise"}` et
+        `date.fromisoformat(date_paiement).year == annee_test` (résumés
+        sans `date_paiement` exclus), puis tri par
+        `(statut != "brouillon", -ordinal(date_paiement), numero_periode)`
+        — c'est-à-dire tous les `BROUILLON` avant tous les `EMISE`, puis
+        date de paiement décroissante, puis `numero_periode` croissant
+        en cas d'égalité de date. Vérifie en plus explicitement :
+
+        - aucun résumé d'un statut hors `{BROUILLON, EMISE}`
+          (``ANNULEE``/``REMPLACE_PAR``) n'apparaît dans le résultat ;
+        - aucun résumé d'une autre année que `annee_test` n'apparaît
+          dans le résultat ;
+        - tous les `BROUILLON` du résultat précèdent tous les `EMISE`.
+        """
+        from app.logique_metier.dernieres_paies import paies_pour_colonne
+
+        resultat_obtenu = paies_pour_colonne(resumes, annee_test)
+
+        def _correspond(resume) -> bool:
+            if resume.statut not in ("brouillon", "emise"):
+                return False
+            if resume.date_paiement is None:
+                return False
+            return date.fromisoformat(resume.date_paiement).year == annee_test
+
+        attendus = [resume for resume in resumes if _correspond(resume)]
+        resultat_attendu = tuple(
+            sorted(
+                attendus,
+                key=lambda r: (
+                    r.statut != "brouillon",
+                    -date.fromisoformat(r.date_paiement).toordinal(),
+                    r.numero_periode,
+                ),
+            )
+        )
+
+        assert resultat_obtenu == resultat_attendu, (
+            f"`paies_pour_colonne(resumes, {annee_test!r})` doit retourner "
+            f"exactement le sous-ensemble BROUILLON/EMISE de l'année "
+            f"{annee_test!r}, trié BROUILLON avant EMISE puis date de "
+            f"paiement décroissante puis `numero_periode` croissant ; "
+            f"attendu {resultat_attendu!r}, obtenu {resultat_obtenu!r}."
+        )
+
+        # Aucun résumé d'un statut hors {BROUILLON, EMISE}.
+        for resume in resultat_obtenu:
+            assert resume.statut in ("brouillon", "emise"), (
+                f"`paies_pour_colonne` ne doit jamais inclure un résumé de "
+                f"statut {resume.statut!r} (hors BROUILLON/EMISE) ; "
+                f"résumé obtenu {resume!r}."
+            )
+
+        # Aucun résumé d'une autre année que `annee_test`.
+        for resume in resultat_obtenu:
+            assert (
+                resume.date_paiement is not None
+                and date.fromisoformat(resume.date_paiement).year == annee_test
+            ), (
+                f"`paies_pour_colonne` ne doit jamais inclure un résumé "
+                f"dont la date de paiement ne tombe pas dans "
+                f"{annee_test!r} ; résumé obtenu {resume!r}."
+            )
+
+        # Tous les BROUILLON précèdent tous les EMISE.
+        statuts_ordre = [resume.statut for resume in resultat_obtenu]
+        if "emise" in statuts_ordre:
+            premier_index_emise = statuts_ordre.index("emise")
+            assert all(
+                statut == "emise" for statut in statuts_ordre[premier_index_emise:]
+            ), (
+                "Tous les résumés `BROUILLON` doivent précéder tous les "
+                f"résumés `EMISE` ; ordre des statuts obtenu {statuts_ordre!r}."
+            )
+
+    # ---------------------------------------------------------------------
+    # Property 7 — Absence de paie jamais confondue avec une erreur de
+    # lecture
+    # ---------------------------------------------------------------------
+    #
+    # Feature: tableau-de-bord-periode-globale, Property 7: Absence de paie jamais confondue avec une erreur de lecture
+    #
+    # *Pour tout* tuple de `LignePaieResume` (y compris vide) et *toute*
+    # année, si la lecture réussit (le résultat est un tuple, jamais une
+    # `ErreurDomaineAffichable`), le texte rendu de la Colonne_Paies pour
+    # cet employé n'est jamais le texte d'erreur — y compris quand
+    # `paies_pour_colonne(resumes, annee)` est vide.
+    #
+    # Portée de ce test (voir tâche 2.3 — la couche de rendu
+    # `tableau_de_bord.py` n'existe pas encore, tâche 8.3) : vérifier que
+    # `paies_pour_colonne` elle-même ne lève jamais d'exception et
+    # retourne toujours un `tuple` (y compris vide) pour tout
+    # `LignePaieResume` valide — poser les bases sur lesquelles la future
+    # couche de rendu pourra s'appuyer pour ne jamais confondre « aucune
+    # paie » avec une erreur de lecture.
+    #
+    # _Requirements: 5.6_
+    # _Design: §Components §2 (`dernieres_paies.py`) ; §Correctness Properties 7_
+
+    # Feature: tableau-de-bord-periode-globale, Property 7: Absence de paie jamais confondue avec une erreur de lecture
+    @pytest.mark.property
+    @given(
+        resumes=st.lists(
+            st_ligne_paie_resume_arbitraire(), min_size=0, max_size=10
+        ).map(tuple),
+        annee_test=st.integers(min_value=2020, max_value=2035),
+    )
+    @settings_large_input
+    def test_retourne_toujours_un_tuple_jamais_une_exception_y_compris_vide(
+        self,
+        resumes: tuple,
+        annee_test: int,
+    ) -> None:
+        """Property 7 (Req 5.6).
+
+        `paies_pour_colonne(resumes, annee_test)` ne lève jamais
+        d'exception — y compris pour `resumes` vide, ou pour un
+        `resumes` ne contenant aucun résumé BROUILLON/EMISE de
+        `annee_test` (résultat filtré vide) — et retourne toujours un
+        `tuple` (jamais `None` ni un autre type). Un résultat vide
+        (`()`) est un résultat de lecture réussie au même titre qu'un
+        résultat non vide : rien ici ne peut être confondu avec un état
+        d'erreur, puisqu'aucune exception n'est levée dans aucun cas.
+        """
+        from app.logique_metier.dernieres_paies import paies_pour_colonne
+
+        resultat_obtenu = paies_pour_colonne(resumes, annee_test)
+
+        assert isinstance(resultat_obtenu, tuple), (
+            "`paies_pour_colonne` doit toujours retourner un `tuple` "
+            f"(y compris vide), jamais {type(resultat_obtenu)!r} — "
+            "obtenu pour ne jamais confondre l'absence de paie avec une "
+            "erreur de lecture (Req 5.6)."
+        )
+
+    # Feature: tableau-de-bord-periode-globale, Property 7: Absence de paie jamais confondue avec une erreur de lecture
+    def test_exemple_resumes_vide_retourne_tuple_vide_sans_exception(
+        self,
+    ) -> None:
+        """Test d'exemple explicite du cas limite motivant la Property 7 :
+        `resumes = ()` (aucune paie du tout pour l'employé) doit
+        retourner `()` sans jamais lever d'exception — jamais confondu
+        avec un état d'erreur (Req 5.6).
+        """
+        from app.logique_metier.dernieres_paies import paies_pour_colonne
+
+        resultat = paies_pour_colonne((), 2026)
+
+        assert resultat == (), (
+            "`paies_pour_colonne((), 2026)` doit retourner exactement "
+            f"`()`, obtenu {resultat!r}."
+        )

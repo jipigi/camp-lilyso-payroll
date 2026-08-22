@@ -46,8 +46,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
+from models.enums import StatutDePaie
 from models.payroll_result import PayrollResult
 from payroll_engine.register import chemin_bd_production
 from payroll_engine.stockage_distant import telecharger_si_absent
@@ -336,4 +338,45 @@ def dernieres_versions_par_periode(
     return tuple(
         par_periode[numero_periode]
         for numero_periode in sorted(par_periode.keys())
+    )
+
+
+_STATUTS_COLONNE_PAIES = (StatutDePaie.BROUILLON.value, StatutDePaie.EMISE.value)
+"""Statuts admis dans la Colonne_Paies (Req 5.2) — ordre de tri primaire
+(``BROUILLON`` avant ``EMISE``) réutilisé par :func:`paies_pour_colonne`."""
+
+
+def paies_pour_colonne(
+    resumes: tuple[LignePaieResume, ...],
+    annee: int,
+) -> tuple[LignePaieResume, ...]:
+    """Sous-ensemble ordonné pour la Colonne_Paies (Req 5.2, 5.3, 5.4).
+
+    Filtre ``resumes`` sur ``statut ∈ {BROUILLON, EMISE}`` (valeurs
+    `StatutDePaie.BROUILLON.value`/`StatutDePaie.EMISE.value`) ET
+    ``date.fromisoformat(date_paiement).year == annee`` (un résumé sans
+    ``date_paiement`` — cas défensif jamais atteint en pratique, voir
+    docstring de `LignePaieResume` — est exclu du résultat plutôt que de
+    lever une exception). Trie le résultat en plaçant d'abord tous les
+    résumés `BROUILLON` puis tous les `EMISE` ; à l'intérieur de chaque
+    groupe, tri par date de paiement décroissante puis
+    `numero_periode` croissant en cas d'égalité. Fonction pure, sans
+    accès disque.
+    """
+    filtres = [
+        resume
+        for resume in resumes
+        if resume.statut in _STATUTS_COLONNE_PAIES
+        and resume.date_paiement is not None
+        and date.fromisoformat(resume.date_paiement).year == annee
+    ]
+    return tuple(
+        sorted(
+            filtres,
+            key=lambda r: (
+                _STATUTS_COLONNE_PAIES.index(r.statut),
+                date.fromisoformat(r.date_paiement).toordinal() * -1,
+                r.numero_periode,
+            ),
+        )
     )

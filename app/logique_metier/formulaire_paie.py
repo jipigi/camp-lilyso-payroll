@@ -308,3 +308,53 @@ def valeurs_effectives_depuis_paie(
         )
 
     return resultat_dict
+
+
+def valider_date_paiement_pour_emission(
+    date_paiement: date | None, date_fin: date
+) -> str | None:
+    """Message de blocage, ou `None` si la date de paiement est valide
+    pour une émission — spec `tableau-de-bord-periode-globale`, tâche
+    6.1 (Req 6.1, 6.3).
+
+    Retourne un message d'erreur explicite si ``date_paiement`` est
+    `None` ou strictement antérieure à ``date_fin`` ; retourne `None`
+    dans tous les autres cas (date présente et `>= date_fin`). Fonction
+    pure, aucun accès disque, aucune exception levée.
+    """
+    if date_paiement is None:
+        return (
+            "La date de paiement est requise pour émettre cette paie. "
+            "Veuillez la renseigner avant l'enregistrement."
+        )
+    if date_paiement < date_fin:
+        return (
+            "La date de paiement "
+            f"({date_paiement.isoformat()}) ne peut pas être antérieure "
+            f"à la date de fin de la période ({date_fin.isoformat()})."
+        )
+    return None
+
+
+def message_erreur_date_paiement(
+    statut_choisi: str,
+    date_paiement: date | None,
+    date_fin: date,
+    message_precedent: str | None,
+) -> str | None:
+    """Orchestration pure du message affiché par `_section_enregistrement`
+    — spec `tableau-de-bord-periode-globale`, tâche 6.1 (Req 6.2, 6.4).
+
+    Si ``statut_choisi != "EMISE"`` (BROUILLON) : retourne
+    ``message_precedent`` inchangé, sans jamais appeler
+    `valider_date_paiement_pour_emission` — la validation propre à
+    l'émission ne s'applique pas, et un message déjà affiché n'est
+    jamais effacé (Req 6.4). Si ``statut_choisi == "EMISE"`` : retourne
+    `valider_date_paiement_pour_emission(date_paiement, date_fin)`,
+    recalculé à chaque appel, sans jamais tenir compte de
+    ``message_precedent`` (Req 6.2 — la validation est réévaluée avant
+    toute tentative d'insertion).
+    """
+    if statut_choisi != "EMISE":
+        return message_precedent
+    return valider_date_paiement_pour_emission(date_paiement, date_fin)

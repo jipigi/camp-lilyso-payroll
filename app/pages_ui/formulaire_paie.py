@@ -84,6 +84,7 @@ from app.logique_metier.fiche_employe import parametres_effectifs_par_defaut
 from app.logique_metier.formulaire_paie import (
     construire_payroll_input,
     generer_id_paie,
+    message_erreur_date_paiement,
     repartir_heures_sur_semaines,
     valeurs_effectives_depuis_paie,
 )
@@ -670,12 +671,21 @@ def _section_nouvelle_paie(
     if paie_assemblee is not None:
         _afficher_paie_assemblee(paie_assemblee)
         _section_enregistrement(
-            paie_assemblee, annee_fiscale, cle_prefixe="fp_nouvelle"
+            paie_assemblee,
+            annee_fiscale,
+            date_fin=date_fin,
+            date_paiement=date_paiement,
+            cle_prefixe="fp_nouvelle",
         )
 
 
 def _section_enregistrement(
-    paie_assemblee: PayrollResult, annee_fiscale: int, *, cle_prefixe: str
+    paie_assemblee: PayrollResult,
+    annee_fiscale: int,
+    *,
+    date_fin: date,
+    date_paiement: date | None,
+    cle_prefixe: str,
 ) -> None:
     """Choix BROUILLON/EMISE, saison, confirmation, ``inserer_paie`` (Req 12, 3.3).
 
@@ -684,6 +694,17 @@ def _section_enregistrement(
     assemblé, conservé en session sous
     `f"{cle_prefixe}_payroll_input_assemble"` (tâche 5.2), est transmis
     à `inserer_paie` pour persistance dans `payload_input_json`.
+
+    Depuis la spec `tableau-de-bord-periode-globale` (Décision 8,
+    Req 6) : ``date_fin``/``date_paiement`` sont les valeurs **vives**
+    des widgets de `_section_nouvelle_paie` au moment du rendu courant
+    — jamais lues depuis `paie_assemblee.pay_period`, qui peut être
+    obsolète si l'opérateur a modifié ces widgets sans ré-assembler.
+    Le message de validation de la date de paiement à l'émission est
+    recalculé à chaque rendu (`message_erreur_date_paiement`) et
+    persiste dans `st.session_state` sous
+    `f"{cle_prefixe}_message_erreur_date_paiement"` afin de ne pas être
+    effacé lors d'un retour en BROUILLON (Req 6.4).
     """
     payroll_input_assemble = st.session_state.get(
         f"{cle_prefixe}_payroll_input_assemble"
@@ -694,6 +715,17 @@ def _section_enregistrement(
     )
     saison = st.text_input(
         "Saison", value=f"Été {annee_fiscale}", key=f"{cle_prefixe}_saison"
+    )
+
+    cle_message_erreur_date_paiement = f"{cle_prefixe}_message_erreur_date_paiement"
+    message_erreur_date_paiement_actuel = message_erreur_date_paiement(
+        statut_choisi,
+        date_paiement,
+        date_fin,
+        st.session_state.get(cle_message_erreur_date_paiement),
+    )
+    st.session_state[cle_message_erreur_date_paiement] = (
+        message_erreur_date_paiement_actuel
     )
 
     confirmation = True
@@ -707,6 +739,13 @@ def _section_enregistrement(
     if st.button(
         "Enregistrer la paie", type="primary", key=f"{cle_prefixe}_enregistrer"
     ):
+        if statut_choisi == "EMISE" and message_erreur_date_paiement_actuel is not None:
+            # Req 6.1, 6.2 — blocage immédiat, avant toute tentative
+            # d'insertion (aucun appel à `_inserer()` dans cette
+            # branche).
+            st.error(message_erreur_date_paiement_actuel)
+            return
+
         if not confirmation:
             st.warning(
                 "Confirmation requise avant d'émettre une paie de façon "

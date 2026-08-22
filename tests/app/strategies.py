@@ -137,6 +137,7 @@ __all__ = [
     "st_payroll_result_arbitraire",
     "st_periode_fiscale",
     "st_cellule_montant_ou_indisponible",
+    "st_ligne_paie_resume_arbitraire",
 ]
 
 
@@ -616,3 +617,128 @@ def st_cellule_montant_ou_indisponible() -> st.SearchStrategy[Decimal | None]:
         st.none(),
         _st_decimal_monetaire(max_value=Decimal("1000000.00")),
     )
+
+
+# ===========================================================================
+# Stratégies dédiées à la spec ``tableau-de-bord-periode-globale``
+# (design.md §Testing Strategy « Stratégies Hypothesis nécessaires »,
+#  tâche 2.2)
+# ===========================================================================
+
+
+#: Statuts admis par `paies_pour_colonne` (BROUILLON, EMISE) — réutilisés
+#: tels quels par `st_ligne_paie_resume_arbitraire` ci-dessous.
+_STATUTS_COLONNE_PAIES_TEST = ("brouillon", "emise")
+
+#: Statuts hors périmètre de la Colonne_Paies (ANNULEE, REMPLACE_PAR) —
+#: générés délibérément par `st_ligne_paie_resume_arbitraire` (Property
+#: 6) pour vérifier que `paies_pour_colonne` les exclut bien du résultat.
+_STATUTS_HORS_COLONNE_PAIES_TEST = ("annulee", "remplace_par")
+
+
+def _st_date_paiement_iso_ou_none() -> st.SearchStrategy[str | None]:
+    """Chaîne ISO de date de paiement arbitraire, ou `None`.
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires »,
+    tâche 2.2) : `LignePaieResume.date_paiement` est une chaîne ISO
+    simple (`date.isoformat()`), jamais un `datetime` — cette stratégie
+    tire une `date` arbitraire (bornée à `_DATE_MIN`/`_DATE_MAX`, mêmes
+    bornes que le reste de ce module) puis la sérialise. Inclut `None`
+    (cas défensif de `LignePaieResume`, voir docstring du modèle dans
+    `dernieres_paies.py`) pour vérifier que `paies_pour_colonne` exclut
+    bien ces résumés du résultat plutôt que de lever une exception.
+    """
+    return st.one_of(
+        st.none(),
+        st.dates(min_value=_DATE_MIN, max_value=_DATE_MAX).map(date.isoformat),
+    )
+
+
+@st.composite
+def st_ligne_paie_resume_arbitraire(draw: st.DrawFn) -> "LignePaieResume":  # noqa: F821
+    """``LignePaieResume`` arbitraire — statut, date de paiement et
+    ``numero_periode`` libres (Property 6).
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires »,
+    tâche 2.2) : cette stratégie exerce délibérément **tous** les
+    statuts de :class:`~models.enums.StatutDePaie` (``BROUILLON``,
+    ``EMISE``, mais aussi ``ANNULEE``/``REMPLACE_PAR`` hors périmètre de
+    la Colonne_Paies) ainsi que ``date_paiement=None`` (cas défensif),
+    pour que la Property 6 (`app/logique_metier/dernieres_paies.py::
+    paies_pour_colonne`) puisse vérifier à la fois le filtrage (statut
+    hors `{BROUILLON, EMISE}` ou `date_paiement` absente/hors année →
+    exclu) et l'ordre (BROUILLON avant EMISE, puis date de paiement
+    décroissante, puis `numero_periode` croissant en cas d'égalité).
+
+    `id_paie`, `version`, `net`, `saison`, `annee_fiscale`,
+    `date_creation`, `date_emission` sont des valeurs fictives simples
+    sans rapport avec cette property (non exercées par
+    `paies_pour_colonne`) — même patron que `_st_champs_ligne_paie_
+    resume` de `tests/app/logique_metier/test_dernieres_paies.py`, dont
+    cette stratégie est la version réutilisable/exportée pour la tâche
+    2.2 (Property 6).
+
+    Import différé de :class:`LignePaieResume` (règle 06, TDD) : ce
+    modèle est défini par `app/logique_metier/dernieres_paies.py`,
+    importé ici **à l'intérieur** du corps de la stratégie pour rester
+    cohérent avec les autres stratégies à import différé de ce module.
+
+    Règle 01 : `net` reste une chaîne (`str`), jamais un `float`.
+    """
+    from app.logique_metier.dernieres_paies import LignePaieResume
+
+    statut = draw(
+        st.sampled_from(
+            _STATUTS_COLONNE_PAIES_TEST + _STATUTS_HORS_COLONNE_PAIES_TEST
+        )
+    )
+    numero_periode = draw(st.integers(min_value=1, max_value=27))
+    date_paiement = draw(_st_date_paiement_iso_ou_none())
+
+    return LignePaieResume(
+        id_paie=f"PAIE-TEST-{draw(st.integers(min_value=0, max_value=999_999))}",
+        numero_periode=numero_periode,
+        version=draw(st.integers(min_value=1, max_value=5)),
+        statut=statut,
+        net=str(draw(st.integers(min_value=0, max_value=100_000))),
+        saison="Été 2026",
+        annee_fiscale=draw(st.integers(min_value=2020, max_value=2035)),
+        date_creation="2026-01-01T00:00:00",
+        date_emission=None,
+        date_paiement=date_paiement,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Property 9 — Validation de la date de paiement à l'émission
+# (design.md §Testing Strategy « Stratégies Hypothesis nécessaires »,
+#  tâche 6.2)
+# ---------------------------------------------------------------------------
+
+
+@st.composite
+def st_dates_fin_et_paiement_arbitraire(
+    draw: st.DrawFn,
+) -> tuple[date, date | None]:
+    """Paire `(date_fin, date_paiement)` arbitraire, `date_paiement`
+    incluant `None` (Property 9).
+
+    Design (§Testing Strategy « Stratégies Hypothesis nécessaires »,
+    tâche 6.2) : contrairement à `st_dates_periode_valide()` (couple
+    contigu `date_debut`/`date_fin` d'une même `PayPeriod`), cette
+    stratégie tire deux dates totalement indépendantes — `date_fin`
+    (toujours une `date`) et `date_paiement` (`date` ou `None`, cas
+    d'absence de saisie) — pour couvrir tous les cas exercés par
+    `valider_date_paiement_pour_emission` : `date_paiement` absente,
+    strictement antérieure à `date_fin`, égale à `date_fin`, ou
+    strictement postérieure. Mêmes bornes (`_DATE_MIN`/`_DATE_MAX`) que
+    le reste de ce module.
+    """
+    date_fin = draw(st.dates(min_value=_DATE_MIN, max_value=_DATE_MAX))
+    date_paiement = draw(
+        st.one_of(
+            st.none(),
+            st.dates(min_value=_DATE_MIN, max_value=_DATE_MAX),
+        )
+    )
+    return date_fin, date_paiement

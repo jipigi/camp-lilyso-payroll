@@ -68,7 +68,11 @@ from models.enums import FrequencePaie
 from models.exceptions import UnsupportedPayrollCase
 from models.pay_period import PayPeriod, WeekSegment
 from models.payroll_input import HeuresParSemaine, PayrollInput
-from tests.app.strategies import st_dates_periode_valide, st_employee_valide
+from tests.app.strategies import (
+    st_dates_fin_et_paiement_arbitraire,
+    st_dates_periode_valide,
+    st_employee_valide,
+)
 from tests.strategies import (
     st_heures_par_semaine,
     st_payroll_input,
@@ -1204,3 +1208,144 @@ class TestExplorationValeursEffectivesHeures:
             f"`total_heures_supplementaires`, obtenu {reconstruit!r} "
             "(Property 4, Req 3.4)."
         )
+
+
+# ---------------------------------------------------------------------------
+# Property 9 — Validation de la date de paiement à l'émission
+# ---------------------------------------------------------------------------
+#
+# Spec de référence : ``tableau-de-bord-periode-globale`` — tâche 6.2.
+# Design de référence : ``design.md`` §Correctness Properties, Property 9.
+#
+# Feature: tableau-de-bord-periode-globale, Property 9: Validation de la date de paiement à l'émission
+#
+# *Pour toute* `date_fin` et *toute* `date_paiement` (y compris absente),
+# `valider_date_paiement_pour_emission(date_paiement, date_fin)` retourne
+# un message non `None` si et seulement si `date_paiement` est absente
+# ou strictement antérieure à `date_fin`.
+#
+# _Requirements: 6.1, 6.3_
+# _Design: §Components §6 ; §Correctness Properties 9_
+
+
+class TestValiderDatePaiementPourEmission:
+    """Property 9 — validation de la date de paiement à l'émission."""
+
+    # Feature: tableau-de-bord-periode-globale, Property 9: Validation de la date de paiement à l'émission
+    @pytest.mark.property
+    @given(dates=st_dates_fin_et_paiement_arbitraire())
+    @settings_large_input
+    def test_message_non_none_si_et_seulement_si_absente_ou_anterieure(
+        self, dates: tuple[date, date | None]
+    ) -> None:
+        """Property 9 (Req 6.1, 6.3).
+
+        Pour toute `date_fin` et toute `date_paiement` (y compris
+        absente), `valider_date_paiement_pour_emission(date_paiement,
+        date_fin)` doit retourner un message non `None` si et seulement
+        si `date_paiement` est `None` ou strictement antérieure à
+        `date_fin` — dans tous les autres cas (date présente et
+        `>= date_fin`), le résultat doit être exactement `None`.
+        """
+        from app.logique_metier.formulaire_paie import (
+            valider_date_paiement_pour_emission,
+        )
+
+        date_fin, date_paiement = dates
+
+        resultat = valider_date_paiement_pour_emission(date_paiement, date_fin)
+
+        doit_etre_bloquant = date_paiement is None or date_paiement < date_fin
+
+        if doit_etre_bloquant:
+            assert resultat is not None, (
+                "valider_date_paiement_pour_emission doit retourner un "
+                "message non None quand date_paiement est absente ou "
+                f"strictement antérieure à date_fin (date_fin={date_fin!r}, "
+                f"date_paiement={date_paiement!r}), obtenu None."
+            )
+        else:
+            assert resultat is None, (
+                "valider_date_paiement_pour_emission doit retourner None "
+                "quand date_paiement est présente et >= date_fin "
+                f"(date_fin={date_fin!r}, date_paiement={date_paiement!r}), "
+                f"obtenu {resultat!r}."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Property 10 — Non-application et non-effacement du message en BROUILLON
+# ---------------------------------------------------------------------------
+#
+# Spec de référence : ``tableau-de-bord-periode-globale`` — tâche 6.3.
+# Design de référence : ``design.md`` §Correctness Properties, Property 10.
+#
+# Feature: tableau-de-bord-periode-globale, Property 10: Non-application et non-effacement du message en BROUILLON
+#
+# *Pour tout* `message_precedent` (y compris absent) et *toute*
+# combinaison arbitraire de `date_paiement`/`date_fin`, si
+# `statut_choisi` vaut `"BROUILLON"`, `message_erreur_date_paiement`
+# retourne exactement `message_precedent`, inchangé ; si `statut_choisi`
+# vaut `"EMISE"`, elle retourne exactement
+# `valider_date_paiement_pour_emission(date_paiement, date_fin)`,
+# indépendamment de `message_precedent`.
+#
+# _Requirements: 6.2, 6.4_
+# _Design: §Components §6 ; §Correctness Properties 10_
+
+
+class TestMessageErreurDatePaiement:
+    """Property 10 — non-application et non-effacement du message en BROUILLON."""
+
+    # Feature: tableau-de-bord-periode-globale, Property 10: Non-application et non-effacement du message en BROUILLON
+    @pytest.mark.property
+    @given(
+        dates=st_dates_fin_et_paiement_arbitraire(),
+        message_precedent=st.one_of(st.none(), st.text()),
+        statut_choisi=st.sampled_from(["BROUILLON", "EMISE"]),
+    )
+    @settings_large_input
+    def test_broulon_conserve_message_precedent_emise_recalcule(
+        self,
+        dates: tuple[date, date | None],
+        message_precedent: str | None,
+        statut_choisi: str,
+    ) -> None:
+        """Property 10 (Req 6.2, 6.4).
+
+        Pour tout `message_precedent` (y compris absent) et toute
+        combinaison arbitraire de `date_paiement`/`date_fin` :
+
+        - si `statut_choisi == "BROUILLON"`,
+          `message_erreur_date_paiement` doit retourner exactement
+          `message_precedent`, inchangé (jamais recalculé, jamais
+          effacé) ;
+        - si `statut_choisi == "EMISE"`, elle doit retourner exactement
+          `valider_date_paiement_pour_emission(date_paiement,
+          date_fin)`, indépendamment de `message_precedent`.
+        """
+        from app.logique_metier.formulaire_paie import (
+            message_erreur_date_paiement,
+            valider_date_paiement_pour_emission,
+        )
+
+        date_fin, date_paiement = dates
+
+        resultat = message_erreur_date_paiement(
+            statut_choisi, date_paiement, date_fin, message_precedent
+        )
+
+        if statut_choisi == "BROUILLON":
+            assert resultat == message_precedent, (
+                "message_erreur_date_paiement doit retourner exactement "
+                f"message_precedent ({message_precedent!r}) quand "
+                f"statut_choisi == 'BROUILLON', obtenu {resultat!r}."
+            )
+        else:
+            attendu = valider_date_paiement_pour_emission(date_paiement, date_fin)
+            assert resultat == attendu, (
+                "message_erreur_date_paiement doit retourner exactement "
+                "valider_date_paiement_pour_emission(date_paiement, "
+                f"date_fin) ({attendu!r}) quand statut_choisi == 'EMISE', "
+                f"obtenu {resultat!r} (message_precedent={message_precedent!r})."
+            )

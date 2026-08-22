@@ -2303,6 +2303,90 @@ class TestAgregationDrapeauCnesst:
 # _Design: §Testing Strategy « Test de garde structurel »_
 
 
+# ---------------------------------------------------------------------------
+# Property 2 (tableau-de-bord-periode-globale) — Présélection par défaut
+# toujours disponible
+# ---------------------------------------------------------------------------
+#
+# Feature: tableau-de-bord-periode-globale, Property 2: Présélection par défaut toujours disponible
+#
+# *Pour toute* année courante et *tout* tuple de `PayrollResult` `EMISE`,
+# `determiner_annee_par_defaut(annee_courante)` retourne
+# `PeriodeFiscale(annee=annee_courante, mois=None)`, et cette période
+# correspond toujours à une option de
+# `construire_options_annee(paies_emises, annee_courante)`.
+#
+# _Requirements: 1.4, 1.5_
+# _Design: `tableau-de-bord-periode-globale/design.md` §Components §1 ;
+# §Correctness Properties 2_
+
+
+class TestPreselectionAnneeParDefautToujoursDisponible:
+    """Property 2 (`tableau-de-bord-periode-globale`) — présélection par
+    défaut toujours disponible."""
+
+    # Feature: tableau-de-bord-periode-globale, Property 2: Présélection par défaut toujours disponible
+    @pytest.mark.property
+    @given(
+        paies_emises=_st_paies_emises(),
+        annee_courante=st.integers(min_value=2020, max_value=2035),
+    )
+    @settings_large_input
+    def test_annee_par_defaut_correspond_toujours_a_une_option_de_construire_options_annee(
+        self,
+        paies_emises: tuple[PayrollResult, ...],
+        annee_courante: int,
+    ) -> None:
+        """Property 2 (Requirements 1.4, 1.5).
+
+        Pour toute ``annee_courante`` et tout ``paies_emises`` (paies
+        `EMISE` arbitraires, `date_paiement` libres),
+        `determiner_annee_par_defaut(annee_courante)` doit retourner
+        exactement `PeriodeFiscale(annee=annee_courante, mois=None)` —
+        jamais une autre année, jamais un `Mois_Fiscal` (`mois` non
+        `None`). Cette période retournée doit toujours correspondre à
+        exactement une des options produites par
+        `construire_options_annee(paies_emises, annee_courante)` (Req
+        1.4 si l'année courante est déjà une Annee_Avec_Paie_Emise ;
+        Req 1.5 via l'Option_Annee_Courante_De_Repli sinon) —
+        `construire_options_annee` garantissant, par construction,
+        qu'`annee_courante` y figure toujours exactement une fois.
+        """
+        from app.logique_metier.bilan_fiscal import (
+            PeriodeFiscale,
+            construire_options_annee,
+            determiner_annee_par_defaut,
+        )
+
+        periode_par_defaut = determiner_annee_par_defaut(annee_courante)
+
+        assert periode_par_defaut == PeriodeFiscale(
+            annee=annee_courante, mois=None
+        ), (
+            "`determiner_annee_par_defaut(annee_courante)` doit retourner "
+            f"exactement PeriodeFiscale(annee={annee_courante!r}, "
+            f"mois=None) ; obtenu {periode_par_defaut!r}."
+        )
+
+        options = construire_options_annee(paies_emises, annee_courante)
+        periodes_options = tuple(option.periode for option in options)
+
+        assert periode_par_defaut in periodes_options, (
+            "La période présélectionnée par défaut "
+            f"({periode_par_defaut!r}) doit toujours correspondre à une "
+            f"option de `construire_options_annee(paies_emises, "
+            f"{annee_courante!r})` ; options obtenues : "
+            f"{periodes_options!r}."
+        )
+
+        occurrences = periodes_options.count(periode_par_defaut)
+        assert occurrences == 1, (
+            "La période présélectionnée par défaut doit correspondre à "
+            f"exactement une option (jamais un doublon) ; obtenu "
+            f"{occurrences} occurrence(s) parmi {periodes_options!r}."
+        )
+
+
 class TestAucunImportInterditPayrollEngine:
     """Test de garde structurel — aucune fonction de `payroll_engine/`
     autre que `chemin_bd_production` n'est importée par
@@ -2407,3 +2491,401 @@ class TestAucunImportInterditPayrollEngine:
                 "`chemin_bd_production`). Violations détectées : "
                 + ", ".join(sorted(violations))
             )
+
+
+# ---------------------------------------------------------------------------
+# Spec ``tableau-de-bord-periode-globale`` — Property 1 : Options d'année
+# exactes et sans doublon (Selecteur_De_Periode_Global, `construire_options_
+# annee`)
+# ---------------------------------------------------------------------------
+#
+# Feature: tableau-de-bord-periode-globale, Property 1: Options d'année exactes et sans doublon
+#
+# *Pour tout* tuple de `PayrollResult` `EMISE` et *toute* année courante,
+# l'ensemble des années produites par `construire_options_annee` est
+# exactement l'union des années de rattachement présentes dans les paies
+# et de l'année courante, chacune apparaissant exactement une fois,
+# triées par année décroissante, et aucune option ne porte de
+# `periode.mois` non `None`.
+#
+# Validates: Requirements 1.1, 1.2, 1.3
+
+
+def _st_annee_courante() -> st.SearchStrategy[int]:
+    """Année courante arbitraire, même fenêtre que `st_periode_fiscale`
+    (`tests/app/strategies.py`) — aucune signification métier propre au
+    delà de couvrir un ordre de grandeur cohérent avec les années de
+    rattachement générées par `st_payroll_result_arbitraire`."""
+    return st.integers(min_value=2020, max_value=2035)
+
+
+def _construire_paie_emise_exemple(*, date_paiement: date) -> PayrollResult:
+    """`PayrollResult` `EMISE` concret minimal, `date_paiement` imposée
+    (tâche 1.4, tests d'exemple des cas limites de
+    `construire_options_annee`).
+
+    Fabrique locale directe (même patron que
+    `tests/models/test_payroll_result.py::_make_result`) plutôt qu'un
+    tirage Hypothesis : ces tests d'exemple n'ont besoin de faire varier
+    que ``date_paiement`` — tous les autres champs (montants à zéro,
+    identifiants fixes) sont sans incidence sur le comportement de
+    `construire_options_annee`, qui ne lit que `pay_period.date_paiement`
+    et `statut`. Seule `date_paiement` diffère d'un appel à l'autre.
+    """
+    from datetime import datetime, timedelta
+    from decimal import Decimal
+
+    from models.cumuls import CumulsYTD
+    from models.enums import FrequencePaie, Juridiction, ModeArrondissement
+    from models.pay_period import PayPeriod, WeekSegment
+    from models.payroll_result import (
+        CotisationsEmployeur,
+        GainsDecomposes,
+        MontantAvecTrace,
+        RetenuesEmploye,
+    )
+    from models.trace import CalculationTrace
+
+    def _trace(resultat: Decimal) -> CalculationTrace:
+        return CalculationTrace(
+            source="TP-1015.F 2026",
+            annee=2026,
+            juridiction=Juridiction.QUEBEC,
+            section="Section fixture (tâche 1.4)",
+            parametres_utilises={},
+            entrees={},
+            sous_totaux={},
+            mode_arrondissement=ModeArrondissement.ROUND_HALF_UP,
+            precision_arrondissement=2,
+            resultat=resultat,
+        )
+
+    def _montant(montant: Decimal) -> MontantAvecTrace:
+        return MontantAvecTrace(montant=montant, trace=_trace(montant))
+
+    zero = Decimal("0.00")
+
+    date_debut = date_paiement - timedelta(days=18)
+    date_fin = date_debut + timedelta(days=13)
+    semaine_1 = WeekSegment(
+        date_debut=date_debut,
+        date_fin=date_debut + timedelta(days=6),
+        heures_normales=zero,
+        heures_supplementaires=zero,
+    )
+    semaine_2 = WeekSegment(
+        date_debut=date_debut + timedelta(days=7),
+        date_fin=date_fin,
+        heures_normales=zero,
+        heures_supplementaires=zero,
+    )
+    pay_period = PayPeriod(
+        numero_periode=1,
+        date_debut=date_debut,
+        date_fin=date_fin,
+        date_paiement=date_paiement,
+        frequence=FrequencePaie.AUX_DEUX_SEMAINES,
+        nb_periodes_annuelles=26,
+        annee_fiscale=date_paiement.year,
+        semaines=(semaine_1, semaine_2),
+    )
+
+    retenues_employe = RetenuesEmploye(
+        rrq=_montant(zero),
+        rqap=_montant(zero),
+        ae=_montant(zero),
+        impot_qc_formule=_montant(zero),
+        impot_qc_retenu=_montant(zero),
+        impot_federal_formule=_montant(zero),
+        impot_federal_retenu=_montant(zero),
+        total_retenues_employe=zero,
+    )
+    cotisations_employeur = CotisationsEmployeur(
+        rrq_employeur=_montant(zero),
+        rqap_employeur=_montant(zero),
+        ae_employeur=_montant(zero),
+        fss=_montant(zero),
+        cnesst=_montant(zero),
+        cnesst_en_attente_classification=False,
+        cnt=_montant(zero),
+        total_cotisations_employeur=zero,
+    )
+    gains = GainsDecomposes(
+        salaire_regulier=zero,
+        heures_supplementaires_montant=zero,
+        vacances=zero,
+        jours_feries_manuels=zero,
+        brut_total=zero,
+        multiplicateur_heures_supp=Decimal("1.5"),
+        seuil_heures_supp_hebdo=Decimal("40"),
+    )
+
+    return PayrollResult(
+        id_paie=f"PAIE-EMP001-{date_paiement.year}-1-EXEMPLE-{date_paiement.isoformat()}",
+        version=1,
+        employe_id="EMP001",
+        annee_fiscale=date_paiement.year,
+        pay_period=pay_period,
+        gains=gains,
+        retenues_employe=retenues_employe,
+        cotisations_employeur=cotisations_employeur,
+        net=zero,
+        cout_employeur=zero,
+        cumuls_fin=CumulsYTD.zero("EMP001", date_paiement.year),
+        statut=StatutDePaie.EMISE,
+        remplace_par_id=None,
+        date_creation=datetime(date_paiement.year, 1, 1, 12, 0, 0),
+        date_emission=datetime(date_paiement.year, 1, 1, 12, 0, 0),
+    )
+
+
+class TestConstruireOptionsAnneeExactesEtSansDoublon:
+    """Property 1 (spec ``tableau-de-bord-periode-globale``) — options
+    d'année exactes et sans doublon."""
+
+    # Feature: tableau-de-bord-periode-globale, Property 1: Options d'année exactes et sans doublon
+    @pytest.mark.property
+    @given(
+        paies_emises=_st_paies_emises(),
+        annee_courante=_st_annee_courante(),
+    )
+    @settings_large_input
+    def test_options_annee_exactes_sans_doublon_triees_decroissant(
+        self,
+        paies_emises: tuple[PayrollResult, ...],
+        annee_courante: int,
+    ) -> None:
+        """Property 1 (Requirements 1.1, 1.2, 1.3).
+
+        L'ensemble des années portées par les `OptionPeriode` retournées
+        par `construire_options_annee(paies_emises, annee_courante)` doit
+        correspondre exactement à l'union des années de rattachement
+        (`mois_annee_rattachement(pay_period.date_paiement)[0]`) de
+        ``paies_emises`` et de ``annee_courante`` — chaque année
+        n'apparaissant qu'une seule fois (aucun doublon, notamment quand
+        ``annee_courante`` est déjà une Annee_Avec_Paie_Emise), triées
+        par année décroissante, et sans jamais produire d'option
+        `periode.mois` non `None` (aucune option de type Mois_Fiscal).
+        """
+        from app.logique_metier.bilan_fiscal import (
+            OptionPeriode,
+            construire_options_annee,
+            formater_option_annee_complete,
+            mois_annee_rattachement,
+        )
+
+        annees_attendues = {
+            mois_annee_rattachement(paie.pay_period.date_paiement)[0]
+            for paie in paies_emises
+        }
+        annees_attendues.add(annee_courante)
+
+        options: tuple[OptionPeriode, ...] = construire_options_annee(
+            paies_emises, annee_courante
+        )
+
+        annees_obtenues = [option.periode.annee for option in options]
+
+        assert set(annees_obtenues) == annees_attendues, (
+            "`construire_options_annee(paies_emises, annee_courante)` doit "
+            "produire exactement l'union des années de rattachement des "
+            "paies et de `annee_courante` ; attendu "
+            f"{sorted(annees_attendues, reverse=True)!r}, obtenu "
+            f"{sorted(annees_obtenues, reverse=True)!r}."
+        )
+        assert len(options) == len(annees_attendues), (
+            "`construire_options_annee` ne doit produire aucune année en "
+            f"double ; attendu {len(annees_attendues)} option(s) distincte(s), "
+            f"obtenu {len(options)}."
+        )
+        assert annees_obtenues == sorted(annees_attendues, reverse=True), (
+            "`construire_options_annee` doit trier ses options par année "
+            f"décroissante ; attendu {sorted(annees_attendues, reverse=True)!r}, "
+            f"obtenu {annees_obtenues!r}."
+        )
+        assert all(option.periode.mois is None for option in options), (
+            "`construire_options_annee` ne doit jamais produire d'option "
+            "de type Mois_Fiscal (`periode.mois` doit toujours valoir "
+            f"`None`) ; obtenu {[o.periode for o in options]!r}."
+        )
+        assert all(
+            option.libelle == formater_option_annee_complete(option.periode.annee)
+            for option in options
+        ), (
+            "chaque `OptionPeriode.libelle` doit correspondre à "
+            "`formater_option_annee_complete(periode.annee)`."
+        )
+
+    # Feature: tableau-de-bord-periode-globale, Property 1: Options d'année exactes et sans doublon
+    def test_exemple_annee_courante_deja_presente_parmi_les_annee_avec_paie_emise_ne_produit_pas_de_doublon(
+        self,
+    ) -> None:
+        """Test d'exemple — cas limite « année courante déjà présente
+        parmi les Annee_Avec_Paie_Emise » (Requirements 1.2, 1.3).
+
+        ``paies_emises`` contient une paie `EMISE` concrète dont l'année
+        de rattachement (`mois_annee_rattachement(pay_period.
+        date_paiement)[0]`) est exactement ``annee_courante`` (2026).
+        Puisque l'année courante est déjà une Annee_Avec_Paie_Emise,
+        `construire_options_annee` NE DOIT PAS ajouter
+        l'Option_Annee_Courante_De_Repli (Req 1.3) — il ne doit y avoir
+        qu'une seule option pour 2026, jamais un doublon (Req 1.2).
+        """
+        from app.logique_metier.bilan_fiscal import (
+            OptionPeriode,
+            PeriodeFiscale,
+            construire_options_annee,
+            formater_option_annee_complete,
+        )
+
+        annee_courante = 2026
+        paies_emises = (
+            _construire_paie_emise_exemple(date_paiement=date(2026, 7, 10)),
+        )
+
+        options = construire_options_annee(paies_emises, annee_courante)
+
+        annees_obtenues = [option.periode.annee for option in options]
+
+        assert annees_obtenues.count(annee_courante) == 1, (
+            "Lorsque l'année courante (2026) est déjà une "
+            "Annee_Avec_Paie_Emise, `construire_options_annee` ne doit "
+            "produire qu'une seule option pour cette année (jamais de "
+            f"doublon) ; obtenu {annees_obtenues!r}."
+        )
+        assert options == (
+            OptionPeriode(
+                libelle=formater_option_annee_complete(annee_courante),
+                periode=PeriodeFiscale(annee=annee_courante, mois=None),
+            ),
+        ), (
+            "`construire_options_annee` doit produire exactement une "
+            f"option unique pour 2026 ; obtenu {options!r}."
+        )
+
+    # Feature: tableau-de-bord-periode-globale, Property 1: Options d'année exactes et sans doublon
+    def test_exemple_paies_emises_vide_produit_une_seule_option_de_repli(
+        self,
+    ) -> None:
+        """Test d'exemple — cas limite « `paies_emises` vide » (Requirements
+        1.2, 1.3).
+
+        Lorsque ``paies_emises`` est un tuple vide (aucune
+        Annee_Avec_Paie_Emise, quelle que soit l'année courante),
+        `construire_options_annee` doit produire exactement une seule
+        option : l'Option_Annee_Courante_De_Repli, portant `annee_courante`
+        et `periode.mois is None`.
+        """
+        from app.logique_metier.bilan_fiscal import (
+            OptionPeriode,
+            PeriodeFiscale,
+            construire_options_annee,
+            formater_option_annee_complete,
+        )
+
+        annee_courante = 2026
+
+        options = construire_options_annee((), annee_courante)
+
+        assert options == (
+            OptionPeriode(
+                libelle=formater_option_annee_complete(annee_courante),
+                periode=PeriodeFiscale(annee=annee_courante, mois=None),
+            ),
+        ), (
+            "`construire_options_annee((), annee_courante)` doit produire "
+            "exactement une seule option de repli pour l'année courante "
+            f"; obtenu {options!r}."
+        )
+
+# ---------------------------------------------------------------------------
+# Requirement 2.2 (spec ``tableau-de-bord-periode-globale``) — cas
+# `paies_emises = ()` avec l'Option_Annee_Courante_De_Repli sélectionnée
+# ---------------------------------------------------------------------------
+#
+# Critère d'acceptation non universel (un seul cas explicite suffit,
+# design §Testing Strategy) : aucune ligne ni aucun total du
+# Tableau_Bilan_Fiscal ne doit afficher l'indicateur d'indisponibilité
+# (`None`) lorsque `construire_tableau_bilan_fiscal` est appelée avec un
+# tuple de paies vide — cas produit par la sélection de l'Option_Annee_
+# Courante_De_Repli (aucune Paie_Emise pour l'année sélectionnée).
+#
+
+
+class TestEnsembleVideAvecOptionAnneeCouranteDeRepli:
+    """Requirement 2.2 (spec ``tableau-de-bord-periode-globale``) — le
+    Tableau_Bilan_Fiscal de l'Option_Annee_Courante_De_Repli n'affiche
+    jamais l'indicateur d'indisponibilité."""
+
+    def test_exemple_paies_emises_vide_aucun_total_ni_aucune_ligne_nest_indisponible(
+        self,
+    ) -> None:
+        """Test d'exemple — `construire_tableau_bilan_fiscal(())` (Req 2.2).
+
+        Lorsque `paies_emises` est vide (Option_Annee_Courante_De_Repli
+        sélectionnée, aucune Paie_Emise pour l'année sélectionnée),
+        chacune des neuf `LigneBilan` mono-juridictionnelles ET chacun
+        des six totaux (`total_retenues_qc`/`ca`, `total_cotisations_qc`/
+        `ca`, `grand_total_qc`/`ca`, `grand_total_combine`,
+        `total_salaires_nets`, `masse_salariale_totale`) doivent valoir
+        explicitement `Decimal("0.00")` — jamais `None` (l'indicateur
+        d'indisponibilité).
+        """
+        from decimal import Decimal
+
+        from app.logique_metier.bilan_fiscal import construire_tableau_bilan_fiscal
+
+        tableau = construire_tableau_bilan_fiscal(())
+
+        zero = Decimal("0.00")
+
+        for nom_ligne, _extracteur, _colonne_attribuee in _LIGNES_MONO_JURIDICTIONNELLES:
+            ligne = getattr(tableau, nom_ligne)
+            assert ligne.qc == zero, (
+                f"`tableau.{nom_ligne}.qc` doit valoir `Decimal('0.00')` "
+                f"pour `paies_emises = ()` ; obtenu {ligne.qc!r}."
+            )
+            assert ligne.ca == zero, (
+                f"`tableau.{nom_ligne}.ca` doit valoir `Decimal('0.00')` "
+                f"pour `paies_emises = ()` ; obtenu {ligne.ca!r}."
+            )
+
+        # Ligne Impôt (bi-juridictionnelle) — également jamais None.
+        assert tableau.ligne_impot.qc == zero, (
+            "`tableau.ligne_impot.qc` doit valoir `Decimal('0.00')` pour "
+            f"`paies_emises = ()` ; obtenu {tableau.ligne_impot.qc!r}."
+        )
+        assert tableau.ligne_impot.ca == zero, (
+            "`tableau.ligne_impot.ca` doit valoir `Decimal('0.00')` pour "
+            f"`paies_emises = ()` ; obtenu {tableau.ligne_impot.ca!r}."
+        )
+
+        totaux = {
+            "total_retenues_qc": tableau.total_retenues_qc,
+            "total_retenues_ca": tableau.total_retenues_ca,
+            "total_cotisations_qc": tableau.total_cotisations_qc,
+            "total_cotisations_ca": tableau.total_cotisations_ca,
+            "grand_total_qc": tableau.grand_total_qc,
+            "grand_total_ca": tableau.grand_total_ca,
+            "grand_total_combine": tableau.grand_total_combine,
+            "total_salaires_nets": tableau.total_salaires_nets,
+            "masse_salariale_totale": tableau.masse_salariale_totale,
+        }
+        for nom_total, valeur in totaux.items():
+            assert valeur is not None, (
+                f"`tableau.{nom_total}` ne doit jamais être `None` "
+                "(indicateur d'indisponibilité) pour `paies_emises = ()` "
+                "— l'Option_Annee_Courante_De_Repli doit produire un "
+                f"Tableau_Bilan_Fiscal intégralement à zéro ; obtenu None pour {nom_total!r}."
+            )
+            assert valeur == zero, (
+                f"`tableau.{nom_total}` doit valoir explicitement "
+                f"`Decimal('0.00')` pour `paies_emises = ()` ; obtenu "
+                f"{valeur!r}."
+            )
+
+        assert tableau.cnesst_en_attente_classification is False, (
+            "`tableau.cnesst_en_attente_classification` doit valoir "
+            "`False` pour `paies_emises = ()` ; obtenu "
+            f"{tableau.cnesst_en_attente_classification!r}."
+        )

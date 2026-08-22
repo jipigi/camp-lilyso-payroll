@@ -604,3 +604,56 @@ def lire_paies_emises(
         PayrollResult.model_validate_json(payload_json)
         for (payload_json,) in lignes
     )
+
+
+# ---------------------------------------------------------------------------
+# Selecteur_De_Periode_Global — options Annee_Complete uniquement
+# (Requirements 1.1-1.5 ; spec ``tableau-de-bord-periode-globale``, tâche 1.1)
+# ---------------------------------------------------------------------------
+
+
+def construire_options_annee(
+    paies_emises: tuple[PayrollResult, ...],
+    annee_courante: int,
+) -> tuple[OptionPeriode, ...]:
+    """Options Annee_Complete du Selecteur_De_Periode_Global (Req 1.1-1.3).
+
+    Détermine l'ensemble des années de rattachement
+    (:func:`mois_annee_rattachement` — réutilisée sans duplication)
+    présentes dans ``paies_emises``, y ajoute ``annee_courante`` si
+    absente (Option_Annee_Courante_De_Repli), formate chaque année via
+    :func:`formater_option_annee_complete` (réutilisée sans duplication),
+    puis trie par année décroissante. Ne produit jamais d'option de type
+    Mois_Fiscal — chaque `OptionPeriode.periode.mois` retourné vaut
+    toujours `None`. ``annee_courante`` figure toujours exactement une
+    fois dans le résultat (Req 1.2, 1.3 — jamais de doublon si elle est
+    déjà une Annee_Avec_Paie_Emise).
+    """
+    annees_presentes: set[int] = {
+        mois_annee_rattachement(paie.pay_period.date_paiement)[0]
+        for paie in paies_emises
+    }
+    annees_presentes.add(annee_courante)
+
+    options = tuple(
+        OptionPeriode(
+            libelle=formater_option_annee_complete(annee),
+            periode=PeriodeFiscale(annee=annee, mois=None),
+        )
+        for annee in sorted(annees_presentes, reverse=True)
+    )
+    return options
+
+
+def determiner_annee_par_defaut(annee_courante: int) -> PeriodeFiscale:
+    """Annee_Complete présélectionnée par défaut (Req 1.4, 1.5).
+
+    Toujours ``PeriodeFiscale(annee=annee_courante, mois=None)`` —
+    triviale par construction : :func:`construire_options_annee` garantit
+    que cette période correspond toujours à une option (réelle ou de
+    repli), il n'existe donc aucune branche de repli supplémentaire à
+    gérer ici (contrairement à :func:`determiner_periode_par_defaut`,
+    dont la logique de « jour du mois » ne s'applique qu'aux
+    Mois_Fiscal).
+    """
+    return PeriodeFiscale(annee=annee_courante, mois=None)
