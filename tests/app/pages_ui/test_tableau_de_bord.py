@@ -59,7 +59,10 @@ from app.pages_ui.tableau_de_bord import (
     _afficher_bilan_fiscal,
     _construire_html_liste_employes,
     _contenu_colonne_paies_html,
+    _formater_date_sans_annee,
+    _ligne_colonne_paie_html,
 )
+from app.logique_metier.dernieres_paies import paies_pour_colonne
 from models.employee import Employee
 from models.enums import Juridiction
 from tests.app.strategies import st_employee_valide, st_ligne_paie_resume_arbitraire
@@ -484,3 +487,403 @@ def test_property_8_isolation_erreurs_lecture_par_employe(
                 "jamais contenir le message d'erreur simulé (isolation "
                 f"des erreurs des autres lignes) ; obtenu {contenu!r}."
             )
+
+
+# ---------------------------------------------------------------------------
+# Exploration (Bug Condition) — Bug B, libellé de la Colonne_Paies
+# (bugfix ``unicite-paie-active-par-periode``, tâche 7)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Bug Details (Bug B),
+# §Correctness Properties (Property 2), §Testing Strategy « Exploratory
+# Bug Condition Checking ».
+#
+# Tâche 7 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ces tests d'exploration DOIVENT
+# échouer sur le code non corrigé — `_ligne_colonne_paie_html` affiche
+# actuellement l'année et omet le numéro de période, quel que soit le
+# statut. Ces échecs confirment `isBugCondition_Libelle(X)` (toujours
+# vraie sur le code non corrigé, pour tout statut BROUILLON/EMISE).
+#
+# **NE PAS corriger ces tests ni le code lorsqu'ils échouent** —
+# l'échec est le résultat attendu de cette tâche d'exploration (voir
+# tâches 7, 8).
+#
+# _Requirements: 1.4, 1.5_
+
+
+def _construire_ligne_paie_resume_exploration(
+    *,
+    statut: str,
+    numero_periode: int,
+    date_paiement: str | None = None,
+) -> "LignePaieResume":
+    """`LignePaieResume` minimal pour un test d'exploration (Req 04 —
+    jamais de donnée personnelle réelle, uniquement des champs
+    fictifs)."""
+    from app.logique_metier.dernieres_paies import LignePaieResume
+
+    return LignePaieResume(
+        id_paie=f"PAIE-TEST-EXPLORATION-{statut}-{numero_periode}",
+        numero_periode=numero_periode,
+        version=1,
+        statut=statut,
+        net="0.00",
+        saison="",
+        annee_fiscale=2026,
+        date_creation="2026-07-01T00:00:00",
+        date_emission="2026-07-29T00:00:00" if statut == "emise" else None,
+        date_paiement=date_paiement,
+    )
+
+
+class TestExplorationLibelleColonnePaies:
+    """Property 2 (Bug Condition) — exploration, Bug B (libellé
+    redondant/incomplet de la Colonne_Paies).
+
+    **NE PAS corriger ces tests ni le code lorsqu'ils échouent** —
+    l'échec est le résultat attendu de cette tâche d'exploration
+    (tâche 7 du plan). Le fix (tâche 8) rendra ces mêmes assertions
+    fausses (comportement volontairement inversé pour ce test
+    d'exploration).
+    """
+
+    def test_exemple_libelle_emise_contient_annee_et_omet_numero_periode(
+        self,
+    ) -> None:
+        """Test 1 (exemple) — Req 1.4.
+
+        Sur le code non corrigé, un `LignePaieResume` EMISE avec
+        `date_paiement="2026-07-29"` et `numero_periode=1` produit un
+        texte contenant l'année (`"2026"`) et ne contenant PAS
+        `"Paie #1"` — contre-exemple attendu (design §Testing Strategy,
+        Test Case 3). Ce test est désormais exécuté APRÈS le fix
+        (tâche 8) : il échoue intentionnellement, documentant le
+        comportement bugué d'origine — ne jamais le corriger (règle
+        06)."""
+        resume = _construire_ligne_paie_resume_exploration(
+            statut="emise",
+            numero_periode=1,
+            date_paiement="2026-07-29",
+        )
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+
+        assert "2026" in html_ligne and "Paie #1" not in html_ligne, (
+            "contre-exemple attendu (Bug B, code non corrigé) : le "
+            f"libellé devait contenir l'année et omettre le numéro de "
+            f"période ; obtenu {html_ligne!r} sur le code désormais "
+            "corrigé (tâche 8) — échec intentionnel, ne pas corriger."
+        )
+
+    def test_exemple_libelle_brouillon_affiche_une_date(self) -> None:
+        """Test 2 (exemple) — Req 1.5.
+
+        Sur le code non corrigé, un `LignePaieResume` BROUILLON affiche
+        quand même une date (alors qu'un brouillon ne devrait jamais en
+        afficher une) — contre-exemple attendu (design §Testing
+        Strategy, Test Case 4). Échec intentionnel après le fix (tâche
+        8) — ne jamais corriger ce test (règle 06)."""
+        resume = _construire_ligne_paie_resume_exploration(
+            statut="brouillon",
+            numero_periode=2,
+            date_paiement="2026-08-12",
+        )
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+
+        texte_visible = re.sub(r"<[^>]+>", "", html_ligne)
+        assert texte_visible != "Paie #2 - brouillon", (
+            "contre-exemple attendu (Bug B, code non corrigé) : une "
+            f"date devait apparaître pour un BROUILLON ; obtenu "
+            f"{texte_visible!r} sur le code désormais corrigé (tâche 8) "
+            "— échec intentionnel, ne pas corriger."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property 2 (Fix Checking) — Bug B, libellé de la Colonne_Paies sans
+# année (bugfix ``unicite-paie-active-par-periode``, tâche 9)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Correctness Properties (Property
+# 2), §Testing Strategy « Fix Checking ».
+#
+# Tâche 9 du plan d'implémentation. Le fix (tâche 8) est déjà en place
+# dans `_ligne_colonne_paie_html` — ce test vérifie, pour tout
+# `LignePaieResume` généré par Hypothesis, que le libellé produit ne
+# contient jamais l'année, contient toujours `f"Paie #{numero_periode}"`,
+# et respecte le suffixe exact attendu selon le statut.
+#
+# _Requirements: 2.4, 2.5, 2.6_
+
+
+class TestFixLibelleColonnePaies:
+    """Property 2 (Fix Checking) — Bug B, libellé sans année après le
+    fix de la tâche 8."""
+
+    # Feature: unicite-paie-active-par-periode, Property 2: Bug Condition - Libellé Colonne_Paies sans année
+    @given(resume=st_ligne_paie_resume_arbitraire())
+    @settings(suppress_health_check=[HealthCheck.too_slow])
+    def test_libelle_ne_contient_jamais_annee_et_contient_toujours_numero_periode(
+        self, resume: "LignePaieResume"
+    ) -> None:
+        """Property 2 (Req 2.4, 2.5, 2.6).
+
+        `st_ligne_paie_resume_arbitraire` génère aussi des statuts hors
+        périmètre de la Colonne_Paies (``annulee``, ``remplace_par``) —
+        seuls ``brouillon``/``emise`` sont exercés ici (les autres
+        statuts ne sont jamais passés à `_ligne_colonne_paie_html` par
+        l'appelant réel, `_contenu_colonne_paies_html`, qui les filtre
+        déjà via `paies_pour_colonne`). Pour ``emise``, `date_paiement`
+        doit être non `None` (exigence de `_formater_date_sans_annee`).
+        """
+        if resume.statut not in ("brouillon", "emise"):
+            return
+        if resume.statut == "emise" and resume.date_paiement is None:
+            return
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+        texte_visible = re.sub(r"<[^>]+>", "", html_ligne)
+
+        assert str(resume.annee_fiscale) not in texte_visible, (
+            "le libellé ne doit jamais afficher l'année fiscale ; "
+            f"obtenu {texte_visible!r} (annee_fiscale="
+            f"{resume.annee_fiscale!r})."
+        )
+        if resume.date_paiement is not None:
+            annee_extraite = resume.date_paiement[:4]
+            assert annee_extraite not in texte_visible, (
+                "le libellé ne doit jamais afficher l'année extraite de "
+                f"date_paiement ; obtenu {texte_visible!r}."
+            )
+
+        assert f"Paie #{resume.numero_periode}" in texte_visible, (
+            f"le libellé doit toujours afficher le numéro de période ; "
+            f"obtenu {texte_visible!r}."
+        )
+
+        if resume.statut == "emise":
+            date_attendue = _formater_date_sans_annee(resume.date_paiement)
+            assert texte_visible == (
+                f"Paie #{resume.numero_periode} - déposée le {date_attendue}"
+            ), (
+                "le suffixe EMISE doit être exact ; obtenu "
+                f"{texte_visible!r}."
+            )
+        else:
+            assert texte_visible == f"Paie #{resume.numero_periode} - brouillon", (
+                "le suffixe BROUILLON doit être exact, sans date ; "
+                f"obtenu {texte_visible!r}."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Property 4 (Preservation Checking) — Bug B, filtrage/tri/navigation
+# de la Colonne_Paies inchangés (bugfix
+# ``unicite-paie-active-par-periode``, tâche 10)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Correctness Properties (Property
+# 4), §Testing Strategy « Preservation Checking ».
+#
+# Tâche 10 du plan d'implémentation (optionnelle). Le fix (tâche 8) ne
+# touche jamais la construction du `href` de `_ligne_colonne_paie_html`
+# ni le filtrage/tri de `paies_pour_colonne` (non modifiée) — seul le
+# texte affiché change.
+#
+# _Requirements: 3.6, 3.7, 3.8_
+
+
+class TestPreservationNavigationEtFiltrageColonnePaies:
+    """Property 4 (Preservation) — Bug B, href et filtrage/tri
+    inchangés après le fix de la tâche 8."""
+
+    # Feature: unicite-paie-active-par-periode, Property 4: Preservation - Filtrage, tri et navigation de la Colonne_Paies
+    @given(resume=st_ligne_paie_resume_arbitraire())
+    @settings(suppress_health_check=[HealthCheck.too_slow])
+    def test_href_reste_identique_au_modele_dorigine(
+        self, resume: "LignePaieResume"
+    ) -> None:
+        """Property 4 (Req 3.8).
+
+        Le `href` produit par `_ligne_colonne_paie_html` doit rester
+        strictement identique à celui produit par la logique de
+        navigation d'origine (jamais modifiée par ce bugfix) :
+        `/formulaire-paie?employe_id=...&id_paie=...` si BROUILLON,
+        `/bulletin-paie?id_paie=...` si EMISE."""
+        if resume.statut not in ("brouillon", "emise"):
+            return
+        if resume.statut == "emise" and resume.date_paiement is None:
+            return
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+        correspondance = re.search(r'href="([^"]+)"', html_ligne)
+        assert correspondance is not None, (
+            f"aucun href trouvé dans le HTML produit ; obtenu {html_ligne!r}."
+        )
+        href_obtenu = correspondance.group(1)
+
+        if resume.statut == "brouillon":
+            href_attendu = (
+                "/formulaire-paie"
+                f"?employe_id={quote('EMP001')}"
+                f"&id_paie={quote(resume.id_paie)}"
+            )
+        else:
+            href_attendu = f"/bulletin-paie?id_paie={quote(resume.id_paie)}"
+
+        assert href_obtenu == href_attendu, (
+            "le href doit rester strictement identique au modèle "
+            f"d'origine ; obtenu {href_obtenu!r}, attendu {href_attendu!r}."
+        )
+
+    # Feature: unicite-paie-active-par-periode, Property 4: Preservation - Filtrage, tri et navigation de la Colonne_Paies
+    @given(
+        resumes=st.lists(st_ligne_paie_resume_arbitraire(), min_size=0, max_size=8),
+        annee=st.integers(min_value=2020, max_value=2035),
+    )
+    @settings(suppress_health_check=[HealthCheck.too_slow])
+    def test_paies_pour_colonne_filtre_et_trie_sans_regression(
+        self, resumes: list, annee: int
+    ) -> None:
+        """Property 4 (Req 3.6, 3.7).
+
+        `paies_pour_colonne` (non modifiée par ce bugfix) doit continuer
+        à ne retourner que les résumés de statut BROUILLON/EMISE dont
+        `date_paiement` appartient à ``annee``, triés BROUILLON avant
+        EMISE puis date de paiement décroissante puis numéro de
+        période croissant — test de garde plutôt qu'un test de fix,
+        cette fonction n'étant pas touchée par ce bugfix."""
+        resultat = paies_pour_colonne(tuple(resumes), annee)
+
+        for resume in resultat:
+            assert resume.statut in ("brouillon", "emise"), (
+                f"seuls BROUILLON/EMISE doivent apparaître ; obtenu "
+                f"{resume.statut!r}."
+            )
+            assert resume.date_paiement is not None, (
+                "aucun résumé sans date_paiement ne doit apparaître."
+            )
+            assert date.fromisoformat(resume.date_paiement).year == annee, (
+                "seuls les résumés de l'année sélectionnée doivent "
+                f"apparaître ; obtenu {resume.date_paiement!r} pour "
+                f"l'année {annee!r}."
+            )
+
+        for premier, second in zip(resultat, resultat[1:]):
+            cle_premier = (
+                0 if premier.statut == "brouillon" else 1,
+                date.fromisoformat(premier.date_paiement).toordinal() * -1,
+                premier.numero_periode,
+            )
+            cle_second = (
+                0 if second.statut == "brouillon" else 1,
+                date.fromisoformat(second.date_paiement).toordinal() * -1,
+                second.numero_periode,
+            )
+            assert cle_premier <= cle_second, (
+                "l'ordre BROUILLON avant EMISE, puis date décroissante, "
+                "puis numero_periode croissant doit être préservé ; "
+                f"obtenu {cle_premier!r} après {cle_second!r}."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests unitaires (régression) — Bug B, Colonne_Paies (bugfix
+# ``unicite-paie-active-par-periode``, tâche 11)
+# ---------------------------------------------------------------------------
+#
+# Vérifie, sur le code corrigé, que `_ligne_colonne_paie_html` produit
+# exactement le nouveau format de libellé (numéro de période toujours
+# affiché, année jamais affichée) et que `_formater_date_sans_annee`
+# formate correctement une date ISO sans année.
+#
+# Validates: Requirements 2.4, 2.5, 2.6, 3.6, 3.7, 3.8
+# ---------------------------------------------------------------------------
+
+
+def _construire_ligne_paie_resume(
+    *,
+    statut: str,
+    numero_periode: int,
+    date_paiement: str | None = None,
+) -> "LignePaieResume":
+    """`LignePaieResume` minimal pour un test d'exemple (Req 04 — jamais
+    de donnée personnelle réelle, uniquement des champs fictifs)."""
+    from app.logique_metier.dernieres_paies import LignePaieResume
+
+    return LignePaieResume(
+        id_paie=f"PAIE-TEST-{statut}-{numero_periode}",
+        numero_periode=numero_periode,
+        version=1,
+        statut=statut,
+        net="0.00",
+        saison="",
+        annee_fiscale=2026,
+        date_creation="2026-07-01T00:00:00",
+        date_emission="2026-07-29T00:00:00" if statut == "emise" else None,
+        date_paiement=date_paiement,
+    )
+
+
+class TestRegressionLibelleColonnePaies:
+    """Tests de régression du libellé de la Colonne_Paies (Bug B corrigé)."""
+
+    def test_exemple_ligne_emise_produit_texte_exact_sans_annee(self) -> None:
+        """`LignePaieResume` EMISE avec `date_paiement="2026-07-29"` et
+        `numero_periode=1` → texte exact `"Paie #1 - déposée le 29
+        juillet"` (Req 2.4, 2.6)."""
+        resume = _construire_ligne_paie_resume(
+            statut="emise",
+            numero_periode=1,
+            date_paiement="2026-07-29",
+        )
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+
+        assert "Paie #1 - déposée le 29 juillet" in html_ligne, (
+            "le texte affiché doit être exactement "
+            f"'Paie #1 - déposée le 29 juillet' ; obtenu {html_ligne!r}."
+        )
+        assert "2026" not in html_ligne, (
+            f"l'année ne doit jamais apparaître dans le libellé ; obtenu {html_ligne!r}."
+        )
+
+    def test_exemple_ligne_brouillon_produit_texte_exact_sans_date(self) -> None:
+        """`LignePaieResume` BROUILLON, `numero_periode=2` → texte exact
+        `"Paie #2 - brouillon"`, aucune date dans le HTML produit (Req
+        2.5, 2.6)."""
+        resume = _construire_ligne_paie_resume(
+            statut="brouillon",
+            numero_periode=2,
+            date_paiement="2026-08-12",
+        )
+
+        html_ligne = _ligne_colonne_paie_html("EMP001", resume)
+
+        assert "Paie #2 - brouillon" in html_ligne, (
+            "le texte affiché doit être exactement 'Paie #2 - brouillon' ; "
+            f"obtenu {html_ligne!r}."
+        )
+        texte_visible = re.sub(r"<[^>]+>", "", html_ligne)
+        assert texte_visible == "Paie #2 - brouillon", (
+            "aucune date ne doit apparaître dans le texte visible pour un "
+            f"BROUILLON ; obtenu {texte_visible!r}."
+        )
+
+    def test_formater_date_sans_annee_jour_sans_zero_mois_minuscule(self) -> None:
+        """`_formater_date_sans_annee` : `"2026-07-29T00:00:00"` →
+        `"29 juillet"` (jour sans zéro initial, mois en minuscules,
+        aucune année, Req 2.4, 2.6)."""
+        resultat = _formater_date_sans_annee("2026-07-29T00:00:00")
+
+        assert resultat == "29 juillet", (
+            f"attendu '29 juillet' ; obtenu {resultat!r}."
+        )
+        assert "2026" not in resultat, (
+            f"aucune année ne doit apparaître ; obtenu {resultat!r}."
+        )

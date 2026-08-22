@@ -1599,6 +1599,43 @@ def _payroll_result_valide(
     )
 
 
+def _lignes_actives(
+    module: ModuleType,
+    employe_id: str,
+    annee_fiscale: int,
+    numero_periode: int,
+    chemin_bd: str | Path,
+) -> tuple[PayrollResult, ...]:
+    """Lignes actives (``statut ∈ {BROUILLON, EMISE}``) d'une Paie_Logique.
+
+    Helper partagé par les tests d'exploration/fix/préservation du bugfix
+    ``unicite-paie-active-par-periode`` (tâche 1, réutilisé par les
+    tâches 2, 4, 5, 6) : appelle ``lire_historique_paie`` (déjà existant,
+    non modifié par ce bugfix) pour la Paie_Logique
+    ``(employe_id, annee_fiscale, numero_periode)``, puis filtre le
+    tuple de couples ``(PayrollResult, PayrollInput | None)`` retourné
+    sur les seules lignes dont ``statut`` est actif — par opposition à
+    ``ANNULEE``/``REMPLACE_PAR``, états terminaux hors périmètre de
+    l'invariant « au plus une ligne active par période » (design
+    §Glossary « Ligne active »). Ne réimplémente aucune logique
+    d'assertion : chaque appelant reste responsable de vérifier le
+    nombre de lignes retournées et leur contenu.
+
+    Retourne les ``PayrollResult`` seuls (jamais les ``PayrollInput``
+    associés), triés par ``version`` croissante (ordre déjà garanti par
+    ``lire_historique_paie``) — suffisant pour les assertions de ce
+    bugfix (nombre de lignes actives, `statut`, `remplace_par_id`).
+    """
+    historique = module.lire_historique_paie(
+        employe_id, annee_fiscale, numero_periode, chemin_bd=chemin_bd
+    )
+    return tuple(
+        resultat
+        for resultat, _payroll_input in historique
+        if resultat.statut in (StatutDePaie.BROUILLON, StatutDePaie.EMISE)
+    )
+
+
 class TestRefusDoubleEmisePourMemePeriode:
     """Bug UI signalé après démo (Bilan_Fiscal affichant des totaux
     doublés) — root cause : `inserer_paie` ne contrôlait que l'unicité de
@@ -1700,6 +1737,510 @@ class TestRefusDoubleEmisePourMemePeriode:
             brouillon.id_paie, chemin_bd=st_chemin_bd_temporaire
         )
         assert relu.statut == StatutDePaie.BROUILLON
+
+
+# ---------------------------------------------------------------------------
+# Property 1 (Bug Condition) — Bug A : invariant « au plus une ligne
+# active par période » (exploration)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Bug Details (Bug A),
+# §Correctness Properties (Property 1), §Testing Strategy « Exploratory
+# Bug Condition Checking » (Test Cases 1 et 2).
+#
+# Tâche 2 du plan d'implémentation (méthodologie bug condition,
+# observation-first, règle 06) : ces tests d'exploration DOIVENT
+# échouer sur le code non corrigé — `inserer_paie` ne recherche jamais
+# de ligne `BROUILLON` active de la même Paie_Logique avant d'insérer
+# (contrairement à `remplacer_paie`), donc l'invariant « au plus une
+# ligne active par période » (Property 1) est violé par accumulation.
+# Ces échecs confirment `isBugCondition_InvarianceActive(X)` (toujours
+# vraie sur le code non corrigé dès qu'un `BROUILLON` actif préexiste
+# pour la même Paie_Logique).
+#
+# **NE PAS corriger ces tests ni le code lorsqu'ils échouent** —
+# l'échec par accumulation est le résultat attendu de cette tâche
+# d'exploration (voir tâches 2, 3).
+#
+# _Requirements: 1.1, 1.2, 1.3_
+
+
+class TestExplorationInvarianceLigneActive:
+    """Property 1 (Bug Condition) — exploration, Bug A (accumulation de
+    lignes actives par Paie_Logique).
+
+    Design (§Bug Details Bug A, §Correctness Properties Property 1,
+    §Testing Strategy « Exploratory Bug Condition Checking », cas 1 et
+    2) ; Requirements 1.1, 1.2, 1.3.
+
+    Confirme, sur le code NON corrigé, que `inserer_paie` n'invalide
+    jamais les lignes `BROUILLON` actives précédentes d'une même
+    Paie_Logique `(employe_id, annee_fiscale, numero_periode)` : après
+    plusieurs insertions successives pour la même période, TOUTES les
+    lignes insérées restent actives (`statut ∈ {BROUILLON, EMISE}`) au
+    lieu d'une seule, comme l'exige l'invariant attendu (Property 1).
+
+    **NE PAS corriger ces tests ni le code lorsqu'ils échouent** —
+    l'échec par accumulation est le résultat attendu de cette tâche
+    d'exploration (tâche 2 du plan). Le fix (tâche 3) rendra ces mêmes
+    assertions vraies.
+
+    Règle 04 : chaque test injecte un `chemin_bd` temporaire
+    (`st_chemin_bd_temporaire`) — jamais la base de production — et
+    n'utilise que l'identifiant fictif `EMP001` (déjà utilisé par
+    `TestRefusDoubleEmisePourMemePeriode`, même convention).
+    """
+
+    def test_exemple_double_brouillon_meme_periode_accumule_deux_lignes_actives(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Test 1 (exemple) — Req 1.1, 1.2.
+
+        Insère deux `BROUILLON` successifs pour la même Paie_Logique
+        `(EMP001, 2026, 1)` via `inserer_paie`. Sur le code non
+        corrigé, `_lignes_actives` révèle les DEUX lignes comme actives
+        (`BROUILLON`, `BROUILLON`) — contre-exemple attendu (design
+        §Testing Strategy, Test Case 1) : l'invariant « au plus une
+        ligne active par période » (Property 1) est violé.
+        """
+        module = _importer_module_register()
+
+        premier_brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+        second_brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+
+        module.inserer_paie(
+            premier_brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+        module.inserer_paie(
+            second_brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        actives = _lignes_actives(
+            module,
+            "EMP001",
+            2026,
+            1,
+            chemin_bd=st_chemin_bd_temporaire,
+        )
+
+        assert len(actives) == 1, (
+            "Après deux insertions BROUILLON successives pour la même "
+            "Paie_Logique, il ne doit exister qu'une seule ligne active "
+            f"(Property 1) — obtenu {len(actives)} ligne(s) active(s) "
+            f"({[ligne.statut for ligne in actives]!r}) : contre-exemple "
+            "attendu sur le code non corrigé (Bug A, accumulation de "
+            "BROUILLON actifs, design §Hypothesized Root Cause)."
+        )
+
+    def test_exemple_brouillon_puis_emise_meme_periode_les_deux_restent_actifs(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Test 2 (exemple) — Req 1.1, 1.3.
+
+        Insère un `BROUILLON` puis un `EMISE` pour la même
+        Paie_Logique `(EMP001, 2026, 1)`. Sur le code non corrigé, le
+        `BROUILLON` n'est jamais invalidé : `_lignes_actives` révèle
+        les DEUX lignes comme actives (`BROUILLON` actif ET `EMISE`
+        actif simultanément) — contre-exemple attendu (design §Testing
+        Strategy, Test Case 2).
+        """
+        module = _importer_module_register()
+
+        brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+        emise = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+
+        module.inserer_paie(
+            brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+        module.inserer_paie(
+            emise, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        actives = _lignes_actives(
+            module,
+            "EMP001",
+            2026,
+            1,
+            chemin_bd=st_chemin_bd_temporaire,
+        )
+
+        assert len(actives) == 1, (
+            "Après un BROUILLON suivi d'un EMISE pour la même "
+            "Paie_Logique, il ne doit exister qu'une seule ligne active "
+            f"(Property 1) — obtenu {len(actives)} ligne(s) active(s) "
+            f"({[ligne.statut for ligne in actives]!r}) : contre-exemple "
+            "attendu sur le code non corrigé (Bug A, le BROUILLON n'est "
+            "jamais invalidé par une insertion EMISE ultérieure)."
+        )
+        assert actives[0].statut == StatutDePaie.EMISE, (
+            "Si une seule ligne reste active après un EMISE, ce doit "
+            f"être la ligne EMISE, obtenu {actives[0].statut!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests unitaires de régression — Bug A, fix (invalidation des BROUILLON
+# actifs dans inserer_paie)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Tâche 6 du plan d'implémentation. Le fix (tâche 3) est déjà en place
+# dans `inserer_paie` (bloc "1ter") — ces tests vérifient le
+# comportement corrigé sur des exemples concrets, en complément des
+# property-based tests des tâches 4 et 5.
+#
+# _Requirements: 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5_
+
+
+class TestRegressionInvalidationBrouillonActif:
+    """Tests unitaires de régression — Bug A, fix (tâche 6).
+
+    Requirements 2.1, 2.2, 3.1, 3.2, 3.3, 3.4, 3.5.
+
+    Règle 04 : chaque test injecte un `chemin_bd` temporaire — jamais
+    la base de production — et n'utilise que des identifiants fictifs
+    `EMPnnn`.
+    """
+
+    def test_exemple_insertion_emise_apres_brouillon_actif_remplace_et_cumuls_corrects(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Insertion d'un EMISE alors qu'un BROUILLON actif existe déjà
+        pour la même Paie_Logique (Req 2.1, 2.2, 3.4) : l'ancien
+        BROUILLON doit passer à REMPLACE_PAR avec `remplace_par_id`
+        pointant vers le nouvel `id_paie`, et `lire_cumuls_ytd` doit
+        refléter uniquement la contribution du nouvel EMISE — jamais
+        celle du BROUILLON (qui ne contribue jamais aux cumuls, Req
+        3.4)."""
+        module = _importer_module_register()
+
+        brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+        emise = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+
+        module.inserer_paie(
+            brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+        module.inserer_paie(
+            emise, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        ancien_relu, _ = module.lire_paie(
+            brouillon.id_paie, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert ancien_relu.statut == StatutDePaie.REMPLACE_PAR, (
+            "L'ancien BROUILLON doit passer à REMPLACE_PAR après "
+            f"l'insertion de l'EMISE, obtenu {ancien_relu.statut!r}."
+        )
+        assert ancien_relu.remplace_par_id == emise.id_paie, (
+            "Le `remplace_par_id` de l'ancien BROUILLON doit pointer "
+            f"vers le nouvel id_paie, obtenu {ancien_relu.remplace_par_id!r}, "
+            f"attendu {emise.id_paie!r}."
+        )
+
+        cumuls = module.lire_cumuls_ytd(
+            "EMP001", 2026, chemin_bd=st_chemin_bd_temporaire
+        )
+        cumuls_attendus = _cumuls_ytd_attendus((emise,), "EMP001", 2026)
+        assert cumuls == cumuls_attendus, (
+            "`lire_cumuls_ytd` doit refléter uniquement la contribution "
+            f"du nouvel EMISE, obtenu {cumuls!r}, attendu "
+            f"{cumuls_attendus!r}."
+        )
+
+    def test_exemple_auto_reparation_plusieurs_brouillon_actifs_preexistants(
+        self,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Auto-réparation : plusieurs BROUILLON actifs déjà présents en
+        base (simulant une base ayant accumulé le bug avant correction —
+        le second est inséré directement via sqlite3 brut pour
+        contourner le nouveau garde-fou et reproduire fidèlement l'état
+        pré-correctif) — une nouvelle insertion doit invalider TOUTES
+        les anciennes lignes BROUILLON, pas seulement la première."""
+        module = _importer_module_register()
+
+        premier_brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v1",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+        module.inserer_paie(
+            premier_brouillon, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        # Insertion directe via sqlite3 brut du second BROUILLON actif,
+        # pour contourner le garde-fou désormais en place dans
+        # `inserer_paie` et simuler fidèlement un état pré-correctif
+        # (plusieurs BROUILLON actifs simultanés pour la même
+        # Paie_Logique, conséquence du bug avant ce correctif).
+        second_brouillon = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v2",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.BROUILLON,
+        )
+        connexion_brute = sqlite3.connect(str(st_chemin_bd_temporaire))
+        try:
+            connexion_brute.execute(
+                "INSERT INTO paies (id_paie, employe_id, annee_fiscale, "
+                "numero_periode, saison, version, statut, remplace_par_id, "
+                "date_creation, date_emission, payload_json, "
+                "payload_input_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    second_brouillon.id_paie,
+                    second_brouillon.employe_id,
+                    second_brouillon.annee_fiscale,
+                    second_brouillon.pay_period.numero_periode,
+                    "Saison A",
+                    second_brouillon.version,
+                    second_brouillon.statut.value,
+                    None,
+                    second_brouillon.date_creation.isoformat(),
+                    None,
+                    second_brouillon.model_dump_json(),
+                    None,
+                ),
+            )
+            connexion_brute.commit()
+        finally:
+            connexion_brute.close()
+
+        actives_avant = _lignes_actives(
+            module, "EMP001", 2026, 1, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert len(actives_avant) == 2, (
+            "État pré-correctif simulé : deux BROUILLON actifs doivent "
+            f"coexister avant la nouvelle insertion, obtenu "
+            f"{len(actives_avant)}."
+        )
+
+        nouvelle_emise = _payroll_result_valide(
+            id_paie="PAIE-EMP001-2026-001-v3",
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        module.inserer_paie(
+            nouvelle_emise, "Saison A", chemin_bd=st_chemin_bd_temporaire
+        )
+
+        actives_apres = _lignes_actives(
+            module, "EMP001", 2026, 1, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert len(actives_apres) == 1, (
+            "Après la nouvelle insertion, toutes les anciennes lignes "
+            "BROUILLON doivent être invalidées (auto-réparation), "
+            f"obtenu {len(actives_apres)} ligne(s) active(s)."
+        )
+        assert actives_apres[0].id_paie == nouvelle_emise.id_paie
+
+        for ancien_id in (premier_brouillon.id_paie, second_brouillon.id_paie):
+            ancien_relu, _ = module.lire_paie(
+                ancien_id, chemin_bd=st_chemin_bd_temporaire
+            )
+            assert ancien_relu.statut == StatutDePaie.REMPLACE_PAR, (
+                f"L'ancienne ligne {ancien_id!r} doit passer à "
+                f"REMPLACE_PAR (auto-réparation), obtenu "
+                f"{ancien_relu.statut!r}."
+            )
+            assert ancien_relu.remplace_par_id == nouvelle_emise.id_paie
+
+
+# ---------------------------------------------------------------------------
+# Property 1 (Fix Checking) — Bug A : invariant « au plus une ligne
+# active par période » après le fix (tâche 3)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Correctness Properties (Property
+# 1), §Testing Strategy « Fix Checking » (pseudocode).
+#
+# Tâche 4 du plan d'implémentation : pour toute séquence d'insertions
+# `BROUILLON`/`BROUILLON`, `BROUILLON`/`EMISE`, ou plusieurs `BROUILLON`
+# successifs pour une même Paie_Logique, après CHAQUE insertion il
+# n'existe qu'une seule ligne active (`statut ∈ {BROUILLON, EMISE}`), et
+# toute ligne devenue inactive porte `statut = REMPLACE_PAR` avec
+# `remplace_par_id` égal à l'`id_paie` de l'insertion suivante. Exclut
+# de la génération les séquences qui déclencheraient le garde-fou
+# `EMISE`→`EMISE` existant (couvert par `TestRefusDoubleEmisePourMemePeriode`,
+# tâche 6, pas par cette property) : seule la DERNIÈRE insertion de la
+# séquence peut être `EMISE`, toutes les précédentes sont `BROUILLON` —
+# ainsi la ligne active immédiatement avant chaque insertion est
+# toujours soit absente (première insertion), soit `BROUILLON` (jamais
+# `EMISE`), ce qui exclut structurellement deux `EMISE` consécutifs.
+#
+# _Requirements: 2.1, 2.2_
+
+
+@st.composite
+def _st_sequence_statuts_brouillon_puis_eventuel_emise(
+    draw: st.DrawFn,
+) -> tuple[StatutDePaie, ...]:
+    """Séquence de 1 à 4 `BROUILLON` successifs, suivis ou non d'un
+    unique `EMISE` final (Property 1, Fix Checking).
+
+    Ne génère jamais deux `EMISE` consécutifs (le seul `EMISE` possible,
+    s'il est tiré, est nécessairement en dernière position) — exclut
+    ainsi structurellement le garde-fou `EMISE`→`EMISE` existant, hors
+    périmètre de cette property (design §Testing Strategy « Fix
+    Checking »).
+    """
+    nombre_brouillons = draw(st.integers(min_value=1, max_value=4))
+    statuts: list[StatutDePaie] = [StatutDePaie.BROUILLON] * nombre_brouillons
+    if draw(st.booleans()):
+        statuts.append(StatutDePaie.EMISE)
+    return tuple(statuts)
+
+
+class TestFixInvarianceLigneActive:
+    """Property 1 (Fix Checking) — Bug A, invariant "au plus une ligne
+    active par période" après le fix de la tâche 3.
+
+    Design (§Correctness Properties Property 1, §Testing Strategy « Fix
+    Checking ») ; Requirements 2.1, 2.2.
+
+    Règle 04 : chaque test construit un `chemin_bd` unique sous
+    `tmp_path` (jamais `st_chemin_bd_temporaire`, résolue une seule fois
+    par invocation de test — voir `TestPreservationInvarianceLigneActive`
+    pour la justification détaillée) — jamais la base de production — et
+    n'utilise que des identifiants fictifs `EMPnnn`.
+    """
+
+    # Feature: unicite-paie-active-par-periode, Property 1: Bug Condition - Invariant au plus une ligne active par période
+    @pytest.mark.property
+    @given(
+        statuts=_st_sequence_statuts_brouillon_puis_eventuel_emise(),
+        employe_id=st.integers(min_value=1, max_value=999).map(
+            lambda n: f"EMP{n:03d}"
+        ),
+        annee_fiscale=st.integers(min_value=2024, max_value=2030),
+        numero_periode=st.integers(min_value=1, max_value=27),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_au_plus_une_ligne_active_apres_chaque_insertion(
+        self,
+        statuts: tuple[StatutDePaie, ...],
+        employe_id: str,
+        annee_fiscale: int,
+        numero_periode: int,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 1 (Req 2.1, 2.2).
+
+        Insère chaque statut de ``statuts`` dans l'ordre via
+        `inserer_paie`, pour la même Paie_Logique
+        `(employe_id, annee_fiscale, numero_periode)`. Après CHAQUE
+        insertion (pas seulement la dernière) : exactement une ligne
+        active, portée par l'`id_paie` qui vient d'être inséré ; et si
+        une insertion précédente existait, l'ancienne ligne (jusqu'alors
+        active) doit maintenant porter `statut = REMPLACE_PAR` avec
+        `remplace_par_id` égal à l'`id_paie` de la nouvelle insertion
+        (design §Testing Strategy « Fix Checking », pseudocode).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        id_paie_precedent: str | None = None
+        for index, statut in enumerate(statuts, start=1):
+            id_paie = (
+                f"PAIE-{employe_id}-{annee_fiscale}-{numero_periode:03d}"
+                f"-v{index}"
+            )
+            resultat = _payroll_result_valide(
+                id_paie=id_paie,
+                employe_id=employe_id,
+                annee_fiscale=annee_fiscale,
+                numero_periode=numero_periode,
+                statut=statut,
+            )
+
+            module.inserer_paie(resultat, saison, chemin_bd=chemin_bd)
+
+            actives = _lignes_actives(
+                module,
+                employe_id,
+                annee_fiscale,
+                numero_periode,
+                chemin_bd=chemin_bd,
+            )
+            assert len(actives) == 1, (
+                f"Après l'insertion #{index} (statut {statut!r}) de la "
+                "séquence, il ne doit exister qu'une seule ligne active "
+                f"pour cette Paie_Logique (Property 1), obtenu "
+                f"{len(actives)} ligne(s) active(s)."
+            )
+            assert actives[0].id_paie == id_paie, (
+                "La seule ligne active après l'insertion doit être celle "
+                f"qui vient d'être insérée (Property 1), obtenu "
+                f"{actives[0].id_paie!r}, attendu {id_paie!r}."
+            )
+
+            if id_paie_precedent is not None:
+                ancien_relu, _ = module.lire_paie(
+                    id_paie_precedent, chemin_bd=chemin_bd
+                )
+                assert ancien_relu.statut == StatutDePaie.REMPLACE_PAR, (
+                    f"L'ancienne ligne {id_paie_precedent!r}, active "
+                    "avant l'insertion #{index}, doit passer à "
+                    f"REMPLACE_PAR (Property 1), obtenu "
+                    f"{ancien_relu.statut!r}."
+                )
+                assert ancien_relu.remplace_par_id == id_paie, (
+                    f"Le `remplace_par_id` de l'ancienne ligne "
+                    f"{id_paie_precedent!r} doit égaler l'`id_paie` de "
+                    f"l'insertion suivante (Property 1), obtenu "
+                    f"{ancien_relu.remplace_par_id!r}, attendu "
+                    f"{id_paie!r}."
+                )
+
+            id_paie_precedent = id_paie
 
 
 # ---------------------------------------------------------------------------
@@ -2116,4 +2657,302 @@ class TestPreservationPaiesPreCorrection:
             "`app/logique_metier/formulaire_paie.py` ne doit ni importer "
             "ni appeler `calcul_gains` — ce bugfix ne modifie aucune "
             "formule fiscale (Property 4, Req 3.5, 3.6)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property 3 (Preservation) — Bug A : flux et garde-fous existants du
+# registre, hors condition de bug (isBugCondition_InvarianceActive fausse)
+# ---------------------------------------------------------------------------
+#
+# Bugfix de référence : ``unicite-paie-active-par-periode``.
+# Design de référence : ``design.md`` §Correctness Properties (Property 3),
+# §Testing Strategy « Preservation Checking » (Test Cases 1 à 3).
+#
+# Tâche 5 du plan d'implémentation : pour toute insertion où
+# `isBugCondition_InvarianceActive` est fausse (aucune ligne `BROUILLON`
+# active de la même Paie_Logique — Paie_Logiques toutes distinctes,
+# absence totale de ligne active préexistante, ou ligne active existante
+# `EMISE` plutôt que `BROUILLON`), le comportement de `inserer_paie`
+# corrigé (tâche 3) doit rester strictement identique à celui du code
+# d'avant ce bugfix : aucune ligne mutée hors la ligne insérée,
+# `cumuls_ytd` identique à un calcul manuel, aucune exception
+# inattendue (le garde-fou `EMISE`→`EMISE` existant continue de lever
+# `ValueError` sans aucune mutation).
+#
+# _Requirements: 3.1, 3.2, 3.3, 3.4_
+
+
+class TestPreservationInvarianceLigneActive:
+    """Property 3 (Preservation) — Bug A, comportement inchangé hors
+    condition de bug.
+
+    Design (§Correctness Properties Property 3, §Testing Strategy
+    « Preservation Checking », cas 1 à 3) ; Requirements 3.1, 3.2, 3.3,
+    3.4.
+
+    Règle 04 : chaque test injecte un `chemin_bd` temporaire
+    (`st_chemin_bd_temporaire`) — jamais la base de production — et
+    n'utilise que des identifiants fictifs `EMPnnn`.
+    """
+
+    # -----------------------------------------------------------------
+    # Test 1 (property-based) — Paie_Logiques toutes distinctes ou
+    # première insertion sans ligne active préexistante (Req 3.1, 3.3,
+    # 3.4), y compris le garde-fou EMISE→EMISE préexistant (Req 3.1).
+    # -----------------------------------------------------------------
+
+    # Feature: unicite-paie-active-par-periode, Property 3: Preservation - Flux et garde-fous existants du registre
+    @pytest.mark.property
+    @given(
+        sequence=st_sequence_payroll_results_meme_employe_annee(n_max=5),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_sequence_sans_brouillon_actif_prealable_comportement_inchange(
+        self,
+        sequence: tuple[PayrollResult, ...],
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 3 (Req 3.1, 3.3, 3.4).
+
+        `sequence` (`st_sequence_payroll_results_meme_employe_annee`) ne
+        contient que des `PayrollResult` `EMISE` — il n'existe donc
+        jamais de ligne `BROUILLON` active de la même Paie_Logique avant
+        une insertion : `isBugCondition_InvarianceActive` est fausse pour
+        toute insertion de cette séquence, par construction (la ligne
+        active éventuellement déjà présente pour une période, si elle
+        existe, est nécessairement `EMISE`, jamais `BROUILLON`).
+
+        Deux issues possibles pour chaque insertion, toutes deux déjà
+        vraies avant ce bugfix et devant le rester à l'identique :
+
+        - `numero_periode` inédit pour cet `employe_id`/`annee_fiscale` :
+          insertion simple, sans exception, sans mutation d'aucune autre
+          ligne déjà insérée (§Preservation Requirements : « La première
+          insertion d'une Paie_Logique... reste une insertion simple »).
+        - `numero_periode` déjà porteur d'une ligne `EMISE` active
+          (insérée plus tôt dans cette même séquence) : le garde-fou
+          `EMISE`→`EMISE` existant lève `ValueError`, sans aucune
+          mutation de la ligne déjà présente (« Le garde-fou EMISE→EMISE
+          existant... continue de s'appliquer, sans aucune modification
+          de comportement »).
+
+        À la fin, `cumuls_ytd` doit égaler la somme manuelle des
+        contributions des seules insertions ayant réussi — identique à
+        Property 8 (tâche 3.2), reproduite ici comme comportement de
+        référence explicitement rattaché à ce bugfix.
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        if sequence:
+            employe_id = sequence[0].employe_id
+            annee_fiscale = sequence[0].annee_fiscale
+        else:
+            employe_id = "EMP000"
+            annee_fiscale = 2026
+
+        resultats_inseres_par_periode: dict[int, PayrollResult] = {}
+        resultats_inseres_avec_succes: list[PayrollResult] = []
+
+        for resultat in sequence:
+            numero_periode = resultat.pay_period.numero_periode
+            ligne_active_avant = resultats_inseres_par_periode.get(numero_periode)
+
+            if ligne_active_avant is not None:
+                # Une ligne EMISE active existe déjà pour cette période
+                # (insérée plus tôt dans cette même séquence) —
+                # `isBugCondition_InvarianceActive` est fausse (ligne
+                # active EMISE, pas BROUILLON) : le garde-fou EMISE→EMISE
+                # existant doit lever ValueError, sans aucune mutation.
+                with pytest.raises(ValueError) as excinfo:
+                    module.inserer_paie(
+                        resultat, saison, chemin_bd=chemin_bd
+                    )
+                assert "EMISE" in str(excinfo.value), (
+                    "Le refus d'une seconde EMISE pour la même période "
+                    f"doit mentionner EMISE, obtenu {excinfo.value!r} "
+                    "(Property 3, préservation du garde-fou existant)."
+                )
+                with pytest.raises(KeyError):
+                    module.lire_paie(
+                        resultat.id_paie, chemin_bd=chemin_bd
+                    )
+                # La ligne déjà active ne doit avoir subi aucune mutation.
+                relue, _ = module.lire_paie(
+                    ligne_active_avant.id_paie, chemin_bd=chemin_bd
+                )
+                assert relue == ligne_active_avant, (
+                    "Une tentative d'insertion refusée (Property 3) ne "
+                    "doit muter aucune autre ligne du registre, obtenu "
+                    f"{relue!r}, attendu {ligne_active_avant!r}."
+                )
+            else:
+                # Première insertion pour cette Paie_Logique — aucune
+                # ligne active préexistante : insertion simple, sans
+                # exception, sans mutation des autres lignes déjà
+                # insérées avec succès.
+                module.inserer_paie(
+                    resultat, saison, chemin_bd=chemin_bd
+                )
+                resultats_inseres_par_periode[numero_periode] = resultat
+
+                relu, _ = module.lire_paie(
+                    resultat.id_paie, chemin_bd=chemin_bd
+                )
+                assert relu == resultat, (
+                    "Une insertion sans ligne active préexistante "
+                    "(Property 3) doit rester un round-trip strict, "
+                    f"obtenu {relu!r}, attendu {resultat!r}."
+                )
+
+                for autre in resultats_inseres_avec_succes:
+                    autre_relu, _ = module.lire_paie(
+                        autre.id_paie, chemin_bd=chemin_bd
+                    )
+                    assert autre_relu == autre, (
+                        "Une nouvelle insertion sans ligne active "
+                        "préexistante pour sa propre période (Property 3) "
+                        "ne doit muter aucune ligne d'une autre "
+                        f"Paie_Logique, obtenu {autre_relu!r}, attendu "
+                        f"{autre!r}."
+                    )
+
+                resultats_inseres_avec_succes.append(resultat)
+
+        cumuls_obtenus = module.lire_cumuls_ytd(
+            employe_id, annee_fiscale, chemin_bd=chemin_bd
+        )
+        cumuls_attendus = _cumuls_ytd_attendus(
+            tuple(resultats_inseres_avec_succes), employe_id, annee_fiscale
+        )
+        assert cumuls_obtenus == cumuls_attendus, (
+            "`cumuls_ytd` après cette séquence de préservation (Property "
+            f"3) doit égaler la somme des contributions des insertions "
+            f"réussies, obtenu {cumuls_obtenus!r}, attendu "
+            f"{cumuls_attendus!r}."
+        )
+
+    # -----------------------------------------------------------------
+    # Test 2 (property-based) — généralisation de
+    # `test_exemple_insertion_brouillon_meme_periode_apres_emise_reste_autorisee`
+    # (BROUILLON après EMISE actif, sans BROUILLON actif préexistant,
+    # Req 3.2, 3.4).
+    # -----------------------------------------------------------------
+
+    # Feature: unicite-paie-active-par-periode, Property 3: Preservation - Flux et garde-fous existants du registre
+    @pytest.mark.property
+    @given(
+        employe_id=st.integers(min_value=1, max_value=999).map(
+            lambda n: f"EMP{n:03d}"
+        ),
+        annee_fiscale=st.integers(min_value=2024, max_value=2030),
+        numero_periode=st.integers(min_value=1, max_value=27),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_insertion_brouillon_apres_emise_actif_sans_brouillon_prealable_naffecte_pas_emise(
+        self,
+        employe_id: str,
+        annee_fiscale: int,
+        numero_periode: int,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 3 — généralisation de
+        `test_exemple_insertion_brouillon_meme_periode_apres_emise_reste_autorisee`
+        (Req 3.2, 3.4).
+
+        Pour tout triplet `(employe_id, annee_fiscale, numero_periode)`,
+        insérer une ligne `EMISE` puis une ligne `BROUILLON` pour la
+        même Paie_Logique — sans aucun `BROUILLON` actif préexistant,
+        `isBugCondition_InvarianceActive` est fausse (la seule ligne
+        active avant la seconde insertion est `EMISE`, pas `BROUILLON`) :
+        l'insertion du `BROUILLON` doit rester autorisée sans lever
+        d'exception, et la ligne `EMISE` ne doit subir AUCUNE mutation
+        (statut, `remplace_par_id`, `payload_json` strictement
+        inchangés) — comportement préexistant à ce bugfix, non touché
+        par le fix de la tâche 3 (qui n'invalide que les lignes
+        `BROUILLON` actives, jamais les lignes `EMISE`).
+
+        Chemin `chemin_bd` construit manuellement sous `tmp_path` (même
+        patron que `TestRemplacerPaie`/`TestPreservationPaiesPreCorrection`)
+        — pas la fixture `st_chemin_bd_temporaire`, qui n'est résolue
+        qu'une seule fois par invocation de test pytest et serait donc
+        partagée entre plusieurs exemples Hypothesis : `id_paie` étant
+        ici dérivé de manière déterministe du triplet généré, deux
+        exemples tirant le même triplet provoqueraient une collision
+        d'`id_paie` déjà présent sur une base partagée.
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        emise = _payroll_result_valide(
+            id_paie=f"PAIE-{employe_id}-{annee_fiscale}-{numero_periode:03d}-v1",
+            employe_id=employe_id,
+            annee_fiscale=annee_fiscale,
+            numero_periode=numero_periode,
+            statut=StatutDePaie.EMISE,
+        )
+        brouillon = _payroll_result_valide(
+            id_paie=f"PAIE-{employe_id}-{annee_fiscale}-{numero_periode:03d}-v2",
+            employe_id=employe_id,
+            annee_fiscale=annee_fiscale,
+            numero_periode=numero_periode,
+            statut=StatutDePaie.BROUILLON,
+        )
+
+        module.inserer_paie(emise, saison, chemin_bd=chemin_bd)
+        # Ne doit lever aucune exception (préservation, Req 3.2).
+        module.inserer_paie(brouillon, saison, chemin_bd=chemin_bd)
+
+        emise_relue, _ = module.lire_paie(emise.id_paie, chemin_bd=chemin_bd)
+        assert emise_relue == emise, (
+            "L'insertion d'un BROUILLON après un EMISE actif ne doit "
+            f"muter aucun champ de la ligne EMISE (Property 3), obtenu "
+            f"{emise_relue!r}, attendu {emise!r}."
+        )
+        assert emise_relue.remplace_par_id is None, (
+            "La ligne EMISE ne doit jamais recevoir de `remplace_par_id` "
+            "suite à l'insertion d'un BROUILLON pour la même période "
+            f"(Property 3), obtenu {emise_relue.remplace_par_id!r}."
+        )
+
+        brouillon_relu, _ = module.lire_paie(
+            brouillon.id_paie, chemin_bd=chemin_bd
+        )
+        assert brouillon_relu == brouillon, (
+            "Le BROUILLON inséré après un EMISE actif doit rester un "
+            f"round-trip strict, obtenu {brouillon_relu!r}, attendu "
+            f"{brouillon!r}."
+        )
+
+        actives = _lignes_actives(
+            module,
+            employe_id,
+            annee_fiscale,
+            numero_periode,
+            chemin_bd=chemin_bd,
+        )
+        assert len(actives) == 2, (
+            "Le BROUILLON inséré après un EMISE actif (sans BROUILLON "
+            "actif préexistant) reste, à l'identique d'avant ce bugfix, "
+            "actif EN PLUS de l'EMISE — seule l'insertion sur un "
+            "BROUILLON actif préexistant est invalidée (Property 1, hors "
+            f"périmètre de Property 3) — obtenu {len(actives)} ligne(s) "
+            "active(s)."
+        )
+
+        cumuls_obtenus = module.lire_cumuls_ytd(
+            employe_id, annee_fiscale, chemin_bd=chemin_bd
+        )
+        cumuls_attendus = _cumuls_ytd_attendus(
+            (emise,), employe_id, annee_fiscale
+        )
+        assert cumuls_obtenus == cumuls_attendus, (
+            "`cumuls_ytd` doit refléter uniquement la contribution de la "
+            f"ligne EMISE, jamais celle du BROUILLON (Property 3), obtenu "
+            f"{cumuls_obtenus!r}, attendu {cumuls_attendus!r}."
         )

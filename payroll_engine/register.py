@@ -742,6 +742,62 @@ def inserer_paie(
                     "déjà émise plutôt que d'en insérer une nouvelle."
                 )
 
+        # 1ter. Bug corrigé (unicite-paie-active-par-periode) — invalider
+        #       toute ligne BROUILLON active de la même Paie_Logique avant
+        #       l'insertion, dans la même transaction atomique. Toutes les
+        #       lignes BROUILLON actives trouvées sont mutées (pas
+        #       seulement la première) : une base ayant déjà accumulé
+        #       plusieurs BROUILLON actifs avant ce correctif (conséquence
+        #       du bug) doit être auto-réparée dès la prochaine insertion
+        #       pour cette Paie_Logique, plutôt que de laisser des lignes
+        #       orphelines actives. S'exécute uniquement si le garde-fou
+        #       ci-dessus (1bis) n'a pas levé d'exception.
+        lignes_brouillon_actives = connexion.execute(
+            "SELECT id_paie, payload_json FROM paies WHERE employe_id = ? "
+            "AND annee_fiscale = ? AND numero_periode = ? AND statut = ?",
+            (
+                resultat.employe_id,
+                resultat.annee_fiscale,
+                resultat.pay_period.numero_periode,
+                StatutDePaie.BROUILLON.value,
+            ),
+        ).fetchall()
+        for id_paie_ancien, payload_ancien in lignes_brouillon_actives:
+            ancien_resultat = PayrollResult.model_validate_json(payload_ancien)
+            payload_ancien_maj = ancien_resultat.model_copy(
+                update={
+                    "statut": StatutDePaie.REMPLACE_PAR,
+                    "remplace_par_id": resultat.id_paie,
+                    # Écart documenté vs. modèle de mutation de
+                    # `remplacer_paie` (étape 3a) : `date_emission` doit
+                    # être renseignée dès que `statut ∈ {EMISE, ANNULEE,
+                    # REMPLACE_PAR}` (invariant `PayrollResult`, Req
+                    # 6.7). `remplacer_paie` ne mute jamais que des
+                    # lignes déjà EMISE (donc déjà pourvues d'une
+                    # `date_emission`) — mais une ligne BROUILLON n'en a
+                    # jamais eu. `resultat.date_creation` (celle de la
+                    # NOUVELLE ligne qui la remplace, déjà disponible,
+                    # déterministe) sert de valeur : aucun appel à
+                    # `datetime.now()` (pureté, même discipline que le
+                    # reste du moteur de paie), et cette date est
+                    # cohérente avec l'instant de la transaction qui
+                    # invalide ce BROUILLON.
+                    "date_emission": resultat.date_creation,
+                }
+            ).model_dump_json()
+            connexion.execute(
+                "UPDATE paies SET statut = ?, remplace_par_id = ?, "
+                "payload_json = ? WHERE id_paie = ?",
+                (
+                    StatutDePaie.REMPLACE_PAR.value,
+                    resultat.id_paie,
+                    payload_ancien_maj,
+                    id_paie_ancien,
+                ),
+            )
+        # SEULE mutation autorisée sur une ligne existante (Req 9.3) —
+        # jamais `payload_input_json` (colonne non touchée ci-dessus).
+
         # 2. Insertion append-only (Req 11.2) — quel que soit le statut.
         payload_input_json = (
             payroll_input.model_dump_json() if payroll_input is not None else None

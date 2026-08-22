@@ -310,6 +310,19 @@ def _formater_date_courte(valeur_iso: str) -> str:
     )
 
 
+def _formater_date_sans_annee(valeur_iso: str) -> str:
+    """Formate une date/heure ISO en date courte française SANS année
+    (bug corrigé — Colonne_Paies, Req 2.4, 2.6) : ``"<jour> <mois>"``,
+    ex. ``"29 juillet"`` (jour sans zéro initial, mois en minuscules —
+    même convention que :func:`_formater_date_courte`). L'année est
+    volontairement omise : la Colonne_Paies n'affiche déjà que les
+    paies de l'année sélectionnée par le Selecteur_De_Periode_Global
+    (``paies_pour_colonne``) — l'afficher serait redondant.
+    """
+    valeur_date = datetime.fromisoformat(valeur_iso).date()
+    return f"{valeur_date.day} {_NOMS_MOIS_MINUSCULES[valeur_date.month]}"
+
+
 def _sans_indentation(bloc_html: str) -> str:
     """Supprime l'indentation de chaque ligne de ``bloc_html`` (bug UI).
 
@@ -771,13 +784,20 @@ def _texte_absence_paie(annee_selectionnee: int) -> str:
 
 def _ligne_colonne_paie_html(employe_id: str, resume: LignePaieResume) -> str:
     """Génère une ligne cliquable de la Colonne_Paies pour ``resume``
-    (Req 5.2) : statut (Brouillon/Émise) et date de paiement, sous forme
-    de lien — même navigation que l'ancienne cellule « Dernière paie »
-    (Formulaire_Paie en mode correction si Paie_Brouillon, Bulletin_De_Paie
-    si Paie_Emise).
+    (Req 2.4, 2.5, 2.6) : numéro de période et statut, sous forme de
+    lien — même navigation qu'avant cette correction (Formulaire_Paie
+    en mode correction si BROUILLON, Bulletin_De_Paie si EMISE). Ne
+    modifie jamais le filtrage (`paies_pour_colonne`), le tri, ni les
+    `href` — seul le texte affiché change (bug corrigé — le libellé
+    précédent affichait systématiquement l'année, redondante avec le
+    Selecteur_De_Periode_Global, et omettait le numéro de période).
     """
-    libelle_statut = _LIBELLES_STATUT.get(resume.statut, resume.statut)
-    texte = f"{libelle_statut} — {_formater_date_courte(resume.date_paiement)}"
+    if resume.statut == StatutDePaie.EMISE.value:
+        date_affichee = _formater_date_sans_annee(resume.date_paiement)
+        texte = f"Paie #{resume.numero_periode} - déposée le {date_affichee}"
+    else:  # BROUILLON — jamais de date (Req 2.5)
+        texte = f"Paie #{resume.numero_periode} - brouillon"
+
     if resume.statut == StatutDePaie.BROUILLON.value:
         href = (
             "/formulaire-paie"
