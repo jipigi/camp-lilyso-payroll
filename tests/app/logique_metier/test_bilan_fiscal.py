@@ -581,7 +581,9 @@ class TestLirePaiesEmises:
 #
 # *Pour toute* année et *tout* mois (1 à 12) associé à une année,
 # `formater_option_annee_complete(annee)` doit produire exactement
-# `f"{annee} (année complète)"`, et `formater_option_mois_fiscal(annee,
+# `f"{annee}"` (libellé simplifié, demande explicite de l'utilisateur —
+# le sélecteur de période global du Tableau_De_Bord n'affiche plus le
+# suffixe « (année complète) »), et `formater_option_mois_fiscal(annee,
 # mois)` doit produire exactement `f"{_NOMS_MOIS[mois]} {annee}"`, où
 # `_NOMS_MOIS` associe chacun des 12 mois à son nom français avec
 # l'orthographe et la casse exactes imposées par le Requirement 2.6.
@@ -625,16 +627,17 @@ class TestFormatageLibelles:
 
         Pour toute ``annee`` arbitraire,
         `formater_option_annee_complete(annee)` doit produire exactement
-        ``f"{annee} (année complète)"`` — jamais une variante
-        d'orthographe, de casse ou de ponctuation.
+        ``f"{annee}"`` — libellé simplifié (demande explicite de
+        l'utilisateur), jamais une variante avec suffixe, d'orthographe,
+        de casse ou de ponctuation.
         """
         from app.logique_metier.bilan_fiscal import formater_option_annee_complete
 
         resultat = formater_option_annee_complete(annee)
 
-        assert resultat == f"{annee} (année complète)", (
+        assert resultat == f"{annee}", (
             "`formater_option_annee_complete(annee)` doit produire "
-            f"exactement '{annee} (année complète)' ; obtenu {resultat!r}."
+            f"exactement '{annee}' ; obtenu {resultat!r}."
         )
 
     # Feature: bilan-fiscal-employeur, Property 2: Formatage des libellés d'options

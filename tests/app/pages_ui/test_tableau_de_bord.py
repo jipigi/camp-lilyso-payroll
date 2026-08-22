@@ -752,12 +752,12 @@ class TestPreservationNavigationEtFiltrageColonnePaies:
     ) -> None:
         """Property 4 (Req 3.6, 3.7).
 
-        `paies_pour_colonne` (non modifiée par ce bugfix) doit continuer
-        à ne retourner que les résumés de statut BROUILLON/EMISE dont
-        `date_paiement` appartient à ``annee``, triés BROUILLON avant
-        EMISE puis date de paiement décroissante puis numéro de
-        période croissant — test de garde plutôt qu'un test de fix,
-        cette fonction n'étant pas touchée par ce bugfix."""
+        `paies_pour_colonne` doit continuer à ne retourner que les
+        résumés de statut BROUILLON/EMISE dont `date_paiement`
+        appartient à ``annee``, triés BROUILLON avant EMISE puis date
+        de paiement croissante puis numéro de période croissant
+        (demande explicite de l'utilisateur — tri croissant, ajusté
+        après la livraison de ce bugfix)."""
         resultat = paies_pour_colonne(tuple(resumes), annee)
 
         for resume in resultat:
@@ -777,17 +777,17 @@ class TestPreservationNavigationEtFiltrageColonnePaies:
         for premier, second in zip(resultat, resultat[1:]):
             cle_premier = (
                 0 if premier.statut == "brouillon" else 1,
-                date.fromisoformat(premier.date_paiement).toordinal() * -1,
+                date.fromisoformat(premier.date_paiement).toordinal(),
                 premier.numero_periode,
             )
             cle_second = (
                 0 if second.statut == "brouillon" else 1,
-                date.fromisoformat(second.date_paiement).toordinal() * -1,
+                date.fromisoformat(second.date_paiement).toordinal(),
                 second.numero_periode,
             )
             assert cle_premier <= cle_second, (
-                "l'ordre BROUILLON avant EMISE, puis date décroissante, "
-                "puis numero_periode croissant doit être préservé ; "
+                "l'ordre BROUILLON avant EMISE, puis date croissante, "
+                "puis numero_periode croissant doit être respecté ; "
                 f"obtenu {cle_premier!r} après {cle_second!r}."
             )
 

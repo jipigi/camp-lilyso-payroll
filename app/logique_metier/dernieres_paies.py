@@ -359,7 +359,7 @@ def paies_pour_colonne(
     docstring de `LignePaieResume` — est exclu du résultat plutôt que de
     lever une exception). Trie le résultat en plaçant d'abord tous les
     résumés `BROUILLON` puis tous les `EMISE` ; à l'intérieur de chaque
-    groupe, tri par date de paiement décroissante puis
+    groupe, tri par date de paiement croissante puis
     `numero_periode` croissant en cas d'égalité. Fonction pure, sans
     accès disque.
     """
@@ -375,7 +375,7 @@ def paies_pour_colonne(
             filtres,
             key=lambda r: (
                 _STATUTS_COLONNE_PAIES.index(r.statut),
-                date.fromisoformat(r.date_paiement).toordinal() * -1,
+                date.fromisoformat(r.date_paiement).toordinal(),
                 r.numero_periode,
             ),
         )

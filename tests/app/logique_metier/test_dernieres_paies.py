@@ -926,7 +926,7 @@ class TestLireResumesPaies:
 # de statut `BROUILLON`/`EMISE` dont l'année de `date_paiement`
 # correspond (aucun résumé d'une autre année, aucun résumé d'un autre
 # statut), tous les `BROUILLON` précédant tous les `EMISE`, chaque
-# groupe étant trié par date de paiement décroissante puis
+# groupe étant trié par date de paiement croissante puis
 # `LignePaieResume.numero_periode` croissant en cas d'égalité.
 #
 # _Requirements: 5.2, 5.3, 5.4_
@@ -957,9 +957,9 @@ class TestPaiesPourColonne:
         pur : filtrage sur `statut ∈ {"brouillon", "emise"}` et
         `date.fromisoformat(date_paiement).year == annee_test` (résumés
         sans `date_paiement` exclus), puis tri par
-        `(statut != "brouillon", -ordinal(date_paiement), numero_periode)`
+        `(statut != "brouillon", ordinal(date_paiement), numero_periode)`
         — c'est-à-dire tous les `BROUILLON` avant tous les `EMISE`, puis
-        date de paiement décroissante, puis `numero_periode` croissant
+        date de paiement croissante, puis `numero_periode` croissant
         en cas d'égalité de date. Vérifie en plus explicitement :
 
         - aucun résumé d'un statut hors `{BROUILLON, EMISE}`
@@ -985,7 +985,7 @@ class TestPaiesPourColonne:
                 attendus,
                 key=lambda r: (
                     r.statut != "brouillon",
-                    -date.fromisoformat(r.date_paiement).toordinal(),
+                    date.fromisoformat(r.date_paiement).toordinal(),
                     r.numero_periode,
                 ),
             )
@@ -995,7 +995,7 @@ class TestPaiesPourColonne:
             f"`paies_pour_colonne(resumes, {annee_test!r})` doit retourner "
             f"exactement le sous-ensemble BROUILLON/EMISE de l'année "
             f"{annee_test!r}, trié BROUILLON avant EMISE puis date de "
-            f"paiement décroissante puis `numero_periode` croissant ; "
+            f"paiement croissante puis `numero_periode` croissant ; "
             f"attendu {resultat_attendu!r}, obtenu {resultat_obtenu!r}."
         )
 

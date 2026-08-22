@@ -130,8 +130,11 @@ def mois_annee_rattachement(date_paiement: date) -> tuple[int, int]:
 
 
 def formater_option_annee_complete(annee: int) -> str:
-    """`"<annee> (année complète)"` (Requirement 2.5)."""
-    return f"{annee} (année complète)"
+    """`"<annee>"` (demande explicite de l'utilisateur — libellé simplifié
+    du Selecteur_De_Periode_Global du Tableau_De_Bord, sans le suffixe
+    « (année complète) », l'année seule étant déjà suffisamment
+    explicite pour ce sélecteur)."""
+    return f"{annee}"
 
 
 def formater_option_mois_fiscal(annee: int, mois: int) -> str:

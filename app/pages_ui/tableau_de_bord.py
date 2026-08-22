@@ -586,19 +586,19 @@ def _resoudre_annee_selectionnee() -> tuple[tuple[PayrollResult, ...] | None, in
     ``(None, date.today().year)`` — `None` signale à l'appelant de ne
     pas rendre la section Bilan fiscal.
 
-    Note (tâche 8.1) : cette fonction n'est pas encore appelée depuis
-    `render()` — le câblage complet (retrait du sélecteur local de
-    `_afficher_bilan_fiscal`, transmission explicite de
-    `annee_selectionnee` à `_afficher_liste_employes`/
-    `_afficher_bilan_fiscal`) est réservé à la tâche 8.2. Le placement
-    visuel définitif (alignement fin au niveau du titre de page) sera
-    potentiellement affiné à cette même tâche ; la disposition
-    `st.columns` ci-dessous n'est qu'une disposition simple suffisante
-    pour cette étape intermédiaire.
+    Placement visuel (demande explicite de l'utilisateur) : le
+    sélecteur est affiché sur la même ligne que le titre de page
+    « Tableau de bord », aligné à droite — pour que l'opérateur
+    comprenne immédiatement que cette sélection pilote tout le contenu
+    de la page, plutôt qu'une ligne séparée sans lien visuel évident
+    avec le titre.
     """
+    col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
+    with col_titre:
+        st.title("Tableau de bord")
+
     resultat_paies = executer_avec_capture(lire_paies_emises)
     if isinstance(resultat_paies, ErreurDomaineAffichable):
-        col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
         with col_selecteur:
             st.error(f"{resultat_paies.type_exception}: {resultat_paies.message}")
         return None, date.today().year
@@ -623,7 +623,6 @@ def _resoudre_annee_selectionnee() -> tuple[tuple[PayrollResult, ...] | None, in
     # pour un widget lié par `key=`).
     st.session_state[_CLE_ANNEE_SELECTIONNEE_LIBELLE] = libelle_resolu
 
-    col_titre, col_selecteur = st.columns([3, 2], vertical_alignment="center")
     with col_selecteur:
         libelle_selectionne = st.selectbox(
             "Année",
@@ -691,14 +690,14 @@ def render() -> None:
     Employe_Detaillee (Req 4.5, 4.6), et un bouton qui route vers la
     page dédiée de création d'un nouvel employé (Req 4.4).
     """
-    st.title("Tableau de bord")
-
     # Selecteur_De_Periode_Global résolu une seule fois, en haut de
-    # `render()`, avant le rendu de la section « Employés » (spec
-    # ``tableau-de-bord-periode-globale``, design.md Décision 2,
-    # Requirement 1.7). `paies_emises` vaut `None` si `lire_paies_emises`
-    # a échoué (Décision 4) — signale de ne pas rendre la section Bilan
-    # fiscal plus bas.
+    # `render()` (affiche aussi le titre de page « Tableau de bord »,
+    # sur la même ligne que le sélecteur — voir docstring de
+    # `_resoudre_annee_selectionnee`), avant le rendu de la section
+    # « Employés » (spec ``tableau-de-bord-periode-globale``,
+    # design.md Décision 2, Requirement 1.7). `paies_emises` vaut
+    # `None` si `lire_paies_emises` a échoué (Décision 4) — signale de
+    # ne pas rendre la section Bilan fiscal plus bas.
     paies_emises, annee_selectionnee = _resoudre_annee_selectionnee()
 
     # Bug UI signalé après démo (demande explicite de l'utilisateur) :
@@ -710,7 +709,7 @@ def render() -> None:
         [3, 2], vertical_alignment="center"
     )
     with col_titre_employes:
-        st.header("Employés")
+        st.header("Employés et paies")
     with col_bouton_ajouter_employe:
         # Bug UI signalé après démo (2) : `st.button` occupe par défaut
         # uniquement la largeur de son texte, aligné à gauche de sa
