@@ -2387,16 +2387,35 @@ class TestPreselectionAnneeParDefautToujoursDisponible:
         )
 
 
+#: Symboles de `payroll_engine/` autorisés dans `bilan_fiscal.py`
+#: (règle 02, Requirement 11.1) — `chemin_bd_production` (point d'E/S,
+#: résolution pure du chemin) et `telecharger_si_absent`
+#: (`payroll_engine.stockage_distant` — utilitaire de synchronisation
+#: de fichier sur hébergement à système de fichiers éphémère, JAMAIS
+#: une fonction de calcul fiscal ; même exception déjà appliquée sans
+#: restriction par `dernieres_paies.py`, bug corrigé après incident
+#: `sqlite3.OperationalError: unable to open database file` constaté au
+#: premier accès disque après un redémarrage à froid du conteneur).
+#: Toute autre fonction de `payroll_engine/` (calcul de gains, retenues,
+#: cotisations, etc.) reste interdite — le Bilan_Fiscal doit obtenir
+#: chaque montant exclusivement par sommation directe des champs déjà
+#: calculés et tracés de `PayrollResult`.
+_SYMBOLES_PAYROLL_ENGINE_AUTORISES = frozenset(
+    {"chemin_bd_production", "telecharger_si_absent"}
+)
+
+
 class TestAucunImportInterditPayrollEngine:
     """Test de garde structurel — aucune fonction de `payroll_engine/`
-    autre que `chemin_bd_production` n'est importée par
+    en dehors de `_SYMBOLES_PAYROLL_ENGINE_AUTORISES` n'est importée par
     `bilan_fiscal.py` (règle 02, Requirement 11.1)."""
 
     def test_bilan_fiscal_nimporte_aucune_fonction_de_payroll_engine_sauf_chemin_bd_production(
         self,
     ) -> None:
         """`bilan_fiscal.py` n'importe/n'appelle aucune fonction de
-        `payroll_engine/` autre que `chemin_bd_production` (Req 11.1).
+        `payroll_engine/` en dehors de
+        `_SYMBOLES_PAYROLL_ENGINE_AUTORISES` (Req 11.1).
 
         Inspection statique (`ast`) du **code source** du fichier — pas
         un import du module — afin que ce test reste collectable et
@@ -2440,7 +2459,7 @@ class TestAucunImportInterditPayrollEngine:
                     "payroll_engine."
                 ):
                     for alias in noeud.names:
-                        if alias.name != "chemin_bd_production":
+                        if alias.name not in _SYMBOLES_PAYROLL_ENGINE_AUTORISES:
                             violations.append(
                                 f"from {noeud.module} import {alias.name}"
                                 + (f" as {alias.asname}" if alias.asname else "")
@@ -2475,14 +2494,14 @@ class TestAucunImportInterditPayrollEngine:
             ):
                 if (
                     noeud.value.id in alias_modules_register
-                    and noeud.attr != "chemin_bd_production"
+                    and noeud.attr not in _SYMBOLES_PAYROLL_ENGINE_AUTORISES
                 ):
                     violations.append(f"{noeud.value.id}.{noeud.attr}(...)")
 
         if violations:
             pytest.fail(
                 "bilan_fiscal.py importe ou appelle une fonction de "
-                "`payroll_engine/` autre que `chemin_bd_production` "
+                "`payroll_engine/` en dehors des symboles autorisés "
                 "(Requirement 11.1, règle 02) — le Bilan_Fiscal doit "
                 "obtenir chaque montant exclusivement par sommation "
                 "directe des champs déjà calculés et tracés de "

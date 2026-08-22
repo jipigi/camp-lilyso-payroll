@@ -61,6 +61,7 @@ from pathlib import Path
 from models.enums import StatutDePaie
 from models.payroll_result import PayrollResult
 from payroll_engine.register import chemin_bd_production
+from payroll_engine.stockage_distant import telecharger_si_absent
 
 _PRECISION_MONNAIE = Decimal("0.01")
 """Précision d'arrondissement monétaire — deux décimales, cohérente avec
@@ -549,6 +550,26 @@ def construire_tableau_bilan_fiscal(
 # ---------------------------------------------------------------------------
 
 
+def _telecharger_si_absent_sauf_memoire(chemin_bd: str | Path) -> None:
+    """Applique :func:`telecharger_si_absent` sauf pour ``":memory:"``.
+
+    Bug corrigé après livraison (synchronisation distante manquante,
+    incident constaté après redémarrage à froid du conteneur Streamlit
+    Community Cloud) : ce module contourne délibérément
+    `payroll_engine.register._connexion` (décision n° 5, voir docstring
+    de module) — sans ce garde-fou, `lire_paies_emises` était le premier
+    point d'accès disque de l'application (Tableau_De_Bord = page par
+    défaut) et échouait par `sqlite3.OperationalError: unable to open
+    database file` sur un conteneur neuf, dont le répertoire parent de
+    `chemin_bd` n'existe pas encore localement. Même correctif déjà
+    appliqué à `app/logique_metier/dernieres_paies.py` — reproduit ici à
+    l'identique (jamais appliqué pour `":memory:"`, qui n'a aucun
+    fichier disque à synchroniser).
+    """
+    if chemin_bd != ":memory:":
+        telecharger_si_absent(Path(chemin_bd))
+
+
 def lire_paies_emises(
     chemin_bd: str | Path = chemin_bd_production(),
 ) -> tuple[PayrollResult, ...]:
@@ -586,6 +607,7 @@ def lire_paies_emises(
     `EMISE` du Camp LilySO (quelques employés saisonniers, ≤27
     paies/an/employé) rend ce coût négligeable.
     """
+    _telecharger_si_absent_sauf_memoire(chemin_bd)
     try:
         connexion = sqlite3.connect(str(chemin_bd))
         try:
