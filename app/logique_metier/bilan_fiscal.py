@@ -631,6 +631,66 @@ def lire_paies_emises(
     )
 
 
+def lire_annees_avec_paie_active(
+    chemin_bd: str | Path = chemin_bd_production(),
+) -> tuple[int, ...]:
+    """Années de rattachement distinctes portant au moins une paie active
+    (`BROUILLON` ou `EMISE`, tous employés confondus), triées croissant.
+
+    Bug UI corrigé après livraison (demande explicite de l'utilisateur) :
+    le Selecteur_De_Periode_Global du Tableau_De_Bord (alimenté par
+    :func:`construire_options_annee`, qui ne dérivait jusqu'ici les
+    années disponibles que de `lire_paies_emises` — statut `EMISE`
+    uniquement) n'exposait jamais l'année d'une paie encore au statut
+    `BROUILLON` — un employé ayant une seule paie `BROUILLON` pour une
+    année ne pouvait donc jamais sélectionner cette année dans le
+    Tableau_De_Bord.
+
+    L'année retenue est le **Mois_De_Rattachement** de
+    `pay_period.date_paiement` (:func:`mois_annee_rattachement`,
+    décision n° 1 des requirements — même source que
+    :func:`construire_options_annee` pour les paies `EMISE`), jamais la
+    colonne `annee_fiscale` de la table `paies` : cette colonne ne
+    reflète que l'année des **paramètres fiscaux** utilisés pour le
+    calcul (ex. une paie dont la date de paiement tombe en 2025 mais
+    calculée avec les paramètres 2026, faute de fichier
+    `parameters/2025/` disponible, porte `annee_fiscale = 2026` tout en
+    ayant `date_paiement` en 2025) — les deux peuvent diverger, et c'est
+    la date de paiement qui doit déterminer l'année affichée au
+    Tableau_De_Bord (cohérent avec la Colonne_Paies, dont le filtrage
+    `paies_pour_colonne` se base déjà exclusivement sur `date_paiement`).
+
+    Lit donc `payload_json` complet (comme :func:`lire_paies_emises`),
+    jamais seulement la colonne `annee_fiscale` — `date_paiement` n'est
+    pas une colonne SQL indexable. Même discipline que
+    `lire_paies_emises` (décision n° 5) : SQL direct sur `paies`,
+    `sqlite3.OperationalError` « no such table » traduite en tuple vide,
+    toute autre exception propagée intacte.
+    """
+    _telecharger_si_absent_sauf_memoire(chemin_bd)
+    try:
+        connexion = sqlite3.connect(str(chemin_bd))
+        try:
+            lignes = connexion.execute(
+                "SELECT payload_json FROM paies WHERE statut IN (?, ?)",
+                (StatutDePaie.BROUILLON.value, StatutDePaie.EMISE.value),
+            ).fetchall()
+        finally:
+            connexion.close()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return ()
+        raise
+
+    annees = {
+        mois_annee_rattachement(
+            PayrollResult.model_validate_json(payload_json).pay_period.date_paiement
+        )[0]
+        for (payload_json,) in lignes
+    }
+    return tuple(sorted(annees))
+
+
 # ---------------------------------------------------------------------------
 # Selecteur_De_Periode_Global — options Annee_Complete uniquement
 # (Requirements 1.1-1.5 ; spec ``tableau-de-bord-periode-globale``, tâche 1.1)
@@ -640,24 +700,37 @@ def lire_paies_emises(
 def construire_options_annee(
     paies_emises: tuple[PayrollResult, ...],
     annee_courante: int,
+    annees_supplementaires: tuple[int, ...] = (),
 ) -> tuple[OptionPeriode, ...]:
     """Options Annee_Complete du Selecteur_De_Periode_Global (Req 1.1-1.3).
 
     Détermine l'ensemble des années de rattachement
     (:func:`mois_annee_rattachement` — réutilisée sans duplication)
     présentes dans ``paies_emises``, y ajoute ``annee_courante`` si
-    absente (Option_Annee_Courante_De_Repli), formate chaque année via
-    :func:`formater_option_annee_complete` (réutilisée sans duplication),
-    puis trie par année décroissante. Ne produit jamais d'option de type
-    Mois_Fiscal — chaque `OptionPeriode.periode.mois` retourné vaut
-    toujours `None`. ``annee_courante`` figure toujours exactement une
-    fois dans le résultat (Req 1.2, 1.3 — jamais de doublon si elle est
-    déjà une Annee_Avec_Paie_Emise).
+    absente (Option_Annee_Courante_De_Repli) ainsi que chaque année de
+    ``annees_supplementaires`` (défaut : tuple vide — préserve le
+    comportement d'origine pour tout appelant existant), formate chaque
+    année via :func:`formater_option_annee_complete` (réutilisée sans
+    duplication), puis trie par année décroissante. Ne produit jamais
+    d'option de type Mois_Fiscal — chaque `OptionPeriode.periode.mois`
+    retourné vaut toujours `None`. ``annee_courante`` figure toujours
+    exactement une fois dans le résultat (Req 1.2, 1.3 — jamais de
+    doublon si elle est déjà une Annee_Avec_Paie_Emise).
+
+    ``annees_supplementaires`` (bug UI corrigé après livraison, demande
+    explicite de l'utilisateur) permet à l'appelant (Tableau_De_Bord)
+    d'inclure les années portant une paie `BROUILLON` (jamais présentes
+    dans ``paies_emises`, qui ne porte que le statut `EMISE`) — voir
+    :func:`lire_annees_avec_paie_active`. Sans cet ajout, une année
+    n'ayant qu'une paie `BROUILLON` n'apparaissait jamais dans le
+    Selecteur_De_Periode_Global, alors que la Colonne_Paies affiche
+    pourtant les `BROUILLON` de l'année sélectionnée.
     """
     annees_presentes: set[int] = {
         mois_annee_rattachement(paie.pay_period.date_paiement)[0]
         for paie in paies_emises
     }
+    annees_presentes.update(annees_supplementaires)
     annees_presentes.add(annee_courante)
 
     options = tuple(

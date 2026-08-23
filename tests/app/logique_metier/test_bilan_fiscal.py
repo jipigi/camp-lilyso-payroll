@@ -574,6 +574,167 @@ class TestLirePaiesEmises:
 
 
 # ---------------------------------------------------------------------------
+# lire_annees_avec_paie_active — bug UI corrigé après livraison (demande
+# explicite de l'utilisateur) : le Selecteur_De_Periode_Global doit
+# exposer aussi les années n'ayant qu'une paie BROUILLON.
+# ---------------------------------------------------------------------------
+
+
+class TestLireAnneesAvecPaieActive:
+    """`lire_annees_avec_paie_active` — années BROUILLON/EMISE, tous
+    employés confondus (bug UI corrigé après livraison)."""
+
+    @given(brouillon=st_payroll_result_arbitraire(statut=StatutDePaie.BROUILLON))
+    @settings_large_input
+    def test_exemple_annee_avec_seulement_un_brouillon_est_incluse(
+        self, brouillon: PayrollResult, tmp_path
+    ) -> None:
+        """Une année n'ayant qu'une paie BROUILLON (aucune EMISE) doit
+        apparaître dans le résultat — c'est précisément le cas que
+        `lire_paies_emises` seule ne peut jamais détecter."""
+        from payroll_engine.register import inserer_paie
+
+        from app.logique_metier.bilan_fiscal import lire_annees_avec_paie_active
+
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        brouillon = brouillon.model_copy(
+            update={
+                "pay_period": brouillon.pay_period.model_copy(
+                    update={"date_paiement": date(2025, 7, 30)}
+                )
+            }
+        )
+        inserer_paie(brouillon, saison="", chemin_bd=chemin_bd)
+
+        resultat = lire_annees_avec_paie_active(chemin_bd=chemin_bd)
+
+        assert 2025 in resultat, (
+            "Une année n'ayant qu'une paie BROUILLON doit figurer dans "
+            f"le résultat, dérivée de la date de paiement ; obtenu "
+            f"{resultat!r}."
+        )
+
+    @given(brouillon=st_payroll_result_arbitraire(statut=StatutDePaie.BROUILLON))
+    @settings_large_input
+    def test_exemple_annee_derivee_de_date_paiement_pas_de_colonne_annee_fiscale(
+        self, brouillon: PayrollResult, tmp_path
+    ) -> None:
+        """Bug UI corrigé après livraison : la colonne `annee_fiscale`
+        (année des paramètres fiscaux utilisés) peut diverger de
+        l'année de `date_paiement` — c'est cette dernière qui doit
+        déterminer l'année affichée, jamais la colonne `annee_fiscale`.
+
+        Reproduit l'incident constaté : une paie calculée avec les
+        paramètres fiscaux 2026 (faute de `parameters/2025/`
+        disponible) mais dont la date de paiement tombe en 2025."""
+        from payroll_engine.register import inserer_paie
+
+        from app.logique_metier.bilan_fiscal import lire_annees_avec_paie_active
+
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        brouillon = brouillon.model_copy(
+            update={
+                "annee_fiscale": 2026,
+                "pay_period": brouillon.pay_period.model_copy(
+                    update={
+                        "date_paiement": date(2025, 7, 30),
+                        "annee_fiscale": 2026,
+                    }
+                ),
+                "cumuls_fin": brouillon.cumuls_fin.model_copy(
+                    update={"annee_civile": 2026}
+                ),
+            }
+        )
+        inserer_paie(brouillon, saison="", chemin_bd=chemin_bd)
+
+        resultat = lire_annees_avec_paie_active(chemin_bd=chemin_bd)
+
+        assert 2025 in resultat, (
+            "L'année de `date_paiement` (2025) doit apparaître même si "
+            f"la colonne `annee_fiscale` vaut 2026 ; obtenu {resultat!r}."
+        )
+        assert 2026 not in resultat, (
+            "La colonne `annee_fiscale` (2026, année des paramètres "
+            "fiscaux) ne doit jamais être utilisée pour dériver "
+            f"l'année affichée ; obtenu {resultat!r}."
+        )
+
+    def test_exemple_base_memoire_neuve_sans_table_paies_retourne_tuple_vide(
+        self,
+    ) -> None:
+        """Base `:memory:` neuve, sans table `paies` — tuple vide, même
+        discipline que `lire_paies_emises` (décision n° 5)."""
+        from app.logique_metier.bilan_fiscal import lire_annees_avec_paie_active
+
+        resultat = lire_annees_avec_paie_active(chemin_bd=":memory:")
+
+        assert resultat == (), (
+            "`lire_annees_avec_paie_active` sur une base `:memory:` "
+            f"neuve doit retourner un tuple vide, obtenu {resultat!r}."
+        )
+
+    @pytest.mark.property
+    @given(
+        paies_mixtes=st.lists(
+            st_payroll_result_arbitraire(
+                statut=st.sampled_from(list(StatutDePaie))
+            ),
+            min_size=0,
+            max_size=10,
+            unique_by=lambda p: p.id_paie,
+        )
+    )
+    @settings_large_input
+    def test_retourne_exactement_les_annees_des_paies_actives(
+        self, paies_mixtes: list[PayrollResult], tmp_path
+    ) -> None:
+        """Le résultat doit correspondre exactement à l'ensemble des
+        `annee_fiscale` des paies effectivement insérées de statut
+        BROUILLON ou EMISE — jamais ANNULEE/REMPLACE_PAR."""
+        from payroll_engine.register import inserer_paie
+
+        from app.logique_metier.bilan_fiscal import lire_annees_avec_paie_active
+
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        paies_effectivement_inserees: list[PayrollResult] = []
+        periodes_emises_occupees: set[tuple[str, int, int]] = set()
+        for resultat in paies_mixtes:
+            if resultat.statut is StatutDePaie.EMISE:
+                cle_periode = (
+                    resultat.employe_id,
+                    resultat.annee_fiscale,
+                    resultat.pay_period.numero_periode,
+                )
+                if cle_periode in periodes_emises_occupees:
+                    continue
+                periodes_emises_occupees.add(cle_periode)
+            inserer_paie(resultat, saison="", chemin_bd=chemin_bd)
+            paies_effectivement_inserees.append(resultat)
+
+        annees_attendues = {
+            paie.pay_period.date_paiement.year
+            for paie in paies_effectivement_inserees
+            if paie.statut in (StatutDePaie.BROUILLON, StatutDePaie.EMISE)
+        }
+
+        resultat_obtenu = lire_annees_avec_paie_active(chemin_bd=chemin_bd)
+
+        assert set(resultat_obtenu) == annees_attendues, (
+            "`lire_annees_avec_paie_active` doit retourner exactement "
+            f"l'ensemble des années des paies BROUILLON/EMISE ; attendu "
+            f"{annees_attendues!r}, obtenu {set(resultat_obtenu)!r}."
+        )
+        assert resultat_obtenu == tuple(sorted(resultat_obtenu)), (
+            "le résultat doit être trié croissant, obtenu "
+            f"{resultat_obtenu!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Property 2 — Formatage des libellés d'options
 # ---------------------------------------------------------------------------
 #

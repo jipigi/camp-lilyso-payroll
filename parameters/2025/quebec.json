@@ -1,0 +1,131 @@
+{
+  "annee": 2026,
+  "juridiction": "quebec",
+  "source": "Revenu Québec — TP-1015.F 2026",
+  "date_publication": "2026-01",
+  "date_consultation": "2026-08-03",
+  "url_consultee": "https://www.revenuquebec.ca/en/businesses/source-deductions-and-employer-contributions/employers-principal-changes-for-2026/ (paliers, taux, indexation 2,05 %) ; https://www.revenuquebec.ca/en/online-services/forms-and-publications/current-details/tp-1015-f-v/ → PDF TP-1015.F-V (2026-01 version) ; https://www.revenuquebec.ca/en/citizens/income-tax-return/completing-your-income-tax-return/how-to-complete-your-income-tax-return/line-by-line-help/201-to-260-net-income/line-201/ (déduction pour travailleur, mécanisme 6 % plafonné)",
+  "notes": "Valeurs marquées 'VALIDE_WEBRAS' ont été vérifiées au cent près par exécution WebRAS sur scénario QC001 et corpus des 5 paies réelles (paie 1 saison 2026). Les 'TO_FILL' doivent être remplis par consultation directe du TP-1015.F 2026 avant de couvrir des cas hors du corpus actuel (ex. dépassement du MGA).",
+
+  "frequence_paie": {
+    "commentaire": "Nombre officiel de périodes de paie dans l'année pour un cycle aux deux semaines. WebRAS utilise 27 pour 2026 (année à 27 paies bi-hebdomadaires selon le calendrier Camp LilySO). Cette valeur DOIT être ré-évaluée chaque année selon le calendrier de paye : 27 pour 2026, 26 pour 2027 (et années standard). Renseignée manuellement à la mise à jour annuelle des paramètres.",
+    "nb_periodes_annuelles": 27,
+    "statut": "VALIDE_WEBRAS"
+  },
+
+  "rrq": {
+    "commentaire": "TP-1015.F 2026, section RRQ. Cotisation de base incluant la première cotisation supplémentaire (bonification 2019+). Le taux 6,3 % agrège base 5,4 % + supplémentaire 0,9 % (à confirmer avec TP-1015.F). La deuxième cotisation supplémentaire (RRQ2, 4 %) ne s'applique qu'aux gains entre MGA et MSGA — hors périmètre Camp LilySO (jamais atteint).",
+    "taux_cotisation_totale_employe": "0.063",
+    "taux_cotisation_totale_employeur": "0.063",
+    "taux_deuxieme_cotisation_supplementaire_employe": "0.040",
+    "taux_deuxieme_cotisation_supplementaire_employeur": "0.040",
+    "exemption_generale_annuelle": "3500.00",
+    "exemption_par_periode_aux_deux_semaines_2026": "129.63",
+    "portion_supplementaire_deductible_fed": {
+      "commentaire": "Portion de la cotisation totale RRQ qui est traitée fédéralement comme une déduction du revenu (et non un crédit). Calculée par PDOC comme 1 % × (brut − exemption). Utile pour le module impot-federal.",
+      "taux_effectif": "0.010"
+    },
+    "maximum_gains_admissibles_mga": "74600.00",
+    "maximum_supplementaire_gains_admissibles_msga": "85000.00",
+    "cotisation_max_annuelle_employe": "4479.30",
+    "deuxieme_cotisation_supplementaire_maximale_employe": "416.00",
+    "deuxieme_cotisation_supplementaire_maximale_employeur": "416.00",
+    "statut_taux": "VALIDE_WEBRAS",
+    "statut_plafonds": "VALIDE_TP1015F_2026"
+  },
+
+  "rqap": {
+    "commentaire": "TP-1015.F 2026, section RQAP. Taux employé et employeur distincts.",
+    "taux_employe": "0.0043",
+    "taux_employeur": "0.00602",
+    "maximum_gains_assurables": "103000.00",
+    "cotisation_max_employe": "442.90",
+    "cotisation_max_employeur": "620.06",
+    "statut_taux": "VALIDE_WEBRAS",
+    "statut_plafonds": "VALIDE_TP1015F_2026"
+  },
+
+  "impot_quebec": {
+    "commentaire": "TP-1015.F 2026 (version 2026-01), section impôt du Québec. Paliers et taux confirmés officiellement : régime d'imposition des particuliers indexé à 2,05 % pour 2026 (Revenu Québec, « Employeur — Principaux changements 2026 »). Taux marginaux 2026 : 14 % (0 à 54 345 $), 19 % (54 345 $ à 108 680 $), 24 % (108 680 $ à 132 245 $), 25,75 % (au-delà de 132 245 $). Le seuil supérieur 132 245 $ est confirmé mot pour mot par Revenu Québec ; les seuils 54 345 $ et 108 680 $ sont les seuils 2025 (53 255 $ / 106 495 $) indexés de 2,05 % puis arrondis au multiple de 5 $ le plus proche, cohérents avec la source publiée. Les constante_k sont les constantes officielles du TP-1015.F 2026 (« Seuils de revenu imposable, taux d'imposition et constantes pour 2026 »), arrondies au dollar par Revenu Québec.",
+    "montant_personnel_base": "18952.00",
+    "deduction_pour_travailleur_annuelle": "1450.00",
+    "taux_deduction_pour_travailleur": "0.06",
+    "commentaire_deduction_pour_travailleur": "Modèle à DEUX déductions distinctes (design §Components §2), conforme à la formule officielle TP-1015.F 2026 confirmée mot pour mot par le PDF déposé dans docs/sources-officielles/2026/. (1) DÉDUCTION POUR TRAVAILLEUR : le PDF TP-1015.F 2026 énonce « Pour 2026, le montant maximal de la déduction pour travailleur est de 1 450 $ » et donne la formule H = (0,06 × D), jusqu'à concurrence de 1 450 $ ÷ P, où D est le salaire de la période et P le nombre de périodes de paie. Formellement : H = arrondir(min(taux_deduction_pour_travailleur × D ; deduction_pour_travailleur_annuelle ÷ P)) avec taux_deduction_pour_travailleur = 0,06 et deduction_pour_travailleur_annuelle = 1 450 $. Le montant de période H est arrondi au cent (ROUND_HALF_UP), conformément au comportement de WebRAS. (2) DÉDUCTION POUR LA PREMIÈRE COTISATION SUPPLÉMENTAIRE AU RRQ : déduction distincte lue via rrq.portion_supplementaire_deductible_fed.taux_effectif (0,010) × max(0, brut − rrq.exemption_par_periode_aux_deux_semaines_2026 = 129,63), identique au mécanisme fédéral de déduction de la portion bonifiée du RRQ, conservée en pleine précision. Les deux déductions sont soustraites du salaire de période avant annualisation. La formule officielle reproduit les 6 fixtures WebRAS au cent (QC001=104,56 ; QC002=329,31 ; QC003=201,17 ; QC004=0,00 ; QC005=135,55 ; QC006=0,00).",
+    "paliers": [
+      {
+        "seuil_bas_annuel": "0.00",
+        "seuil_haut_annuel": "54345.00",
+        "taux": "0.14",
+        "constante_k": "0.00"
+      },
+      {
+        "seuil_bas_annuel": "54345.00",
+        "seuil_haut_annuel": "108680.00",
+        "taux": "0.19",
+        "constante_k": "2717"
+      },
+      {
+        "seuil_bas_annuel": "108680.00",
+        "seuil_haut_annuel": "132245.00",
+        "taux": "0.24",
+        "constante_k": "8151"
+      },
+      {
+        "seuil_bas_annuel": "132245.00",
+        "seuil_haut_annuel": null,
+        "taux": "0.2575",
+        "constante_k": "10465"
+      }
+    ],
+    "commentaire_paliers": "seuil_haut_annuel du dernier palier = null (palier terminal non borné). L'algorithme du design (_taux_et_constante_pour_palier) n'utilise que seuil_bas_annuel ; seuil_haut_annuel est documentaire. Le sous-modèle Palier (tâche 7.2) doit traiter seuil_haut_annuel comme optionnel. Les constante_k sont les valeurs OFFICIELLES du TP-1015.F 2026 (« Seuils de revenu imposable, taux d'imposition et constantes pour 2026 »), arrondies au dollar par Revenu Québec : 0, 2 717, 8 151 et 10 465. Ces constantes étant arrondies au dollar, la continuité exacte de l'impôt aux bornes de paliers n'est pas garantie (de petites discontinuités de l'ordre du dollar sont normales et conformes à la publication officielle) ; le calcul de retenue reste exact car il n'utilise que le palier applicable au revenu annualisé.",
+    "taux_credits_convertibles": "0.14",
+    "regles_arrondissement": "ROUND_HALF_UP à 2 décimales. Deux arrondissements monétaires officiels sont appliqués : (1) la déduction pour travailleur de période H = arrondir(min(0,06 × D ; 1 450 $ ÷ P)) est arrondie au cent (comportement WebRAS confirmé par le PDF TP-1015.F 2026) ; (2) le montant de retenue de période final impot_periode est arrondi au cent. Le reste du calcul (déduction RRQ supplémentaire, annualisation, palier progressif, crédit personnel) est conservé en pleine précision Decimal. Les seuils de paliers sont exprimés en dollars annuels ; les constante_k sont les constantes officielles arrondies au dollar.",
+    "statut": "VALIDE_TP1015F_2026"
+  },
+
+  "fss": {
+    "commentaire": "TP-1015.F 2026, section Fonds des services de santé. Taux applicable selon la masse salariale totale annuelle de l'employeur. Pour Camp LilySO en 2026 (masse ≈ 14 862 $), le taux appliqué par WebRAS est 1,65 %.",
+    "taux_camp_lilyso_2026": "0.0165",
+    "masse_salariale_utilisee_webras_2026": "14861.60",
+    "table_taux_par_masse_salariale": "TO_FILL",
+    "statut": "VALIDE_WEBRAS_POUR_MASSE_ACTUELLE"
+  },
+
+  "td_1015_3": {
+    "commentaire": "TP-1015.3 — Déclaration pour la retenue d'impôt du Québec. Les valeurs personnelles (montant total, retenue additionnelle) sont normalement portées par la fiche employé. La clé 'retenue_additionnelle_defaut' fournit la valeur par défaut lue par la fabrique 'Employee.avec_defauts_par_annee' (Req 1.7, task 12.5) lorsque le kwarg 'retenue_additionnelle_QC' est absent : conforme à la règle 05, aucune valeur '0.00' n'est codée en dur dans le code Python — elle est portée ici, dans le fichier de paramètres versionné par année.",
+    "retenue_additionnelle_defaut": "0.00",
+    "statut": "VALIDE_STRUCTURE"
+  },
+
+  "cnesst": {
+    "commentaire": "Classification et taux confirmés officiellement par la CNESST pour Camp LilySO. CORRECTION DE TRAÇABILITÉ (règle 02, Req 5.7) : les sous-libellés taux_unite/taux_cni étaient INVERSÉS par rapport à la décision de classification officielle. La décision énonce « taux de l'unité = 0,90 » (donc taux_unite = 0.0090) et « prime/CNI = 0,22 » (donc taux_cni = 0.0022), pour un total de 1,12 %. Le taux_total = 0.0112 était et reste correct (seul le total est utilisé pour le calcul ; les sous-taux sont purement documentaires). Valeurs corrigées le 2026-08-03 : taux_unite et taux_cni ont été permutés pour refléter fidèlement le document officiel.",
+    "statut": "VALIDE_OFFICIEL",
+    "unite": "57020",
+    "taux_unite": "0.0090",
+    "taux_cni": "0.0022",
+    "taux_total": "0.0112",
+    "en_attente_classification": false
+  },
+
+  "cnt": {
+    "commentaire": "Cotisation relative aux normes du travail — taux et maximum annuel officiels lus du formulaire LE-39.0.2 (2026-01) : ligne 35 « Taux de cotisation = 0,06 % » → taux = 0.0006 ; ligne 29 « Montant maximal par employé = 103 000 $ » → base_admissible = 103000.00. La CNT est légalement une cotisation annuelle (payée avec le sommaire RLZ-1.ST) mais elle est répartie par paie au taux 0,06 % (décision requirements n° 2) : cette répartition reproduit exactement la charge annuelle tant que le maximum par employé n'est pas atteint. La base_admissible (103 000 $) n'est JAMAIS appliquée comme plafond au Camp LilySO — elle est renseignée à des fins documentaires et de trace uniquement, jamais atteinte (décision requirements n° 4). N'apparaît pas dans WebRAS par paie (charge annuelle) → validée par calcul direct 0,0006 × salaire assujetti.",
+    "source": "LE-39.0.2 (2026-01)",
+    "date_consultation": "2026-08-03",
+    "taux": "0.0006",
+    "base_admissible": "103000.00",
+    "statut": "VALIDE_LE_39_0_2_2026"
+  },
+
+  "vacances": {
+    "commentaire": "Politique employeur — non fiscal.",
+    "taux_defaut": "0.04",
+    "taux_alternatif": "0.06",
+    "mode_versement": "chaque_paie"
+  },
+
+  "heures_supplementaires": {
+    "commentaire": "Loi sur les normes du travail du Québec.",
+    "seuil_hebdomadaire_heures": "40",
+    "multiplicateur": "1.5"
+  }
+}

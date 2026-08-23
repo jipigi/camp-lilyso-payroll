@@ -63,6 +63,7 @@ from app.logique_metier.bilan_fiscal import (
     construire_tableau_bilan_fiscal,
     determiner_annee_par_defaut,
     filtrer_paies_par_periode,
+    lire_annees_avec_paie_active,
     lire_paies_emises,
     resoudre_periode_a_afficher,
 )
@@ -111,7 +112,7 @@ _CLE_ANNEE_SELECTIONNEE_LIBELLE = "tdb_annee_selectionnee_libelle"
 #: colonnes (`.bilan-fiscal-section-entete` — Requirements 6.1, 8.1),
 #: des lignes de total (`.bilan-fiscal-total`, `.bilan-fiscal-grand-
 #: total`), une ligne à cellule QC/CA fusionnée
-#: (`.bilan-fiscal-combine` — Requirement 9.3), un indicateur textuel
+#: (`.bilan-fiscal-combine` — Requirement 9.3), un indicateur textuel (2026_01
 #: d'indisponibilité (`.bilan-fiscal-indisponible` — Requirement 7.3,
 #: 9.4) et une puce visible de classification CNESST en attente
 #: (`.bilan-fiscal-badge-attente` — Requirement 8.8).
@@ -604,8 +605,25 @@ def _resoudre_annee_selectionnee() -> tuple[tuple[PayrollResult, ...] | None, in
         return None, date.today().year
     paies_emises = resultat_paies
 
+    # Bug UI corrigé après livraison (demande explicite de l'utilisateur) :
+    # `paies_emises` (statut EMISE uniquement) ne suffit pas à dériver
+    # toutes les années sélectionnables — une année n'ayant qu'une paie
+    # BROUILLON doit rester sélectionnable (la Colonne_Paies l'affiche).
+    # Échec non bloquant : en cas d'erreur, le sélecteur reste
+    # fonctionnel avec les seules années EMISE/année courante (aucune
+    # interruption du reste du rendu, même discipline que le reste de
+    # cette fonction).
+    resultat_annees_actives = executer_avec_capture(lire_annees_avec_paie_active)
+    annees_avec_brouillon = (
+        ()
+        if isinstance(resultat_annees_actives, ErreurDomaineAffichable)
+        else resultat_annees_actives
+    )
+
     annee_courante = date.today().year
-    options = construire_options_annee(paies_emises, annee_courante)
+    options = construire_options_annee(
+        paies_emises, annee_courante, annees_avec_brouillon
+    )
     periode_par_defaut = determiner_annee_par_defaut(annee_courante)
 
     cle_deja_definie = _CLE_ANNEE_SELECTIONNEE_LIBELLE in st.session_state
