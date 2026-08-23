@@ -70,6 +70,11 @@ page_nouvel_employe = st.Page(
     title="Nouvel employé",
     icon=":material/person_add:",
     url_path="nouvel-employe",
+    # Demande explicite de l'utilisateur : retirée du menu de
+    # navigation (seuls le Tableau de bord et la Fiche employé y
+    # restent) — la page demeure accessible via le bouton « Ajouter un
+    # nouvel employé » du Tableau_De_Bord (`st.switch_page`).
+    visibility="hidden",
 )
 page_fiche_employe = st.Page(
     fiche_employe_detaillee.render,
@@ -82,18 +87,29 @@ page_formulaire_paie = st.Page(
     title="Nouvelle paie / correction",
     icon=":material/receipt_long:",
     url_path="formulaire-paie",
+    # Demande explicite de l'utilisateur — accessible via les liens
+    # « Ajouter une paie »/« Modifier » des Colonnes_Paies (Tableau_De_
+    # Bord, Fiche_Employe_Detaillee), jamais depuis le menu.
+    visibility="hidden",
 )
 page_historique = st.Page(
     historique_et_cumuls.render,
     title="Historique et cumuls annuels",
     icon=":material/history:",
     url_path="historique-et-cumuls",
+    # Demande explicite de l'utilisateur — accessible via un lien
+    # depuis la Fiche_Employe_Detaillee, jamais depuis le menu.
+    visibility="hidden",
 )
 page_bulletin_paie = st.Page(
     bulletin_paie.render,
     title="Bulletin de paie",
     icon=":material/description:",
     url_path="bulletin-paie",
+    # Demande explicite de l'utilisateur — accessible via les liens de
+    # paies déjà émises (Tableau_De_Bord, Fiche_Employe_Detaillee),
+    # jamais depuis le menu.
+    visibility="hidden",
 )
 
 
