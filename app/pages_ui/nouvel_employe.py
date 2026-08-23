@@ -231,7 +231,10 @@ def _afficher_formulaire_creation() -> None:
 
     with st.form("formulaire_nouvel_employe"):
         numero = st.text_input(
-            "Numéro d'employé", value=numero_par_defaut, key="creation_numero"
+            "Numéro d'employé",
+            value=numero_par_defaut,
+            key="creation_numero",
+            disabled=True,
         )
         prenom = st.text_input("Prénom", key="creation_prenom")
         nom = st.text_input("Nom", key="creation_nom")

@@ -54,7 +54,6 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from app.logique_metier.annuaire_coordonnees import FicheCoordonnees, lire_coordonnees
 from app.logique_metier.annuaire_employes import lister_employes
 from app.logique_metier.bilan_fiscal import (
     PeriodeFiscale,
@@ -73,7 +72,6 @@ from app.logique_metier.dernieres_paies import (
     paies_pour_colonne,
 )
 from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_capture
-from app.logique_metier.tri_employes import trier_employes_pour_affichage
 from models.employee import Employee
 from models.enums import StatutDePaie
 from models.payroll_result import PayrollResult
@@ -930,13 +928,9 @@ def _afficher_liste_employes(
 ) -> None:
     """Affiche une ligne par Fiche_Employe avec ses raccourcis (Req 3, 4, 5).
 
-    Tri par Prénom Nom (Req 4) : lit une `FicheCoordonnees` par employé
-    via `lire_coordonnees` (aucun mécanisme de repli explicite — une
-    exception de lecture se propage sans interception, cohérent avec le
-    design de cette fonctionnalité), construit le dictionnaire
-    `{employe_id: FicheCoordonnees}` des seules fiches trouvées, puis
-    appelle `trier_employes_pour_affichage` avant de construire les
-    lignes.
+    Tri par `employe.id` croissant (demande explicite de l'utilisateur —
+    revient sur le tri par Prénom Nom introduit précédemment) — tri pur,
+    sans lecture de `FicheCoordonnees`.
 
     Colonne_Paies (Req 5) : réutilise le même appel `lire_resumes_paies`
     déjà effectué historiquement par cette fonction (aucun appel SQL
@@ -959,12 +953,7 @@ def _afficher_liste_employes(
 
     st.markdown(_CSS_LISTE_EMPLOYES, unsafe_allow_html=True)
 
-    fiches: dict[str, FicheCoordonnees] = {}
-    for employe in employes:
-        fiche = lire_coordonnees(employe.id)
-        if fiche is not None:
-            fiches[employe.id] = fiche
-    employes_tries = trier_employes_pour_affichage(employes, fiches)
+    employes_tries = tuple(sorted(employes, key=lambda employe: employe.id))
 
     contenu_colonne_paies_par_employe: dict[str, str] = {}
     for employe in employes_tries:
