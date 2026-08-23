@@ -337,6 +337,25 @@ def _section_nouvelle_paie(
         key="fp_nouvelle_annee",
     )
 
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # l'année civile courante est toujours sélectionnable (voir
+    # `render()`) même si `parameters/<annee_fiscale>/` n'existe pas
+    # encore — message explicite affiché sous le sélecteur plutôt que
+    # de laisser `charger_parametres_fusionnes` lever `FileNotFoundError`
+    # (hors des 4 types interceptés par `executer_avec_capture`, donc
+    # affichée brute par Streamlit) ; le reste du formulaire n'est
+    # jamais rendu dans ce cas — aucune paie ne peut être assemblée
+    # pour une année sans paramètres fiscaux. Réutilise
+    # `lister_annees_disponibles()` (même logique de détection
+    # qu'ailleurs — deux fichiers requis par année — jamais dupliquée).
+    if annee_fiscale not in lister_annees_disponibles():
+        st.error(
+            f"Pour saisir une paie pour {annee_fiscale}, un fichier de "
+            "paramètres fiscaux doit être ajouté préalablement dans le "
+            "dossier `parameters/`."
+        )
+        return
+
     resultat_params = executer_avec_capture(
         lambda: charger_parametres_fusionnes(annee_fiscale)
     )
@@ -1331,6 +1350,22 @@ def render() -> None:
         return
 
     annees_disponibles = lister_annees_disponibles()
+
+    # Bug UI signalé après démo (demande explicite de l'utilisateur) :
+    # l'année civile courante est toujours proposée dans le sélecteur
+    # « Année des paramètres fiscaux », même si `parameters/<annee
+    # courante>/` n'existe pas encore sur disque — évite qu'un
+    # opérateur découvre l'absence de paramètres uniquement en tentant
+    # d'assembler une paie (`charger_parametres_fusionnes` lèverait
+    # alors `FileNotFoundError`, hors des 4 types interceptés par
+    # `executer_avec_capture`, donc affichée brute par Streamlit). Le
+    # message explicite ci-dessous (voir `_section_nouvelle_paie`) et
+    # le blocage de l'assemblage sont gérés une fois l'année
+    # effectivement sélectionnée.
+    annee_courante = date.today().year
+    if annee_courante not in annees_disponibles:
+        annees_disponibles = tuple(sorted({*annees_disponibles, annee_courante}))
+
     if not annees_disponibles:
         st.error(
             "Aucune année de paramètres fiscaux disponible sous "

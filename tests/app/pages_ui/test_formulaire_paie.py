@@ -265,3 +265,94 @@ class TestNonApplicationEnBrouillon:
             )
 
         inserer_paie_mock.assert_called_once()
+
+
+class TestAnneeCouranteSansParametresFiscaux:
+    """Bug UI corrigé après livraison (demande explicite de
+    l'utilisateur) : l'année civile courante est toujours proposée dans
+    le sélecteur d'année du formulaire de nouvelle paie, même sans
+    `parameters/<annee_courante>/` sur disque — un message explicite
+    bloque alors l'assemblage plutôt que de laisser
+    `charger_parametres_fusionnes` lever `FileNotFoundError` (hors des
+    4 types interceptés par `executer_avec_capture`)."""
+
+    def test_annee_courante_ajoutee_au_selecteur_si_absente_de_lister_annees_disponibles(
+        self,
+    ) -> None:
+        """Si `lister_annees_disponibles()` ne contient pas l'année
+        courante (aucun `parameters/<annee_courante>/` sur disque),
+        `render()` l'ajoute quand même aux options du `st.selectbox`."""
+        annee_courante = date.today().year
+        annees_avec_parametres = (annee_courante - 5,)  # jamais l'année courante
+        assert annee_courante not in annees_avec_parametres
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lister_employes",
+            return_value=(
+                Employee(
+                    id="EMP001",
+                    nom_affichage="Employé Test EMP001",
+                    date_naissance=date(2000, 1, 1),
+                    province_travail=Juridiction.QUEBEC,
+                    titre_emploi="Moniteur",
+                    taux_horaire_base=Decimal("20.00"),
+                    date_embauche=date(2024, 1, 1),
+                    date_fin_emploi=None,
+                    taux_indemnite_vacances=Decimal("0.04"),
+                    exoneration_TP1015_3=False,
+                    exoneration_TD1=False,
+                    montant_total_TP1015_3=Decimal("0.00"),
+                    montant_total_TD1=Decimal("0.00"),
+                    retenue_additionnelle_QC=Decimal("0.00"),
+                    retenue_additionnelle_federale=Decimal("0.00"),
+                ),
+            ),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lister_annees_disponibles",
+            return_value=annees_avec_parametres,
+        ), patch(
+            "app.pages_ui.formulaire_paie._section_nouvelle_paie"
+        ) as section_nouvelle_paie_mock:
+            st_mock.session_state = {}
+            st_mock.query_params = {}
+            st_mock.selectbox.return_value = annee_courante
+
+            from app.pages_ui.formulaire_paie import render
+
+            render()
+
+        annees_transmises = section_nouvelle_paie_mock.call_args.args[1]
+        assert annee_courante in annees_transmises, (
+            "l'année civile courante doit toujours figurer dans les "
+            f"années transmises à `_section_nouvelle_paie`, obtenu "
+            f"{annees_transmises!r}."
+        )
+
+    def test_message_erreur_explicite_si_annee_selectionnee_sans_parametres(
+        self,
+    ) -> None:
+        """Si l'année sélectionnée dans le `st.selectbox` n'a pas de
+        `parameters/<annee>/` sur disque, `_section_nouvelle_paie`
+        affiche le message d'erreur explicite et n'assemble aucune
+        paie (aucun appel à `charger_parametres_fusionnes`)."""
+        from app.pages_ui.formulaire_paie import _section_nouvelle_paie
+
+        annee_sans_parametres = 2099
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lister_annees_disponibles",
+            return_value=(),  # aucune année n'a de paramètres
+        ), patch(
+            "app.pages_ui.formulaire_paie.charger_parametres_fusionnes"
+        ) as charger_parametres_mock:
+            st_mock.session_state = {}
+            st_mock.query_params = {}
+            st_mock.selectbox.return_value = annee_sans_parametres
+
+            _section_nouvelle_paie((), (annee_sans_parametres,))
+
+        st_mock.error.assert_called_once()
+        message_erreur = st_mock.error.call_args.args[0]
+        assert str(annee_sans_parametres) in message_erreur
+        assert "parameters/" in message_erreur
+        charger_parametres_mock.assert_not_called()
