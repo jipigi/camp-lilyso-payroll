@@ -104,6 +104,7 @@ from app.logique_metier.annuaire_coordonnees import (
     FicheCoordonnees,
     enregistrer_coordonnees,
     formater_nas,
+    libelle_employe,
     lire_coordonnees,
     lister_coordonnees,
 )
@@ -402,24 +403,15 @@ def render() -> None:
         else {f.employe_id: f for f in resultat_coordonnees_toutes}
     )
 
-    def _libelle_employe(employe_id_option: str) -> str:
-        fiche = coordonnees_par_employe_id.get(employe_id_option)
-        if fiche is None:
-            return employe_id_option
-        nom_complet = " ".join(
-            partie for partie in (fiche.prenom, fiche.nom) if partie
-        ).strip()
-        if not nom_complet:
-            return employe_id_option
-        if fiche.courriel:
-            return f"{nom_complet} ({fiche.courriel})"
-        return nom_complet
-
+    # Bug UI signalé après démo, formatage désormais partagé (Req 2.2) :
+    # `libelle_employe` (extraite dans `annuaire_coordonnees.py`) remplace
+    # l'ancienne closure locale `_libelle_employe` — comportement
+    # d'affichage strictement identique.
     employe_id = st.selectbox(
         "Employé",
         options_employes,
         index=index_defaut,
-        format_func=_libelle_employe,
+        format_func=lambda eid: libelle_employe(eid, coordonnees_par_employe_id),
         key="fed_employe_id",
     )
     employe = next(e for e in employes if e.id == employe_id)
@@ -688,7 +680,7 @@ def _section_fiscal(employe: Employee) -> None:
     """
     cle_edition = _CLE_EDITION_FISCAL.format(employe_id=employe.id)
     en_edition = _afficher_entete_section(
-        "Formulaire TD1 / TP-1015.3 (à mettre à jour chaque année)",
+        "À partir du TP-1015.3 et TD1 fourni par l'employé",
         cle_edition,
     )
 

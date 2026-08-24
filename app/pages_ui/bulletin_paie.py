@@ -42,17 +42,11 @@ sur l'élément de navigation latérale), un message explicite invite
 l'opérateur à naviguer depuis une fiche employé plutôt que d'afficher
 une page vide silencieusement.
 
-Boutons d'action entre le titre et le contenu (haut de page), tous deux
+Boutons d'action entre le titre et le contenu (haut de page), tous
 masqués à l'impression via un conteneur dédié
 (``st.container(key="bulletin_barre_actions")``, voir Règle UI 07 —
 `.kiro/steering/07-ui-boutons.md`) :
 
-- « Corriger cette paie » (visuel **secondaire**, Règle UI 07 — action
-  peu fréquente et destructive) — visible uniquement si la paie est
-  `EMISE` (seul statut que `payroll_engine.register.remplacer_paie`
-  accepte de remplacer, Req 13.2 du moteur) ; route vers le
-  Formulaire_Paie en mode correction, avec l'``id_paie`` déjà chargé
-  (jamais de ressaisie).
 - « Imprimer » (visuel **primaire**, Règle UI 07 — action principale de
   cette page) — toujours visible, déclenche la commande d'impression du
   navigateur (`window.print()`). Rendu via
@@ -64,6 +58,24 @@ masqués à l'impression via un conteneur dédié
   nécessaire. `window.parent.print()` cible la fenêtre du navigateur
   contenant l'application (et non l'iframe lui-même, qui n'a pas de
   contenu à imprimer).
+- Menu à trois points (`st.popover`, icône ``:material/more_vert:``,
+  label vide, aide « Autres actions ») — demande explicite de
+  l'utilisateur : regroupe les deux actions secondaires/destructives
+  peu fréquentes, plutôt que de les afficher comme deux boutons
+  distincts dans la barre. Visible uniquement si la paie est `EMISE`
+  (seul statut pour lequel les deux actions qu'il contient sont
+  pertinentes) :
+
+  - « Corriger » (icône ``:material/edit:``, visuel **secondaire**,
+    Règle UI 07) — visible uniquement si la paie est `EMISE` (seul
+    statut que `payroll_engine.register.remplacer_paie` accepte de
+    remplacer, Req 13.2 du moteur) ; route vers le Formulaire_Paie en
+    mode correction, avec l'``id_paie`` déjà chargé (jamais de
+    ressaisie).
+  - « Supprimer » (icône ``:material/delete:``, visuel
+    **Bouton_Danger** — action destructive irréversible) — ouvre la
+    Popup_Confirmation_Paie_Emise (:func:`_dialogue_confirmation_
+    suppression_paie`).
 
 Couche de rendu (`app/pages_ui/`) : ce module **peut** importer
 ``streamlit`` (Req 1.1, 1.3 ne s'appliquent qu'à
@@ -128,7 +140,7 @@ from app.logique_metier.erreurs import ErreurDomaineAffichable, executer_avec_ca
 from app.pages_ui._navigation import afficher_lien_retour_tableau_de_bord
 from models.enums import StatutDePaie
 from models.payroll_result import MontantAvecTrace, PayrollResult
-from payroll_engine.register import chemin_bd_production, lire_paie
+from payroll_engine.register import annuler_paie, chemin_bd_production, lire_paie
 
 #: Clé de `st.session_state` portant l'``id_paie`` de la paie à
 #: afficher — écrite par la page appelante avant `st.switch_page`,
@@ -336,6 +348,46 @@ _BOUTON_IMPRIMER_HTML = """
     onmouseover="this.style.opacity=0.85;"
     onmouseout="this.style.opacity=1;"
 >Imprimer</button>
+"""
+
+
+#: Visuel "Bouton_Danger" (fond rouge, police blanche) — troisième couleur
+#: de bouton, hors du binaire primaire/secondaire natif de la Règle UI 07
+#: (`.kiro/steering/07-ui-boutons.md`). Contrairement au bouton
+#: « Imprimer » (`_BOUTON_IMPRIMER_HTML`, JS pur sans retour Python), le
+#: bouton « Supprimer la paie » DOIT rester un `st.button` natif — son
+#: clic déclenche une annulation côté serveur (`annuler_paie`), impossible
+#: à exprimer via `components.v1.html` (aucun canal de retour vers le
+#: code Python). Le CSS ci-dessous cible donc la classe `st-key-<key>`
+#: que Streamlit attribue automatiquement au conteneur d'un widget natif
+#: portant un `key=` explicite — même technique de ciblage que
+#: `fiche_employe_detaillee.py::_CSS_TABLEAU_PAIES` (utilisée là pour
+#: l'alignement, ici pour la couleur), jamais une modification de
+#: `.streamlit/config.toml` (qui ne pilote que primaire/secondaire).
+#: Écart documenté à la Règle UI 07 : la couleur n'est pas codée en dur
+#: sur un `st.button` natif *sans* `key=` scoping — elle est appliquée
+#: exclusivement aux deux boutons destructifs « Supprimer la paie »
+#: (`bulletin_supprimer_ouvrir`) / « Supprimer la paie de {Prénom Nom} »
+#: (`bulletin_supprimer_confirmer`) de cette page, via leurs clés
+#: explicites, jamais globalement. Constante dupliquée dans
+#: `formulaire_paie.py` (même discipline de duplication de petites
+#: constantes qu'entre `tableau_de_bord.py::_LIBELLES_STATUT` et
+#: `fiche_employe_detaillee.py::_LIBELLES_STATUT`) — la portée de chaque
+#: copie est limitée aux clés de son propre module (ici
+#: `bulletin_supprimer*`, jamais `fp_supprimer_brouillon*`).
+_CSS_BOUTON_DANGER = """
+<style>
+div[class*="st-key-bulletin_supprimer"] button {
+    background-color: #b3261e;
+    color: #FFFFFF;
+    border: 1px solid #b3261e;
+}
+div[class*="st-key-bulletin_supprimer"] button:hover {
+    background-color: #8c1d17;
+    border-color: #8c1d17;
+    color: #FFFFFF;
+}
+</style>
 """
 
 
@@ -691,6 +743,48 @@ def _construire_html_bulletin(
     """
 
 
+@st.dialog("Confirmer la suppression")
+def _dialogue_confirmation_suppression_paie(
+    id_paie: str, prenom_affiche: str, nom_affiche: str
+) -> None:
+    """Popup de confirmation avant `annuler_paie` (destructif — Req 4.3 à
+    4.5, 4.10).
+
+    Le titre du widget `st.dialog` lui-même reste statique (« Confirmer
+    la suppression ») — le titre *exact* exigé par le Req 4.3
+    (« Supprimer la paie de {Prénom Nom} ? ») est le premier `st.write`
+    rendu dans le corps de la popup, construit dynamiquement à partir de
+    `prenom_affiche`/`nom_affiche` (voir Property 7 du design). Après une
+    annulation réussie (`st.rerun()`), la paie relue affiche son nouveau
+    statut `ANNULEE` — les boutons « Corriger cette paie » et « Supprimer
+    la paie » disparaissent naturellement (Req 4.10), visibles uniquement
+    si `paie.statut == StatutDePaie.EMISE` (voir `render()`).
+    """
+    nom_complet = f"{prenom_affiche} {nom_affiche}".strip()
+    st.write(f"Supprimer la paie de {nom_complet} ?")
+    st.write(
+        "Cette paie est marquée comme émise, si vous la supprimez, vous "
+        "perdrez le calcul du salaire et des cotisations."
+    )
+    col_confirmer, col_annuler = st.columns(2)
+    with col_confirmer:
+        st.markdown(_CSS_BOUTON_DANGER, unsafe_allow_html=True)
+        if st.button(
+            f"Supprimer la paie de {nom_complet}",
+            key="bulletin_supprimer_confirmer",
+        ):
+            resultat = executer_avec_capture(
+                lambda: annuler_paie(id_paie, chemin_bd=chemin_bd_production())
+            )
+            if isinstance(resultat, ErreurDomaineAffichable):
+                st.error(f"{resultat.type_exception}: {resultat.message}")
+            else:
+                st.rerun()
+    with col_annuler:
+        if st.button("Annuler", key="bulletin_supprimer_annuler"):
+            st.rerun()
+
+
 def render() -> None:
     """Rendu du Bulletin_De_Paie — consultation en lecture seule.
 
@@ -811,15 +905,52 @@ def render() -> None:
             unsafe_allow_html=True,
         )
     with col_actions, st.container(key="bulletin_barre_actions"):
-        col_action_corriger, col_action_imprimer = st.columns(2)
-        with col_action_corriger:
-            if paie.statut == StatutDePaie.EMISE and st.button(
-                "Corriger cette paie", type="secondary"
-            ):
-                st.session_state["fp_corriger_ancien_id_precharge"] = id_paie
-                from app.pages_ui._navigation import page_formulaire_paie
+        # Demande explicite de l'utilisateur : le bouton « Imprimer »
+        # (action principale de cette page, visuel primaire — Règle UI
+        # 07) reste seul visible en permanence ; les deux actions
+        # « Corriger » et « Supprimer » (secondaire/destructive,
+        # visibles uniquement si `EMISE`) sont désormais regroupées
+        # dans un menu à trois points (`st.popover`, icône
+        # `:material/more_vert:`, label vide) plutôt que deux boutons
+        # distincts dans la barre — réduit l'encombrement visuel pour
+        # deux actions peu fréquentes, cohérent avec le bouton icône
+        # crayon déjà utilisé par `fiche_employe_detaillee.py::
+        # _afficher_entete_section` pour un besoin similaire (action
+        # secondaire discrète). Le menu lui-même n'est affiché que si
+        # au moins une des deux actions est pertinente pour cette
+        # paie — actuellement les deux partagent la même condition de
+        # visibilité (`EMISE` uniquement), donc le menu entier est
+        # masqué pour toute autre statut plutôt que de l'afficher vide.
+        col_action_imprimer, col_action_menu = st.columns([4, 1])
+        with col_action_menu:
+            if paie.statut == StatutDePaie.EMISE:
+                with st.popover(
+                    "",
+                    icon=":material/more_vert:",
+                    help="Autres actions",
+                    key="bulletin_menu_actions",
+                ):
+                    if st.button(
+                        "Corriger",
+                        icon=":material/edit:",
+                        type="secondary",
+                        key="bulletin_corriger_ouvrir",
+                        use_container_width=True,
+                    ):
+                        st.session_state["fp_corriger_ancien_id_precharge"] = id_paie
+                        from app.pages_ui._navigation import page_formulaire_paie
 
-                st.switch_page(page_formulaire_paie)
+                        st.switch_page(page_formulaire_paie)
+                    st.markdown(_CSS_BOUTON_DANGER, unsafe_allow_html=True)
+                    if st.button(
+                        "Supprimer",
+                        icon=":material/delete:",
+                        key="bulletin_supprimer_ouvrir",
+                        use_container_width=True,
+                    ):
+                        _dialogue_confirmation_suppression_paie(
+                            id_paie, prenom_affiche, nom_affiche
+                        )
         with col_action_imprimer:
             # `components.v1.html` (et non `st.markdown`) — voir
             # docstring de module : seul ce mécanisme laisse passer

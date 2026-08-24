@@ -88,6 +88,7 @@ from models.payroll_result import (
 from tests.strategies import (
     _st_montant_registre,
     st_chemin_bd_temporaire,  # noqa: F401  (fixture pytest, résolue par nom de paramètre)
+    st_cumuls_ytd_non_nuls,
     st_saison,
     st_sequence_payroll_results_meme_employe_annee,
     st_statut_nouveau_resultat_refuse,
@@ -2956,3 +2957,915 @@ class TestPreservationInvarianceLigneActive:
             f"ligne EMISE, jamais celle du BROUILLON (Property 3), obtenu "
             f"{cumuls_obtenus!r}, attendu {cumuls_attendus!r}."
         )
+
+
+# ---------------------------------------------------------------------------
+# 4.2 — Property 3 (spec `formulaire-paie-suppression-et-ux`) : suppression
+# physique d'une paie BROUILLON et préservation des Cumuls_YTD.
+# ---------------------------------------------------------------------------
+
+
+@st.composite
+def _st_brouillon_avec_cumuls_arbitraires(
+    draw: st.DrawFn,
+) -> tuple[PayrollResult, CumulsYTD]:
+    """Un `PayrollResult` `BROUILLON` autonome, apparié à un `CumulsYTD`
+    arbitraire pour le même `(employe_id, annee_civile)` (design
+    `formulaire-paie-suppression-et-ux`, §Correctness Properties,
+    Property 3).
+
+    Réutilise `_st_un_payroll_result_emis` (tâche 3.1, déjà défini plus
+    haut dans ce fichier pour les Properties 8 à 14 de
+    `net-cumuls-registre`) — un `PayrollResult` `EMISE` valide et
+    autonome — puis mute son `statut` vers `BROUILLON` via `model_copy`
+    (même patron que `TestRemplacerPaie` : `ancien_emise.model_copy(
+    update={"statut": StatutDePaie.BROUILLON})`). `date_emission` reste
+    inchangée (non-``None``, héritée de l'`EMISE` source) : l'invariant
+    `PayrollResult` n'interdit jamais une `date_emission` renseignée en
+    `BROUILLON` (implication unidirectionnelle, Req 6.7).
+
+    `st_cumuls_ytd_non_nuls()` (déjà défini pour `cotisations-sociales-qc`)
+    fournit un `CumulsYTD` arbitraire, dont `employe_id`/`annee_civile`
+    sont réassignés pour correspondre exactement au `BROUILLON` généré —
+    même technique d'appariement que `tests/payroll_engine/test_rrq.py`
+    (`cumuls_ajustes = cumuls_generes.model_copy(update={...})`). Ce
+    `CumulsYTD` représente « tout état préexistant arbitraire des
+    Cumuls_YTD de l'employé et de l'année concernés » (design Property 3)
+    — écrit directement dans la table `cumuls_ytd` par le test (jamais
+    via `inserer_paie`, qui n'y contribue jamais pour un `BROUILLON`,
+    Req 3.8/11.4).
+    """
+    brouillon_emise = draw(_st_un_payroll_result_emis)
+    brouillon = brouillon_emise.model_copy(update={"statut": StatutDePaie.BROUILLON})
+    cumuls_generes = draw(st_cumuls_ytd_non_nuls())
+    cumuls_arbitraires = cumuls_generes.model_copy(
+        update={
+            "employe_id": brouillon.employe_id,
+            "annee_civile": brouillon.annee_fiscale,
+        }
+    )
+    return brouillon, cumuls_arbitraires
+
+
+# ---------------------------------------------------------------------------
+# 4.3 — Property 4 (spec `formulaire-paie-suppression-et-ux`) : garde-fou
+# de `supprimer_paie_brouillon`.
+# ---------------------------------------------------------------------------
+
+
+@st.composite
+def _st_payroll_result_statut_non_brouillon(
+    draw: st.DrawFn,
+) -> PayrollResult:
+    """Un `PayrollResult` de statut `EMISE`, `ANNULEE` ou `REMPLACE_PAR`
+    (design `formulaire-paie-suppression-et-ux`, §Correctness Properties,
+    Property 4 : « for all `PayrollResult` déjà insérés dans le Registre
+    dont le statut n'est pas `BROUILLON` »).
+
+    Réutilise `_st_un_payroll_result_emis` (tâche 3.1) puis mute son
+    `statut` via `model_copy` — même patron que
+    `_st_brouillon_avec_cumuls_arbitraires` (tâche 4.2). Pour
+    `REMPLACE_PAR`, `remplace_par_id` est renseigné avec un identifiant
+    fictif non vide (invariant `PayrollResult`, biconditionnelle Req 6.3,
+    6.4) ; `date_emission` reste héritée de l'`EMISE` source pour les
+    trois statuts (déjà non-``None``, satisfaisant l'implication Req 6.7
+    pour `EMISE`/`ANNULEE`/`REMPLACE_PAR`).
+    """
+    resultat_emise = draw(_st_un_payroll_result_emis)
+    statut = draw(
+        st.sampled_from(
+            [StatutDePaie.EMISE, StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR]
+        )
+    )
+    if statut == StatutDePaie.REMPLACE_PAR:
+        return resultat_emise.model_copy(
+            update={
+                "statut": statut,
+                "remplace_par_id": f"PAIE-REMPLACEMENT-{resultat_emise.id_paie}",
+            }
+        )
+    return resultat_emise.model_copy(update={"statut": statut})
+
+
+def st_id_paie_arbitraire() -> st.SearchStrategy[str]:
+    """Identifiant de paie fictif arbitraire (règle 04), destiné à rester
+    absent de tout Registre de test — chaque exemple utilise une base
+    neuve (`st_chemin_bd_temporaire`), donc aucune ligne ne peut jamais
+    exister pour cet identifiant, quelle que soit la valeur tirée.
+    """
+    return st.integers(min_value=0, max_value=999_999).map(
+        lambda n: f"PAIE-INEXISTANTE-{n:06d}"
+    )
+
+
+class TestSupprimerPaieBrouillon:
+    """Property 3 (spec `formulaire-paie-suppression-et-ux`) — suppression
+    physique d'une paie `BROUILLON` et préservation des Cumuls_YTD.
+
+    Design (§Correctness Properties Property 3) ; Requirements 3.4, 3.8.
+    """
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 3: Suppression physique d'une paie BROUILLON et préservation des Cumuls_YTD
+    @pytest.mark.property
+    @given(
+        brouillon_et_cumuls=_st_brouillon_avec_cumuls_arbitraires(),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_suppression_physique_brouillon_preserve_cumuls_ytd(
+        self,
+        brouillon_et_cumuls: tuple[PayrollResult, CumulsYTD],
+        saison: str,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Property 3 (Req 3.4, 3.8).
+
+        Pour tout `PayrollResult` `BROUILLON` déjà inséré via
+        `inserer_paie` et tout état préexistant arbitraire de
+        `cumuls_ytd` pour le même `(employe_id, annee_fiscale)` (écrit
+        directement dans la table, hors du chemin `inserer_paie` qui n'y
+        contribue jamais pour un `BROUILLON`), l'appel à
+        `supprimer_paie_brouillon(id_paie)` doit :
+
+        1. retirer physiquement la ligne `paies` correspondante — une
+           relecture ultérieure via `lire_paie(id_paie)` lève `KeyError` ;
+        2. laisser `cumuls_ytd` strictement inchangé — chacune des onze
+           catégories monétaires identique avant/après, comparé via
+           `lire_cumuls_ytd`.
+        """
+        module = _importer_module_register()
+        brouillon, cumuls_arbitraires = brouillon_et_cumuls
+
+        module.inserer_paie(brouillon, saison, chemin_bd=st_chemin_bd_temporaire)
+
+        # État préexistant arbitraire de `cumuls_ytd` — écrit directement
+        # via `_upsert_cumuls_ytd` (fonction interne déjà réutilisée par
+        # `inserer_paie`/`remplacer_paie`), dans sa propre transaction
+        # `_connexion`, jamais via `inserer_paie` (Req 3.8 : un BROUILLON
+        # ne contribue jamais aux cumuls — ce test vérifie que la
+        # suppression ne les touche pas davantage).
+        with module._connexion(st_chemin_bd_temporaire) as connexion:
+            module._creer_schema_si_absent(connexion)
+            module._upsert_cumuls_ytd(connexion, cumuls_arbitraires)
+
+        cumuls_avant = module.lire_cumuls_ytd(
+            brouillon.employe_id, brouillon.annee_fiscale, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert cumuls_avant == cumuls_arbitraires, (
+            "L'état préexistant arbitraire des Cumuls_YTD doit être "
+            f"relisible tel qu'écrit avant toute suppression, obtenu "
+            f"{cumuls_avant!r}, attendu {cumuls_arbitraires!r}."
+        )
+
+        module.supprimer_paie_brouillon(
+            brouillon.id_paie, chemin_bd=st_chemin_bd_temporaire
+        )
+
+        with pytest.raises(KeyError):
+            module.lire_paie(brouillon.id_paie, chemin_bd=st_chemin_bd_temporaire)
+
+        cumuls_apres = module.lire_cumuls_ytd(
+            brouillon.employe_id, brouillon.annee_fiscale, chemin_bd=st_chemin_bd_temporaire
+        )
+        assert cumuls_apres == cumuls_avant, (
+            "`supprimer_paie_brouillon` doit laisser les Cumuls_YTD "
+            f"strictement inchangés (Property 3), obtenu {cumuls_apres!r}, "
+            f"attendu {cumuls_avant!r}."
+        )
+
+    # -----------------------------------------------------------------
+    # 4.3 — Property 4 : garde-fou de `supprimer_paie_brouillon`.
+    # -----------------------------------------------------------------
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 4: Garde-fou de supprimer_paie_brouillon
+    @pytest.mark.property
+    @given(
+        resultat_non_brouillon=_st_payroll_result_statut_non_brouillon(),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_garde_fou_statut_non_brouillon_leve_value_error_sans_mutation(
+        self,
+        resultat_non_brouillon: PayrollResult,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 4 (Req 3.6) — volet `ValueError`.
+
+        Pour tout `PayrollResult` déjà inséré dans le Registre dont le
+        statut n'est pas `BROUILLON` (`EMISE`, `ANNULEE` ou
+        `REMPLACE_PAR`), l'appel à `supprimer_paie_brouillon(id_paie)`
+        lève `ValueError`, sans qu'aucune ligne de la table `paies` ne
+        soit modifiée (comparaison `lire_paie(id_paie)` avant/après,
+        octet pour octet via `==` sur le `PayrollResult` désérialisé).
+
+        Un chemin `chemin_bd` distinct est construit manuellement à
+        chaque exemple (``tmp_path / f"test_{uuid4().hex}.db"``, même
+        convention que les tests d'exemple de garde-fou de
+        `remplacer_paie` ci-dessus) plutôt que la fixture
+        `st_chemin_bd_temporaire` : cette dernière est résolue une seule
+        fois pour l'ensemble des exemples Hypothesis d'un même appel de
+        test (fixture pytest function-scoped, réutilisée par Hypothesis
+        — `HealthCheck.function_scoped_fixture` suppressé), ce qui
+        provoquerait ici une collision `id_paie` entre deux exemples
+        distincts (aucune suppression physique ne nettoie la ligne
+        insérée, contrairement à `test_suppression_physique_brouillon_
+        preserve_cumuls_ytd`, Property 3, qui supprime effectivement sa
+        ligne à chaque exemple).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(resultat_non_brouillon, saison, chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(
+            resultat_non_brouillon.id_paie, chemin_bd=chemin_bd
+        )
+
+        with pytest.raises(ValueError):
+            module.supprimer_paie_brouillon(
+                resultat_non_brouillon.id_paie, chemin_bd=chemin_bd
+            )
+
+        paie_apres, _ = module.lire_paie(
+            resultat_non_brouillon.id_paie, chemin_bd=chemin_bd
+        )
+
+        assert paie_apres == paie_avant, (
+            "`supprimer_paie_brouillon` refusé (statut != BROUILLON) ne "
+            f"doit muter aucune ligne `paies` (Property 4), obtenu "
+            f"{paie_apres!r}, attendu {paie_avant!r} (Req 3.6)."
+        )
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 4: Garde-fou de supprimer_paie_brouillon
+    @pytest.mark.property
+    @given(id_paie_absent=st_id_paie_arbitraire())
+    @settings_large_input
+    def test_garde_fou_id_paie_absent_leve_key_error_sans_mutation(
+        self,
+        id_paie_absent: str,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Property 4 (Req 3.7) — volet `KeyError`.
+
+        Pour tout identifiant de paie absent du Registre (base neuve,
+        aucune ligne ne peut donc exister), l'appel à
+        `supprimer_paie_brouillon(id_paie)` lève `KeyError`, sans
+        qu'aucune ligne de la table `paies` ne soit créée — une
+        relecture ultérieure via `lire_paie(id_paie)` lève également
+        `KeyError` (aucune ligne n'a été insérée par erreur).
+        """
+        module = _importer_module_register()
+
+        with pytest.raises(KeyError):
+            module.supprimer_paie_brouillon(
+                id_paie_absent, chemin_bd=st_chemin_bd_temporaire
+            )
+
+        with pytest.raises(KeyError):
+            module.lire_paie(id_paie_absent, chemin_bd=st_chemin_bd_temporaire)
+
+    # -----------------------------------------------------------------
+    # 4.4 — Tests unitaires d'exemple (données fixes, sans Hypothesis) :
+    # `KeyError` sur `id_paie` inconnu, `ValueError` pour chacun des
+    # trois autres statuts (Req 3.6, 3.7).
+    # -----------------------------------------------------------------
+
+    def test_exemple_id_paie_inconnu_leve_key_error(
+        self, st_chemin_bd_temporaire: Path
+    ) -> None:
+        """Test d'exemple (Req 3.7) — `id_paie` inconnu du Registre lève
+        `KeyError` citant l'identifiant recherché.
+
+        Base neuve (aucune ligne insérée) : `"PAIE-INCONNUE-EXEMPLE-001"`
+        (identifiant fictif, règle 04) ne peut correspondre à aucune
+        ligne.
+        """
+        module = _importer_module_register()
+        id_paie_inconnu = "PAIE-INCONNUE-EXEMPLE-001"
+
+        with pytest.raises(KeyError) as excinfo:
+            module.supprimer_paie_brouillon(
+                id_paie_inconnu, chemin_bd=st_chemin_bd_temporaire
+            )
+
+        assert id_paie_inconnu in str(excinfo.value), (
+            "Le message de `KeyError` doit citer l'identifiant "
+            f"`id_paie` recherché ({id_paie_inconnu!r}), obtenu "
+            f"{excinfo.value!r} (Req 3.7)."
+        )
+
+    @pytest.mark.parametrize(
+        "statut_refuse",
+        [StatutDePaie.EMISE, StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR],
+    )
+    def test_exemple_statut_non_brouillon_leve_value_error_citant_statut(
+        self, statut_refuse: StatutDePaie, tmp_path: Path
+    ) -> None:
+        """Test d'exemple (Req 3.6) — pour chacun des trois statuts
+        `EMISE`, `ANNULEE`, `REMPLACE_PAR`, `supprimer_paie_brouillon`
+        lève `ValueError` citant le statut courant refusé, sans muter la
+        table `paies`.
+
+        Employé et paie fictifs (règle 04, `EMP001`), construits via le
+        helper déterministe `_payroll_result_valide` (données fixes,
+        sans Hypothesis). Un chemin `chemin_bd` distinct est construit
+        manuellement sous `tmp_path` par exemple paramétré (même
+        convention que les tests d'exemple de garde-fou déjà en place
+        dans ce fichier, ex. `test_exemple_ancien_id_absent_leve_key_
+        error`), plutôt que la fixture `st_chemin_bd_temporaire`.
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        id_paie = "PAIE-EMP001-2026-001-v1"
+
+        paie_refusee = _payroll_result_valide(
+            id_paie=id_paie,
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        if statut_refuse != StatutDePaie.EMISE:
+            mises_a_jour: dict[str, object] = {"statut": statut_refuse}
+            if statut_refuse == StatutDePaie.REMPLACE_PAR:
+                mises_a_jour["remplace_par_id"] = f"PAIE-REMPLACEMENT-{id_paie}"
+            paie_refusee = paie_refusee.model_copy(update=mises_a_jour)
+        module.inserer_paie(paie_refusee, "ete2026", chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+
+        with pytest.raises(ValueError) as excinfo:
+            module.supprimer_paie_brouillon(id_paie, chemin_bd=chemin_bd)
+
+        assert statut_refuse.value in str(excinfo.value), (
+            "Le message de `ValueError` doit citer le statut courant "
+            f"refusé ({statut_refuse.value!r}), obtenu {excinfo.value!r} "
+            "(Req 3.6)."
+        )
+
+        paie_apres, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        assert paie_apres == paie_avant, (
+            "`supprimer_paie_brouillon` refusé (statut != BROUILLON) ne "
+            f"doit muter aucune ligne `paies`, obtenu {paie_apres!r}, "
+            f"attendu {paie_avant!r} (Req 3.6)."
+        )
+
+
+@st.composite
+def _st_emise_avec_cumuls_arbitraires(
+    draw: st.DrawFn,
+) -> tuple[PayrollResult, CumulsYTD]:
+    """Un `PayrollResult` `EMISE` autonome, apparié à un `CumulsYTD`
+    arbitraire pour le même `(employe_id, annee_civile)` (design
+    `formulaire-paie-suppression-et-ux`, §Correctness Properties,
+    Property 9 : « for all `PayrollResult` de statut `EMISE` ... et for
+    all états préexistants arbitraires des Cumuls_YTD de l'employé et de
+    l'année concernés »).
+
+    Réutilise `_st_un_payroll_result_emis` (tâche 3.1, déjà défini plus
+    haut dans ce fichier) — un `PayrollResult` `EMISE` valide et
+    autonome. `st_cumuls_ytd_non_nuls()` (déjà défini pour
+    `cotisations-sociales-qc`) fournit un `CumulsYTD` de base arbitraire
+    (représentant la contribution d'« autres » paies arbitraires du même
+    employé/année), dont `employe_id`/`annee_civile` sont réassignés pour
+    correspondre exactement à la paie générée — même technique
+    d'appariement que `_st_brouillon_avec_cumuls_arbitraires` (tâche
+    4.2). La contribution de `resultat` lui-même est ensuite ajoutée via
+    `CumulsYTD.avec_paie` (Req 7.1 : chacune des onze catégories est
+    contrainte `>= 0` — un état préexistant tiré au hasard sans inclure
+    la contribution de la paie annulée pourrait donc rendre le décrément
+    invalide ; la réalité du registre garantit toujours que
+    `cumuls_ytd` inclut au moins la contribution de toute paie `EMISE`
+    déjà comptée, puisqu'elle y a été ajoutée par `inserer_paie` avant
+    de pouvoir être annulée). Ce `CumulsYTD` (base + contribution de
+    `resultat`) représente « tout état préexistant arbitraire des
+    Cumuls_YTD de l'employé et de l'année concernés » (design Property
+    9) — écrasé directement dans la table `cumuls_ytd` par le test après
+    l'insertion de la paie (jamais celui calculé par `inserer_paie`
+    lui-même), afin que la propriété tienne pour un état de départ
+    arbitraire (incluant la contribution d'autres paies arbitraires) et
+    non seulement pour celui résultant de la seule contribution de la
+    paie insérée.
+    """
+    module = _importer_module_register()
+    resultat = draw(_st_un_payroll_result_emis)
+    cumuls_generes = draw(st_cumuls_ytd_non_nuls())
+    cumuls_base = cumuls_generes.model_copy(
+        update={
+            "employe_id": resultat.employe_id,
+            "annee_civile": resultat.annee_fiscale,
+        }
+    )
+    cumuls_arbitraires = cumuls_base.avec_paie(
+        module._ContributionResultat.depuis(resultat)
+    )
+    return resultat, cumuls_arbitraires
+
+
+# ---------------------------------------------------------------------------
+# 5.4 — Property 10 (spec `formulaire-paie-suppression-et-ux`) : garde-fou
+# de `annuler_paie`.
+# ---------------------------------------------------------------------------
+
+
+@st.composite
+def _st_payroll_result_statut_non_emise(
+    draw: st.DrawFn,
+) -> PayrollResult:
+    """Un `PayrollResult` de statut `BROUILLON`, `ANNULEE` ou
+    `REMPLACE_PAR` (design `formulaire-paie-suppression-et-ux`,
+    §Correctness Properties, Property 10 : « for all `PayrollResult`
+    déjà insérés dans le Registre dont le statut n'est pas `EMISE` »).
+
+    Symétrique de `_st_payroll_result_statut_non_brouillon` (tâche 4.3) :
+    réutilise `_st_un_payroll_result_emis` puis mute son `statut` via
+    `model_copy`, en tirant parmi les trois statuts autres que `EMISE`
+    (`BROUILLON` remplace ici `EMISE` dans l'échantillonnage). Pour
+    `REMPLACE_PAR`, `remplace_par_id` est renseigné avec un identifiant
+    fictif non vide (invariant `PayrollResult`, biconditionnelle Req 6.3,
+    6.4) ; `date_emission` reste héritée de l'`EMISE` source pour
+    `ANNULEE` et `REMPLACE_PAR` (déjà non-``None``, satisfaisant
+    l'implication Req 6.7). Pour `BROUILLON`, `date_emission` n'a pas
+    besoin d'être retirée : l'implication Req 6.7 est unidirectionnelle
+    (rien n'interdit une `date_emission` renseignée en `BROUILLON`).
+    """
+    resultat_emise = draw(_st_un_payroll_result_emis)
+    statut = draw(
+        st.sampled_from(
+            [
+                StatutDePaie.BROUILLON,
+                StatutDePaie.ANNULEE,
+                StatutDePaie.REMPLACE_PAR,
+            ]
+        )
+    )
+    if statut == StatutDePaie.REMPLACE_PAR:
+        return resultat_emise.model_copy(
+            update={
+                "statut": statut,
+                "remplace_par_id": f"PAIE-REMPLACEMENT-{resultat_emise.id_paie}",
+            }
+        )
+    return resultat_emise.model_copy(update={"statut": statut})
+
+
+class TestAnnulerPaie:
+    """Property 8 (spec `formulaire-paie-suppression-et-ux`) — annulation
+    d'une paie `EMISE` transite vers `ANNULEE` sans jamais supprimer
+    physiquement la ligne correspondante.
+
+    Design (§Correctness Properties Property 8) ; Requirements 4.4.
+    """
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 8: Annulation transite vers ANNULEE sans jamais supprimer physiquement la ligne
+    @pytest.mark.property
+    @given(resultat=_st_un_payroll_result_emis, saison=st_saison())
+    @settings_large_input
+    def test_annulation_transite_vers_annulee_sans_suppression_physique(
+        self,
+        resultat: PayrollResult,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 8 (Req 4.4).
+
+        Pour tout `PayrollResult` `EMISE` déjà inséré via `inserer_paie`,
+        l'appel à `annuler_paie(id_paie)` doit faire en sorte qu'une
+        relecture ultérieure via `lire_paie(id_paie)` :
+
+        1. réussisse sans exception — la ligne n'est **jamais**
+           physiquement supprimée (contrairement à
+           `supprimer_paie_brouillon`, Property 3) ;
+        2. retourne un `PayrollResult` dont le `statut` est exactement
+           `ANNULEE` ;
+        3. conserve `remplace_par_id` absent (`None`) — `annuler_paie`
+           ne remplace jamais une ligne par une nouvelle version,
+           contrairement à `remplacer_paie` ;
+        4. conserve `date_emission` strictement inchangée par rapport à
+           sa valeur avant l'appel à `annuler_paie` (design §Components
+           §4 : la mutation ne touche que `statut`).
+
+        Un chemin `chemin_bd` distinct est construit manuellement à
+        chaque exemple (``tmp_path / f"test_{uuid4().hex}.db"``, même
+        convention que les tests d'exemple de garde-fou de
+        `supprimer_paie_brouillon`/`remplacer_paie` ci-dessus) plutôt que
+        la fixture `st_chemin_bd_temporaire` : cette dernière est résolue
+        une seule fois pour l'ensemble des exemples Hypothesis d'un même
+        appel de test, ce qui provoquerait ici une collision `id_paie`
+        entre deux exemples distincts — `annuler_paie` ne supprime
+        jamais physiquement sa ligne (contrairement à
+        `supprimer_paie_brouillon`), donc rien ne nettoie la ligne
+        insérée par un exemple précédent partageant la même base.
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(resultat, saison, chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
+        date_emission_avant = paie_avant.date_emission
+
+        module.annuler_paie(resultat.id_paie, chemin_bd=chemin_bd)
+
+        # 1. La relecture doit réussir sans exception (jamais de DELETE).
+        paie_apres, _ = module.lire_paie(resultat.id_paie, chemin_bd=chemin_bd)
+
+        # 2. Le statut relu doit être exactement ANNULEE.
+        assert paie_apres.statut == StatutDePaie.ANNULEE, (
+            "`annuler_paie` doit faire transiter le statut vers `ANNULEE` "
+            f"(Property 8), obtenu {paie_apres.statut!r}, attendu "
+            f"{StatutDePaie.ANNULEE!r}."
+        )
+
+        # 3. `remplace_par_id` reste absent — jamais de remplacement.
+        assert paie_apres.remplace_par_id is None, (
+            "`annuler_paie` ne doit jamais renseigner `remplace_par_id` "
+            f"(Property 8), obtenu {paie_apres.remplace_par_id!r}."
+        )
+
+        # 4. `date_emission` reste strictement inchangée.
+        assert paie_apres.date_emission == date_emission_avant, (
+            "`annuler_paie` ne doit pas modifier `date_emission` "
+            f"(Property 8), obtenu {paie_apres.date_emission!r}, attendu "
+            f"{date_emission_avant!r}."
+        )
+
+    # -----------------------------------------------------------------
+    # 5.3 — Property 9 : décrément exact des Cumuls_YTD lors de
+    # l'annulation.
+    # -----------------------------------------------------------------
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 9: Décrément exact des Cumuls_YTD lors de l'annulation
+    @pytest.mark.property
+    @given(
+        resultat_et_cumuls=_st_emise_avec_cumuls_arbitraires(),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_annulation_decremente_cumuls_ytd_de_exactement_la_contribution(
+        self,
+        resultat_et_cumuls: tuple[PayrollResult, CumulsYTD],
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 9 (Req 4.6).
+
+        Pour tout `PayrollResult` `EMISE` déjà inséré via `inserer_paie`
+        et tout état préexistant arbitraire de `cumuls_ytd` pour le même
+        `(employe_id, annee_fiscale)` (écrasé directement dans la table
+        après l'insertion, hors du cumul propre à `inserer_paie`),
+        l'appel à `annuler_paie(id_paie)` doit décrémenter chacune des
+        onze catégories monétaires des Cumuls_YTD résultants d'exactement
+        la contribution de cette paie — c'est-à-dire
+        `cumuls_apres == cumuls_avant - contribution(paie)`, calculé via
+        le même helper interne `_soustraire_contribution` que celui
+        invoqué par `annuler_paie` lui-même (même patron que
+        `TestRemplacerPaie`, qui vérifie l'étape 3c analogue de
+        `remplacer_paie` par comparaison directe des `CumulsYTD` avant/
+        après plutôt que par recalcul manuel des onze catégories).
+
+        Un chemin `chemin_bd` distinct est construit manuellement à
+        chaque exemple (``tmp_path / f"test_{uuid4().hex}.db"``, même
+        convention que `test_annulation_transite_vers_annulee_sans_
+        suppression_physique` ci-dessus) plutôt que la fixture
+        `st_chemin_bd_temporaire` : cette dernière est résolue une seule
+        fois pour l'ensemble des exemples Hypothesis d'un même appel de
+        test, ce qui provoquerait ici une collision `id_paie` entre deux
+        exemples distincts — `annuler_paie` ne supprime jamais
+        physiquement sa ligne.
+        """
+        module = _importer_module_register()
+        resultat, cumuls_arbitraires = resultat_et_cumuls
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(resultat, saison, chemin_bd=chemin_bd)
+
+        # État préexistant arbitraire de `cumuls_ytd` — écrasé
+        # directement via `_upsert_cumuls_ytd` (fonction interne déjà
+        # réutilisée par `inserer_paie`/`remplacer_paie`), dans sa propre
+        # transaction `_connexion`, afin que la propriété tienne pour un
+        # état de départ arbitraire (pas seulement celui contribué par
+        # la seule insertion de `resultat` ci-dessus).
+        with module._connexion(chemin_bd) as connexion:
+            module._creer_schema_si_absent(connexion)
+            module._upsert_cumuls_ytd(connexion, cumuls_arbitraires)
+
+        cumuls_avant = module.lire_cumuls_ytd(
+            resultat.employe_id, resultat.annee_fiscale, chemin_bd=chemin_bd
+        )
+        assert cumuls_avant == cumuls_arbitraires, (
+            "L'état préexistant arbitraire des Cumuls_YTD doit être "
+            f"relisible tel qu'écrit avant l'annulation, obtenu "
+            f"{cumuls_avant!r}, attendu {cumuls_arbitraires!r}."
+        )
+
+        cumuls_attendus = module._soustraire_contribution(cumuls_avant, resultat)
+
+        module.annuler_paie(resultat.id_paie, chemin_bd=chemin_bd)
+
+        cumuls_apres = module.lire_cumuls_ytd(
+            resultat.employe_id, resultat.annee_fiscale, chemin_bd=chemin_bd
+        )
+        assert cumuls_apres == cumuls_attendus, (
+            "`annuler_paie` doit décrémenter chacune des onze catégories "
+            "monétaires des Cumuls_YTD d'exactement la contribution de "
+            f"la paie annulée (Property 9), obtenu {cumuls_apres!r}, "
+            f"attendu {cumuls_attendus!r}."
+        )
+
+    # -----------------------------------------------------------------
+    # 5.5 — Tests unitaires d'exemple (données fixes, sans Hypothesis) :
+    # annulation réussie, `KeyError` sur `id_paie` inconnu, `ValueError`
+    # pour chacun des trois autres statuts, atomicité du rollback si le
+    # décrément des Cumuls_YTD échoue (Req 4.4, 4.7, 4.8, 4.9).
+    # -----------------------------------------------------------------
+
+    def test_exemple_annulation_reussie_relit_annulee_et_date_emission_inchangee(
+        self, tmp_path: Path
+    ) -> None:
+        """Test d'exemple (Req 4.4) — une annulation réussie relit
+        `statut == ANNULEE` et `date_emission` strictement inchangée.
+
+        Paie fictive `EMISE` (règle 04, `EMP001`), construite via le
+        helper déterministe `_payroll_result_valide` (données fixes,
+        sans Hypothesis) — même convention que les tests d'exemple de
+        `TestSupprimerPaieBrouillon` (tâche 4.4).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        id_paie = "PAIE-EMP001-2026-001-v1"
+
+        paie_emise = _payroll_result_valide(
+            id_paie=id_paie,
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        module.inserer_paie(paie_emise, "ete2026", chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        date_emission_avant = paie_avant.date_emission
+
+        module.annuler_paie(id_paie, chemin_bd=chemin_bd)
+
+        paie_apres, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        assert paie_apres.statut == StatutDePaie.ANNULEE, (
+            "Après une annulation réussie, le statut relu doit être "
+            f"exactement `ANNULEE`, obtenu {paie_apres.statut!r} (Req 4.4)."
+        )
+        assert paie_apres.date_emission == date_emission_avant, (
+            "Après une annulation réussie, `date_emission` doit rester "
+            f"strictement inchangée, obtenu {paie_apres.date_emission!r}, "
+            f"attendu {date_emission_avant!r} (Req 4.4)."
+        )
+
+    def test_exemple_id_paie_inconnu_leve_key_error(
+        self, st_chemin_bd_temporaire: Path
+    ) -> None:
+        """Test d'exemple (Req 4.9) — `id_paie` inconnu du Registre lève
+        `KeyError` citant l'identifiant recherché.
+
+        Base neuve (aucune ligne insérée) : `"PAIE-INCONNUE-EXEMPLE-002"`
+        (identifiant fictif, règle 04) ne peut correspondre à aucune
+        ligne.
+        """
+        module = _importer_module_register()
+        id_paie_inconnu = "PAIE-INCONNUE-EXEMPLE-002"
+
+        with pytest.raises(KeyError) as excinfo:
+            module.annuler_paie(id_paie_inconnu, chemin_bd=st_chemin_bd_temporaire)
+
+        assert id_paie_inconnu in str(excinfo.value), (
+            "Le message de `KeyError` doit citer l'identifiant "
+            f"`id_paie` recherché ({id_paie_inconnu!r}), obtenu "
+            f"{excinfo.value!r} (Req 4.9)."
+        )
+
+    @pytest.mark.parametrize(
+        "statut_refuse",
+        [StatutDePaie.BROUILLON, StatutDePaie.ANNULEE, StatutDePaie.REMPLACE_PAR],
+    )
+    def test_exemple_statut_non_emise_leve_value_error_citant_statut(
+        self, statut_refuse: StatutDePaie, tmp_path: Path
+    ) -> None:
+        """Test d'exemple (Req 4.8) — pour chacun des trois statuts
+        `BROUILLON`, `ANNULEE`, `REMPLACE_PAR`, `annuler_paie` lève
+        `ValueError` citant le statut courant refusé, sans muter la
+        table `paies` ni les Cumuls_YTD.
+
+        Employé et paie fictifs (règle 04, `EMP001`), construits via le
+        helper déterministe `_payroll_result_valide` — même convention
+        que `TestSupprimerPaieBrouillon.test_exemple_statut_non_
+        brouillon_leve_value_error_citant_statut` (tâche 4.4).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        id_paie = "PAIE-EMP001-2026-001-v1"
+
+        paie_refusee = _payroll_result_valide(
+            id_paie=id_paie,
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        if statut_refuse != StatutDePaie.EMISE:
+            mises_a_jour: dict[str, object] = {"statut": statut_refuse}
+            if statut_refuse == StatutDePaie.REMPLACE_PAR:
+                mises_a_jour["remplace_par_id"] = f"PAIE-REMPLACEMENT-{id_paie}"
+            paie_refusee = paie_refusee.model_copy(update=mises_a_jour)
+        module.inserer_paie(paie_refusee, "ete2026", chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        cumuls_avant = module.lire_cumuls_ytd(
+            "EMP001", 2026, chemin_bd=chemin_bd
+        )
+
+        with pytest.raises(ValueError) as excinfo:
+            module.annuler_paie(id_paie, chemin_bd=chemin_bd)
+
+        assert statut_refuse.value in str(excinfo.value), (
+            "Le message de `ValueError` doit citer le statut courant "
+            f"refusé ({statut_refuse.value!r}), obtenu {excinfo.value!r} "
+            "(Req 4.8)."
+        )
+
+        paie_apres, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        cumuls_apres = module.lire_cumuls_ytd(
+            "EMP001", 2026, chemin_bd=chemin_bd
+        )
+        assert paie_apres == paie_avant, (
+            "`annuler_paie` refusé (statut != EMISE) ne doit muter "
+            f"aucune ligne `paies`, obtenu {paie_apres!r}, attendu "
+            f"{paie_avant!r} (Req 4.8)."
+        )
+        assert cumuls_apres == cumuls_avant, (
+            "`annuler_paie` refusé (statut != EMISE) ne doit muter "
+            f"aucune ligne `cumuls_ytd`, obtenu {cumuls_apres!r}, attendu "
+            f"{cumuls_avant!r} (Req 4.8)."
+        )
+
+    def test_exemple_echec_decrement_cumuls_provoque_rollback_statut_reste_emise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test d'exemple (Req 4.7) — atomicité du rollback : si le
+        décrément des Cumuls_YTD échoue après la mutation de statut, la
+        ligne conserve son statut `EMISE` d'origine (statut et cumuls
+        visibles ensemble ou jamais du tout).
+
+        Monkeypatch de `module._upsert_cumuls_ytd` (dernière étape de
+        `annuler_paie`, invoquée après l'`UPDATE` du statut au sein de la
+        même transaction `_connexion`) pour lever une exception simulée
+        — même technique de simulation d'échec en cours de transaction
+        que `test_exemple_exception_avant_os_replace_laisse_fichier_
+        cible_inchange` (`tests/app/logique_metier/test_stockage_json.py`),
+        adaptée ici au patron transactionnel SQLite de `_connexion`
+        (`ROLLBACK` automatique si une exception traverse le bloc
+        `with`, cf. `register.py::_connexion`).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+        id_paie = "PAIE-EMP001-2026-001-v1"
+
+        paie_emise = _payroll_result_valide(
+            id_paie=id_paie,
+            employe_id="EMP001",
+            annee_fiscale=2026,
+            numero_periode=1,
+            statut=StatutDePaie.EMISE,
+        )
+        module.inserer_paie(paie_emise, "ete2026", chemin_bd=chemin_bd)
+
+        cumuls_avant = module.lire_cumuls_ytd(
+            "EMP001", 2026, chemin_bd=chemin_bd
+        )
+
+        def _upsert_cumuls_ytd_leve_exception(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("échec simulé du décrément des Cumuls_YTD")
+
+        monkeypatch.setattr(
+            module, "_upsert_cumuls_ytd", _upsert_cumuls_ytd_leve_exception
+        )
+
+        with pytest.raises(RuntimeError):
+            module.annuler_paie(id_paie, chemin_bd=chemin_bd)
+
+        paie_apres, _ = module.lire_paie(id_paie, chemin_bd=chemin_bd)
+        assert paie_apres.statut == StatutDePaie.EMISE, (
+            "Si le décrément des Cumuls_YTD échoue, la mutation de "
+            "statut doit être annulée par le `ROLLBACK` de la "
+            f"transaction — le statut relu doit rester `EMISE`, obtenu "
+            f"{paie_apres.statut!r} (Req 4.7)."
+        )
+
+        cumuls_apres = module.lire_cumuls_ytd(
+            "EMP001", 2026, chemin_bd=chemin_bd
+        )
+        assert cumuls_apres == cumuls_avant, (
+            "Si le décrément des Cumuls_YTD échoue, les Cumuls_YTD "
+            f"doivent rester inchangés, obtenu {cumuls_apres!r}, attendu "
+            f"{cumuls_avant!r} (Req 4.7)."
+        )
+
+    # -----------------------------------------------------------------
+    # 5.4 — Property 10 : garde-fou de `annuler_paie`.
+    # -----------------------------------------------------------------
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 10: Garde-fou de annuler_paie
+    @pytest.mark.property
+    @given(
+        resultat_non_emise=_st_payroll_result_statut_non_emise(),
+        saison=st_saison(),
+    )
+    @settings_large_input
+    def test_garde_fou_statut_non_emise_leve_value_error_sans_mutation(
+        self,
+        resultat_non_emise: PayrollResult,
+        saison: str,
+        tmp_path: Path,
+    ) -> None:
+        """Property 10 (Req 4.8) — volet `ValueError`.
+
+        Pour tout `PayrollResult` déjà inséré dans le Registre dont le
+        statut n'est pas `EMISE` (`BROUILLON`, `ANNULEE` ou
+        `REMPLACE_PAR`), l'appel à `annuler_paie(id_paie)` lève
+        `ValueError`, sans qu'aucune ligne de la table `paies` ni aucune
+        valeur des `cumuls_ytd` ne soit modifiée (comparaison
+        `lire_paie(id_paie)` et `lire_cumuls_ytd(...)` avant/après).
+
+        Un chemin `chemin_bd` distinct est construit manuellement à
+        chaque exemple (``tmp_path / f"test_{uuid4().hex}.db"``, même
+        convention que le test symétrique de garde-fou de
+        `supprimer_paie_brouillon`, Property 4, tâche 4.3) plutôt que la
+        fixture `st_chemin_bd_temporaire` : cette dernière est résolue
+        une seule fois pour l'ensemble des exemples Hypothesis d'un même
+        appel de test, ce qui provoquerait ici une collision `id_paie`
+        entre deux exemples distincts (aucune suppression physique ne
+        nettoie la ligne insérée sur le chemin refusé).
+        """
+        module = _importer_module_register()
+        chemin_bd = tmp_path / f"test_{uuid.uuid4().hex}.db"
+
+        module.inserer_paie(resultat_non_emise, saison, chemin_bd=chemin_bd)
+
+        paie_avant, _ = module.lire_paie(
+            resultat_non_emise.id_paie, chemin_bd=chemin_bd
+        )
+        cumuls_avant = module.lire_cumuls_ytd(
+            resultat_non_emise.employe_id,
+            resultat_non_emise.annee_fiscale,
+            chemin_bd=chemin_bd,
+        )
+
+        with pytest.raises(ValueError):
+            module.annuler_paie(resultat_non_emise.id_paie, chemin_bd=chemin_bd)
+
+        paie_apres, _ = module.lire_paie(
+            resultat_non_emise.id_paie, chemin_bd=chemin_bd
+        )
+        cumuls_apres = module.lire_cumuls_ytd(
+            resultat_non_emise.employe_id,
+            resultat_non_emise.annee_fiscale,
+            chemin_bd=chemin_bd,
+        )
+
+        assert paie_apres == paie_avant, (
+            "`annuler_paie` refusé (statut != EMISE) ne doit muter "
+            f"aucune ligne `paies` (Property 10), obtenu {paie_apres!r}, "
+            f"attendu {paie_avant!r} (Req 4.8)."
+        )
+        assert cumuls_apres == cumuls_avant, (
+            "`annuler_paie` refusé (statut != EMISE) ne doit muter "
+            f"aucune valeur des Cumuls_YTD (Property 10), obtenu "
+            f"{cumuls_apres!r}, attendu {cumuls_avant!r} (Req 4.8)."
+        )
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 10: Garde-fou de annuler_paie
+    @pytest.mark.property
+    @given(id_paie_absent=st_id_paie_arbitraire())
+    @settings_large_input
+    def test_garde_fou_id_paie_absent_leve_key_error_sans_mutation(
+        self,
+        id_paie_absent: str,
+        st_chemin_bd_temporaire: Path,
+    ) -> None:
+        """Property 10 (Req 4.9) — volet `KeyError`.
+
+        Pour tout identifiant de paie absent du Registre (base neuve,
+        aucune ligne ne peut donc exister), l'appel à
+        `annuler_paie(id_paie)` lève `KeyError`, sans qu'aucune ligne de
+        la table `paies` ne soit créée — une relecture ultérieure via
+        `lire_paie(id_paie)` lève également `KeyError`, et
+        `lire_cumuls_ytd` pour un employé/année fictifs arbitraires (non
+        dérivables de l'identifiant inexistant) reste à ses valeurs par
+        défaut (aucune ligne `cumuls_ytd` créée par erreur).
+        """
+        module = _importer_module_register()
+
+        with pytest.raises(KeyError):
+            module.annuler_paie(id_paie_absent, chemin_bd=st_chemin_bd_temporaire)
+
+        with pytest.raises(KeyError):
+            module.lire_paie(id_paie_absent, chemin_bd=st_chemin_bd_temporaire)

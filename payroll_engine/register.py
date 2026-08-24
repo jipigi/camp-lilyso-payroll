@@ -116,12 +116,14 @@ _CATEGORIES_CUMULS: tuple[str, ...] = (
 )
 
 __all__ = [
+    "annuler_paie",
     "chemin_bd_production",
     "inserer_paie",
     "lire_cumuls_ytd",
     "lire_historique_paie",
     "lire_paie",
     "remplacer_paie",
+    "supprimer_paie_brouillon",
 ]
 
 #: Statuts autorisés pour ``nouveau_resultat`` dans `remplacer_paie` (Req
@@ -1121,3 +1123,148 @@ def remplacer_paie(
         _upsert_cumuls_ytd(connexion, cumul_final)
     # Sortie du `with` -> COMMIT si les 3 étapes ont réussi, ROLLBACK
     # intégral sinon (Req 13.6).
+
+
+def supprimer_paie_brouillon(
+    id_paie: str,
+    chemin_bd: str | Path = chemin_bd_production(),
+) -> None:
+    """Supprime physiquement la ligne ``paies`` identifiée par ``id_paie``.
+
+    Réservée aux lignes de statut ``BROUILLON`` — jamais utilisée pour une
+    ligne ``EMISE``/``ANNULEE``/``REMPLACE_PAR``. Un ``BROUILLON`` ne
+    contribue jamais à ``cumuls_ytd`` (Req 3.8, cf. Req 11.4 de la spec
+    ``net-cumuls-registre``) : aucune mise à jour de ``cumuls_ytd`` n'est
+    donc nécessaire ici.
+
+    Dans une seule transaction atomique (:func:`_connexion`) :
+
+    1. **Lecture + contrôle** — si ``id_paie`` est absent de ``paies``,
+       lève ``KeyError`` citant l'identifiant recherché (Req 3.7). Si la
+       ligne existe mais que son ``statut`` n'est pas ``BROUILLON``, lève
+       ``ValueError`` citant le statut courant — seule une paie
+       ``BROUILLON`` peut être supprimée physiquement (Req 3.6).
+    2. **Suppression** — ``DELETE FROM paies WHERE id_paie = ?`` (Req
+       3.4).
+
+    Sortie du bloc ``with`` : ``COMMIT`` si aucune exception, ``ROLLBACK``
+    sinon — les deux étapes sont donc visibles ensemble ou pas du tout.
+
+    **Écart documenté avec la règle 06 (immutabilité historique)** : cette
+    fonction est la seule du registre à retirer une ligne plutôt que de la
+    muter ou d'en ajouter une nouvelle (append-only). Cet écart est
+    délibéré et limité aux lignes ``BROUILLON`` uniquement — un brouillon
+    n'est, par définition, jamais une « paie émise » au sens de la règle
+    06 (aucune valeur auditable n'a jamais été communiquée à l'employé) ;
+    l'immutabilité historique protège les paies ``EMISE``/``ANNULEE``/
+    ``REMPLACE_PAR``, jamais les brouillons.
+    """
+    with _connexion(chemin_bd) as connexion:
+        _creer_schema_si_absent(connexion)
+
+        ligne = connexion.execute(
+            "SELECT statut FROM paies WHERE id_paie = ?", (id_paie,)
+        ).fetchone()
+        if ligne is None:
+            raise KeyError(f"Aucune paie trouvée pour id_paie={id_paie!r}.")
+        (statut_actuel,) = ligne
+        if statut_actuel != StatutDePaie.BROUILLON.value:
+            raise ValueError(
+                f"Impossible de supprimer physiquement la paie '{id_paie}' : "
+                f"statut actuel '{statut_actuel}' \u2260 BROUILLON — utilisez "
+                "annuler_paie(...) pour une paie déjà EMISE."
+            )
+
+        connexion.execute("DELETE FROM paies WHERE id_paie = ?", (id_paie,))
+    # Sortie du `with` -> COMMIT si aucune exception, ROLLBACK sinon.
+
+
+# ---------------------------------------------------------------------------
+# annuler_paie — annulation d'une paie ÉMISE, jamais de DELETE (Req 4,
+# design §Components §4)
+# ---------------------------------------------------------------------------
+
+
+def annuler_paie(
+    id_paie: str,
+    chemin_bd: str | Path = chemin_bd_production(),
+) -> None:
+    """Annule la paie ÉMISE identifiée par ``id_paie`` — jamais de ``DELETE``.
+
+    Réservée aux lignes de statut ``EMISE`` — jamais utilisée pour une
+    ligne ``BROUILLON`` (voir :func:`supprimer_paie_brouillon`) ni pour
+    une ligne déjà ``ANNULEE``/``REMPLACE_PAR``. Contrairement à
+    :func:`remplacer_paie`, aucune nouvelle ligne n'est insérée —
+    l'ancienne ligne est uniquement mutée, jamais remplacée par une
+    version successeure (``remplace_par_id`` reste ``None``).
+
+    Dans une seule transaction atomique (:func:`_connexion`) :
+
+    1. **Lecture + contrôle** — si ``id_paie`` est absent de ``paies``,
+       lève ``KeyError`` citant l'identifiant recherché (Req 4.9). Si la
+       ligne existe mais que son ``statut`` n'est pas ``EMISE``, lève
+       ``ValueError`` citant le statut courant — seule une paie
+       ``EMISE`` peut être annulée (Req 4.8).
+    2. **Mutation du statut** (Req 4.4) — ``UPDATE paies SET statut =
+       'annulee', payload_json = ? WHERE id_paie = ?``, via
+       ``model_copy(update={"statut": StatutDePaie.ANNULEE})`` de
+       l'ancien ``PayrollResult`` désérialisé — même patron exact que
+       l'étape 3a de :func:`remplacer_paie` (``date_emission`` reste
+       inchangée : déjà renseignée puisque la ligne était ``EMISE``).
+    3. **Décrément de ``cumuls_ytd``** (Req 4.6) — lecture du cumul
+       courant via :func:`_lire_cumuls_ytd_tx`, puis retrait de la
+       contribution de cette paie via :func:`_soustraire_contribution`
+       (même mécanisme que l'étape 3c de :func:`remplacer_paie`), puis
+       :func:`_upsert_cumuls_ytd`.
+
+    Sortie du bloc ``with`` : ``COMMIT`` si les trois étapes réussissent,
+    ``ROLLBACK`` intégral sinon (Req 4.7) — le statut et les cumuls sont
+    donc visibles ensemble ou jamais du tout.
+
+    **Limitation documentée** (symétrique à une limitation déjà existante
+    de :func:`remplacer_paie`) : si des paies de périodes postérieures
+    pour le même employé et la même année civile ont déjà été émises
+    après ``id_paie``, leurs propres ``cumuls_fin`` (snapshots figés dans
+    leur ``payload_json`` respectif) ne sont **jamais** recalculés par
+    cette fonction — seul le total courant de la table ``cumuls_ytd`` est
+    ajusté. Décision actée explicitement avec l'utilisateur : aucune
+    condition bloquante liée à l'existence de paies postérieures n'est
+    ajoutée par cette spec.
+
+    **Aucun `DELETE`** : à la différence de :func:`supprimer_paie_brouillon`,
+    cette fonction respecte l'immutabilité historique (règle 06) — une
+    paie ``EMISE`` a déjà été communiquée à l'employé et ne doit jamais
+    disparaître physiquement du registre.
+    """
+    with _connexion(chemin_bd) as connexion:
+        _creer_schema_si_absent(connexion)
+
+        ligne = connexion.execute(
+            "SELECT statut, payload_json FROM paies WHERE id_paie = ?",
+            (id_paie,),
+        ).fetchone()
+        if ligne is None:
+            raise KeyError(f"Aucune paie trouvée pour id_paie={id_paie!r}.")
+        statut_actuel, payload_actuel = ligne
+        if statut_actuel != StatutDePaie.EMISE.value:
+            raise ValueError(
+                f"Impossible d'annuler la paie '{id_paie}' : statut actuel "
+                f"'{statut_actuel}' \u2260 EMISE."
+            )
+        ancien_resultat = PayrollResult.model_validate_json(payload_actuel)
+
+        payload_maj = ancien_resultat.model_copy(
+            update={"statut": StatutDePaie.ANNULEE}
+        ).model_dump_json()
+        connexion.execute(
+            "UPDATE paies SET statut = ?, payload_json = ? WHERE id_paie = ?",
+            (StatutDePaie.ANNULEE.value, payload_maj, id_paie),
+        )
+
+        cumul_actuel = _lire_cumuls_ytd_tx(
+            connexion, ancien_resultat.employe_id, ancien_resultat.annee_fiscale
+        )
+        cumul_final = _soustraire_contribution(cumul_actuel, ancien_resultat)
+        _upsert_cumuls_ytd(connexion, cumul_final)
+    # Sortie du `with` -> COMMIT si les 3 étapes réussissent, ROLLBACK sinon
+    # (Req 4.7).

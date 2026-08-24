@@ -56,7 +56,11 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from tests.app.strategies import st_chemin_json_temporaire, st_fiche_coordonnees_valide
+from tests.app.strategies import (
+    _st_employe_id,
+    st_chemin_json_temporaire,
+    st_fiche_coordonnees_valide,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration Hypothesis partagée (cohérente avec les autres fichiers de
@@ -184,6 +188,220 @@ class TestRoundTripAnnuaireCoordonnees:
         resultat = lire_coordonnees("EMP001", chemin_coordonnees)
 
         assert resultat is None
+
+
+# ---------------------------------------------------------------------------
+# Property 1 — Règles de repli exhaustives de `libelle_employe`
+# ---------------------------------------------------------------------------
+#
+# Feature: formulaire-paie-suppression-et-ux, Property 1: Règles de repli
+# exhaustives de `libelle_employe`
+#
+# *Pour tout* `employe_id` et tout `coordonnees_par_employe_id` (un
+# dictionnaire arbitraire, y compris vide ou sans entrée pour
+# `employe_id`), `libelle_employe(employe_id, coordonnees_par_employe_id)`
+# retourne exactement `employe_id` si aucune `FicheCoordonnees` n'existe
+# pour cet identifiant ou si `prenom`/`nom` sont tous deux absents ou vides
+# une fois assemblés ; retourne exactement `"{prenom} {nom}"` si
+# `prenom`/`nom` sont disponibles mais que `courriel` est absent ou vide ;
+# retourne exactement `"{prenom} {nom} ({courriel})"` si les trois champs
+# sont disponibles — sans jamais lever d'exception.
+#
+# Validates: Requirements 1.1, 1.2, 1.3, 1.4
+# Design: §Components et Interfaces #1 ; §Correctness Properties Property 1
+
+
+@st.composite
+def _st_prenom_nom_ou_absent(draw: st.DrawFn) -> str | None:
+    """`prenom`/`nom` arbitraire — absent (`None`), vide, espaces, ou texte fictif.
+
+    Couvre délibérément les cas de repli « absent ou vide une fois
+    assemblé » (chaîne vide, chaîne composée uniquement d'espaces) en plus
+    d'un texte fictif non vide, afin d'exercer les quatre branches de
+    `libelle_employe` (design §Components et Interfaces #1). Règle 04 :
+    aucune donnée nominative réelle — texte préfixé `"Fictif"`.
+    """
+    return draw(
+        st.one_of(
+            st.none(),
+            st.just(""),
+            st.just("   "),
+            st.text(alphabet=st.characters(min_codepoint=32, max_codepoint=126), min_size=1, max_size=15).map(
+                lambda s: f"Fictif{s}"
+            ),
+        )
+    )
+
+
+@st.composite
+def _st_courriel_ou_absent(draw: st.DrawFn) -> str | None:
+    """`courriel` arbitraire — absent (`None`), vide, ou fictif (`.invalid`)."""
+    return draw(
+        st.one_of(
+            st.none(),
+            st.just(""),
+            st.just("test@example.invalid"),
+        )
+    )
+
+
+@st.composite
+def _st_coordonnees_par_employe_id_arbitraire(
+    draw: st.DrawFn,
+) -> dict[str, "FicheCoordonnees"]:  # noqa: F821
+    """Dictionnaire `coordonnees_par_employe_id` arbitraire (0 à 5 fiches).
+
+    Chaque `employe_id` de forme fictive `EMPnnn` (règle 04) associé à une
+    `FicheCoordonnees` dont `prenom`/`nom`/`courriel` couvrent
+    délibérément les cas absents/vides/renseignés (`_st_prenom_nom_ou_absent`,
+    `_st_courriel_ou_absent`) — le dictionnaire peut être vide, ce qui
+    exerce la branche « aucune FicheCoordonnees ». Import différé de
+    `FicheCoordonnees` (même discipline que `st_fiche_coordonnees_valide`).
+    """
+    from app.logique_metier.annuaire_coordonnees import FicheCoordonnees
+
+    employe_ids = draw(
+        st.lists(_st_employe_id(), unique=True, max_size=5)
+    )
+    coordonnees: dict[str, FicheCoordonnees] = {}
+    for employe_id in employe_ids:
+        coordonnees[employe_id] = FicheCoordonnees(
+            employe_id=employe_id,
+            prenom=draw(_st_prenom_nom_ou_absent()),
+            nom=draw(_st_prenom_nom_ou_absent()),
+            courriel=draw(_st_courriel_ou_absent()),
+        )
+    return coordonnees
+
+
+class TestLibelleEmployeReglesDeRepli:
+    """Property 1 — règles de repli exhaustives de `libelle_employe`."""
+
+    # Feature: formulaire-paie-suppression-et-ux, Property 1: Règles de
+    # repli exhaustives de `libelle_employe`
+    @pytest.mark.property
+    @given(
+        employe_id=_st_employe_id(),
+        coordonnees_par_employe_id=_st_coordonnees_par_employe_id_arbitraire(),
+    )
+    @settings_large_input
+    def test_libelle_employe_respecte_les_quatre_regles_de_repli(
+        self,
+        employe_id: str,
+        coordonnees_par_employe_id: dict,
+    ) -> None:
+        """**Validates: Requirements 1.1, 1.2, 1.3, 1.4**
+
+        Pour tout `employe_id` et tout `coordonnees_par_employe_id`
+        (dictionnaire arbitraire, y compris vide ou sans entrée pour
+        `employe_id`), vérifie que `libelle_employe` retourne exactement
+        la forme attendue selon la fiche associée (ou son absence), et ne
+        lève jamais d'exception.
+        """
+        from app.logique_metier.annuaire_coordonnees import libelle_employe
+
+        resultat = libelle_employe(employe_id, coordonnees_par_employe_id)
+
+        fiche = coordonnees_par_employe_id.get(employe_id)
+        if fiche is None:
+            assert resultat == employe_id
+            return
+
+        nom_complet = " ".join(
+            partie for partie in (fiche.prenom, fiche.nom) if partie
+        ).strip()
+        if not nom_complet:
+            assert resultat == employe_id
+        elif fiche.courriel:
+            assert resultat == f"{nom_complet} ({fiche.courriel})"
+        else:
+            assert resultat == nom_complet
+
+
+# ---------------------------------------------------------------------------
+# Tests unitaires — quatre cas de repli concrets de `libelle_employe`
+# ---------------------------------------------------------------------------
+#
+# Complète la Property 1 (ci-dessus) par des exemples concrets et
+# explicites des quatre cas de repli du design (§Components et
+# Interfaces #1) : aucune fiche, fiche sans prénom/nom, prénom/nom sans
+# courriel, cas complet. Identifiants fictifs `EMPnnn` (règle 04).
+#
+# _Requirements: 1.1, 1.2, 1.3_
+
+
+class TestLibelleEmployeExemplesQuatreCasDeRepli:
+    """Exemples concrets des quatre cas de repli de `libelle_employe`."""
+
+    def test_aucune_fiche_pour_employe_id_retourne_employe_id(self) -> None:
+        """**Validates: Requirements 1.3**"""
+        from app.logique_metier.annuaire_coordonnees import libelle_employe
+
+        resultat = libelle_employe("EMP001", {})
+
+        assert resultat == "EMP001"
+
+    def test_fiche_presente_sans_prenom_ni_nom_retourne_employe_id(self) -> None:
+        """**Validates: Requirements 1.3**"""
+        from app.logique_metier.annuaire_coordonnees import (
+            FicheCoordonnees,
+            libelle_employe,
+        )
+
+        coordonnees_par_employe_id = {
+            "EMP001": FicheCoordonnees(
+                employe_id="EMP001",
+                prenom=None,
+                nom="",
+                courriel="fictif@example.invalid",
+            )
+        }
+
+        resultat = libelle_employe("EMP001", coordonnees_par_employe_id)
+
+        assert resultat == "EMP001"
+
+    def test_prenom_nom_disponibles_sans_courriel_retourne_prenom_nom(self) -> None:
+        """**Validates: Requirements 1.2**"""
+        from app.logique_metier.annuaire_coordonnees import (
+            FicheCoordonnees,
+            libelle_employe,
+        )
+
+        coordonnees_par_employe_id = {
+            "EMP001": FicheCoordonnees(
+                employe_id="EMP001",
+                prenom="Fictif",
+                nom="Employe",
+                courriel=None,
+            )
+        }
+
+        resultat = libelle_employe("EMP001", coordonnees_par_employe_id)
+
+        assert resultat == "Fictif Employe"
+
+    def test_cas_complet_retourne_prenom_nom_et_courriel_entre_parentheses(
+        self,
+    ) -> None:
+        """**Validates: Requirements 1.1**"""
+        from app.logique_metier.annuaire_coordonnees import (
+            FicheCoordonnees,
+            libelle_employe,
+        )
+
+        coordonnees_par_employe_id = {
+            "EMP001": FicheCoordonnees(
+                employe_id="EMP001",
+                prenom="Fictif",
+                nom="Employe",
+                courriel="fictif.employe@example.invalid",
+            )
+        }
+
+        resultat = libelle_employe("EMP001", coordonnees_par_employe_id)
+
+        assert resultat == "Fictif Employe (fictif.employe@example.invalid)"
 
 
 # ---------------------------------------------------------------------------

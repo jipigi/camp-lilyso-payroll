@@ -547,7 +547,7 @@ def _construire_html_bilan_fiscal(tableau: TableauBilanFiscal) -> str:
             </thead>
             <tbody>
                 <tr class="bilan-fiscal-section-entete">
-                    <td colspan="3">Retenues sur le salaire de l'employé</td>
+                    <td colspan="3">Retenues sur les salaires</td>
                 </tr>
                 {lignes_retenues}
                 <tr class="bilan-fiscal-section-entete">

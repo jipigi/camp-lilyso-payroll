@@ -71,7 +71,12 @@ from decimal import Decimal, InvalidOperation
 
 import streamlit as st
 
-from app.logique_metier.annuaire_coordonnees import lire_coordonnees
+from app.logique_metier.annuaire_coordonnees import (
+    FicheCoordonnees,
+    libelle_employe,
+    lire_coordonnees,
+    lister_coordonnees,
+)
 from app.logique_metier.annuaire_employes import lister_employes
 from app.logique_metier.dernieres_paies import (
     filtrer_par_annee,
@@ -105,12 +110,54 @@ from payroll_engine.net_pay import assembler_paie
 #: ici, pure ergonomie de saisie — aucune règle fiscale associée).
 _DATE_PERIODE_MIN = date(date.today().year - 15, 1, 1)
 _DATE_PERIODE_MAX = date(date.today().year + 5, 12, 31)
+
+#: Visuel "Bouton_Danger" (fond rouge, police blanche) — troisième couleur
+#: de bouton, hors du binaire primaire/secondaire natif de la Règle UI 07
+#: (`.kiro/steering/07-ui-boutons.md`). Contrairement au bouton
+#: « Imprimer » du Bulletin_De_Paie (`_BOUTON_IMPRIMER_HTML`, JS pur sans
+#: retour Python), le bouton « Supprimer le brouillon » DOIT rester un
+#: `st.button` natif — son clic déclenche une suppression physique côté
+#: serveur (`supprimer_paie_brouillon`), impossible à exprimer via
+#: `components.v1.html` (aucun canal de retour vers le code Python). Le
+#: CSS ci-dessous cible donc la classe `st-key-<key>` que Streamlit
+#: attribue automatiquement au conteneur d'un widget natif portant un
+#: `key=` explicite — même technique de ciblage que
+#: `fiche_employe_detaillee.py::_CSS_TABLEAU_PAIES` (utilisée là pour
+#: l'alignement, ici pour la couleur), jamais une modification de
+#: `.streamlit/config.toml` (qui ne pilote que primaire/secondaire).
+#: Écart documenté à la Règle UI 07 : la couleur n'est pas codée en dur
+#: sur un `st.button` natif *sans* `key=` scoping — elle est appliquée
+#: exclusivement aux deux boutons destructifs « Supprimer le brouillon »
+#: (`fp_supprimer_brouillon_ouvrir`) / « Supprimer le brouillon »
+#: (`fp_supprimer_brouillon_confirmer`) de cette page, via leurs clés
+#: explicites, jamais globalement. Constante dupliquée dans
+#: `bulletin_paie.py` (même discipline de duplication de petites
+#: constantes qu'entre `tableau_de_bord.py::_LIBELLES_STATUT` et
+#: `fiche_employe_detaillee.py::_LIBELLES_STATUT`) — la portée de chaque
+#: copie est limitée aux clés de son propre module (ici
+#: `fp_supprimer_brouillon*`, jamais `bulletin_supprimer*`).
+_CSS_BOUTON_DANGER = """
+<style>
+div[class*="st-key-fp_supprimer_brouillon"] button {
+    background-color: #b3261e;
+    color: #FFFFFF;
+    border: 1px solid #b3261e;
+}
+div[class*="st-key-fp_supprimer_brouillon"] button:hover {
+    background-color: #8c1d17;
+    border-color: #8c1d17;
+    color: #FFFFFF;
+}
+</style>
+"""
+
 from payroll_engine.register import (
     chemin_bd_production,
     inserer_paie,
     lire_cumuls_ytd,
     lire_paie,
     remplacer_paie,
+    supprimer_paie_brouillon,
 )
 
 
@@ -239,6 +286,81 @@ def _afficher_paie_assemblee(resultat: PayrollResult) -> None:
         st.write(f"Net : {resultat.cumuls_fin.net}")
 
 
+def _afficher_bouton_supprimer_brouillon(
+    id_paie_brouillon_precharge: str | None, paie_brouillon: PayrollResult | None
+) -> bool:
+    """Condition d'affichage du bouton « Supprimer le brouillon » (Req 3.1, 3.2).
+
+    Extraite en fonction pure et testable (design §Correctness Properties,
+    Property 2 : « le bouton est affiché si et seulement si le statut de
+    la paie chargée est BROUILLON ») — comportement strictement identique
+    à l'expression en ligne précédemment inlinée dans
+    `_section_nouvelle_paie`. Retourne `True` uniquement si un `id_paie`
+    de brouillon a été effectivement transmis (`id_paie_brouillon_
+    precharge` non vide) ET que la paie relue existe ET que son statut
+    relu est `BROUILLON` — cas défensif d'une paie déjà `EMISE` atteinte
+    par ce même mécanisme de pré-remplissage, qui ne doit jamais afficher
+    ce bouton (voir §Components #5 du design).
+    """
+    return (
+        bool(id_paie_brouillon_precharge)
+        and paie_brouillon is not None
+        and paie_brouillon.statut == StatutDePaie.BROUILLON
+    )
+
+
+@st.dialog("Supprimer le brouillon ?")
+def _dialogue_confirmation_suppression_brouillon(id_paie: str) -> None:
+    """Popup de confirmation avant `supprimer_paie_brouillon` (destructif).
+
+    Toujours ouverte via le bouton « Supprimer le brouillon » —
+    `st.dialog` bloque le reste de l'interface tant qu'elle est ouverte,
+    garantissant qu'aucune autre action du Formulaire_Paie ne peut être
+    déclenchée pendant la confirmation (Req 3.3).
+
+    Bouton « Supprimer le brouillon » (Bouton_Danger) : invoque
+    `supprimer_paie_brouillon` via `executer_avec_capture` ; une
+    `ErreurDomaineAffichable` (statut ≠ BROUILLON, `id_paie` absent) est
+    affichée via `st.error` sans fermer la popup ni modifier l'état de
+    session (Req 3.6, 3.7) ; en cas de succès, la clé de pré-remplissage
+    du brouillon est retirée de `st.session_state` (aucune référence
+    résiduelle, Req 3.9) avant `st.rerun()`.
+
+    Bouton « Annuler » (style secondaire par défaut, aucun `type=`) :
+    ferme la popup sans jamais invoquer `supprimer_paie_brouillon`
+    (Req 3.5).
+    """
+    st.write("Vous perdrez les dates et les heures saisies dans ce brouillon de paie.")
+    col_confirmer, col_annuler = st.columns(2)
+    with col_confirmer:
+        st.markdown(_CSS_BOUTON_DANGER, unsafe_allow_html=True)
+        if st.button(
+            "Supprimer le brouillon", key="fp_supprimer_brouillon_confirmer"
+        ):
+            resultat = executer_avec_capture(
+                lambda: supprimer_paie_brouillon(
+                    id_paie, chemin_bd=chemin_bd_production()
+                )
+            )
+            if isinstance(resultat, ErreurDomaineAffichable):
+                st.error(f"{resultat.type_exception}: {resultat.message}")
+            else:
+                st.session_state.pop("fp_nouvelle_id_paie_precharge", None)
+                # Req 3.9 (étendue) — le lien HTML « Modifier » du
+                # tableau des Paies transmet `id_paie` par paramètre
+                # d'URL (`st.query_params`), jamais retiré
+                # automatiquement par la navigation : sans ce retrait
+                # explicite, le prochain rendu de `_section_nouvelle_
+                # paie` retenterait `lire_paie` sur ce même `id_paie`
+                # désormais supprimé, réaffichant indéfiniment la même
+                # `KeyError` (bug signalé après démo).
+                st.query_params.pop("id_paie", None)
+                st.rerun()
+    with col_annuler:
+        if st.button("Annuler", key="fp_supprimer_brouillon_annuler"):
+            st.rerun()
+
+
 def _section_nouvelle_paie(
     employes: tuple, annees_disponibles: tuple[int, ...]
 ) -> None:
@@ -269,6 +391,13 @@ def _section_nouvelle_paie(
     # dépendent.
     # ------------------------------------------------------------------
     valeurs_precharge: dict[str, object] | None = None
+    # Bouton « Supprimer le brouillon » (Req 3.1, 3.2) — le bouton n'est
+    # affiché que si la paie effectivement relue ci-dessous a le statut
+    # BROUILLON ; initialisé à `None` ici (plutôt que déduit uniquement
+    # de `id_paie_brouillon_precharge`) pour rester `None` si la
+    # relecture échoue (branche `ErreurDomaineAffichable` ci-dessous) —
+    # cas défensif où le bouton ne doit jamais apparaître.
+    paie_brouillon: PayrollResult | None = None
     # Bug UI signalé après démo : en plus de `st.session_state` (écrit
     # par un bouton Streamlit natif avant `st.switch_page`), l'``id_paie``
     # du brouillon ciblé est désormais aussi accepté via
@@ -291,19 +420,55 @@ def _section_nouvelle_paie(
                 f"{resultat_brouillon.type_exception}: "
                 f"{resultat_brouillon.message}"
             )
+            # Bug signalé après démo : un `id_paie` de brouillon
+            # supprimé (retiré physiquement du Registre) ne doit plus
+            # jamais être re-tenté au rendu suivant. Sans ce nettoyage,
+            # `st.query_params["id_paie"]` (alimenté par le lien HTML
+            # « Modifier » du tableau des Paies, jamais retiré
+            # automatiquement par la navigation) referait échouer
+            # `lire_paie` à chaque rendu ultérieur, réaffichant la même
+            # `KeyError` indéfiniment même après suppression réussie du
+            # brouillon (Req 3.9 — absence de référence résiduelle,
+            # étendue au paramètre d'URL en plus de `st.session_state`).
+            if resultat_brouillon.type_exception == "KeyError":
+                st.query_params.pop("id_paie", None)
         else:
             paie_brouillon, payroll_input_brouillon = resultat_brouillon
             valeurs_precharge = valeurs_effectives_depuis_paie(
                 paie_brouillon, payroll_input_brouillon
             )
+            # `paie_brouillon` reste défini même si son statut relu
+            # n'est pas BROUILLON (cas défensif — voir §Components #5 du
+            # design) : le bouton « Supprimer le brouillon » ci-dessous
+            # vérifie explicitement `paie_brouillon.statut ==
+            # StatutDePaie.BROUILLON` avant de s'afficher (Req 3.2).
             # Message générique ici — le détail sur la restitution ou
             # non des heures (Paie_Post_Correction vs Paie_Pre_
             # Correction) est affiché juste avant les 2 champs d'heures
             # concernés, pour éviter un message dupliqué/contradictoire.
-            st.info(
-                "Formulaire pré-rempli depuis le brouillon "
-                f"'{id_paie_brouillon_precharge}'."
-            )
+            #
+            # Bouton « Supprimer le brouillon » déplacé ici (demande
+            # explicite de l'utilisateur) — directement accolé à ce
+            # message de pré-remplissage, plutôt qu'à côté du bouton
+            # « Assembler la paie » plus loin dans le formulaire.
+            col_message_precharge, col_supprimer_brouillon = st.columns([4, 1])
+            with col_message_precharge:
+                st.info(
+                    "Formulaire pré-rempli depuis le brouillon "
+                    f"'{id_paie_brouillon_precharge}'."
+                )
+            if _afficher_bouton_supprimer_brouillon(
+                id_paie_brouillon_precharge, paie_brouillon
+            ):
+                with col_supprimer_brouillon:
+                    st.markdown(_CSS_BOUTON_DANGER, unsafe_allow_html=True)
+                    if st.button(
+                        "Supprimer le brouillon",
+                        key="fp_supprimer_brouillon_ouvrir",
+                    ):
+                        _dialogue_confirmation_suppression_brouillon(
+                            id_paie_brouillon_precharge
+                        )
 
     # ------------------------------------------------------------------
     # Req 6 — sélection de l'année des paramètres fiscaux. Bug UI
@@ -384,10 +549,23 @@ def _section_nouvelle_paie(
         if employe_id_precharge in options_employes
         else 0
     )
+    # Bug UI signalé après démo : le sélecteur affichait l'identifiant
+    # brut (`EMPnnn`) plutôt qu'un libellé humainement lisible — même
+    # correctif que `fiche_employe_detaillee.py` : un seul appel groupé
+    # à `lister_coordonnees()` (jamais un appel `lire_coordonnees` par
+    # option affichée), et `libelle_employe` (fonction partagée) pour le
+    # `format_func` (Req 1.1, 1.2, 1.3, 1.5).
+    resultat_coordonnees_toutes = executer_avec_capture(lambda: lister_coordonnees())
+    coordonnees_par_employe_id: dict[str, FicheCoordonnees] = (
+        {}
+        if isinstance(resultat_coordonnees_toutes, ErreurDomaineAffichable)
+        else {f.employe_id: f for f in resultat_coordonnees_toutes}
+    )
     employe_id = st.selectbox(
         "Employé",
         options_employes,
         index=index_employe_precharge,
+        format_func=lambda eid: libelle_employe(eid, coordonnees_par_employe_id),
         key="fp_nouvelle_employe_id",
     )
     employe = next(e for e in employes if e.id == employe_id)
@@ -415,16 +593,49 @@ def _section_nouvelle_paie(
             if isinstance(resultat_resumes_pour_periode, ErreurDomaineAffichable)
             else filtrer_par_annee(resultat_resumes_pour_periode, annee_fiscale)
         )
-        numeros_deja_utilises = numeros_periode_disponibles(resumes_pour_periode)
+        # Bug signalé après démo : une paie de statut `REMPLACE_PAR`
+        # (ancienne version invalidée par `remplacer_paie`/`inserer_paie`
+        # lors d'une correction) ou `ANNULEE` ne doit plus jamais compter
+        # comme « période déjà utilisée » pour la suggestion du prochain
+        # numéro — seules `BROUILLON`/`EMISE` (les deux seuls statuts
+        # actifs d'une Paie_Logique, voir `_STATUTS_COLONNE_PAIES` de
+        # `dernieres_paies.py::paies_pour_colonne`, même discipline de
+        # filtrage réutilisée ici) désignent une paie réellement occupant
+        # ce numéro de période. Sans ce filtre, une période dont l'unique
+        # ligne active a été physiquement supprimée (bouton « Supprimer
+        # le brouillon » sur une version de correction `BROUILLON`,
+        # laissant l'ancienne ligne `EMISE` d'origine désormais
+        # `REMPLACE_PAR` sans aucun successeur vivant) restait comptée
+        # comme utilisée, faisant sauter à tort le numéro suggéré.
+        resumes_actifs_pour_periode = tuple(
+            r
+            for r in resumes_pour_periode
+            if r.statut
+            in (StatutDePaie.BROUILLON.value, StatutDePaie.EMISE.value)
+        )
+        numeros_deja_utilises = numeros_periode_disponibles(resumes_actifs_pour_periode)
         numero_periode_defaut = (
             max(numeros_deja_utilises) + 1 if numeros_deja_utilises else 1
         )
+    # Bug signalé après démo : `numero_periode_defaut` doit TOUJOURS
+    # refléter le calcul ci-dessus, jamais une valeur mémorisée par
+    # Streamlit lors d'un rendu antérieur. Un `st.number_input(...,
+    # value=X, key="K")` ne réutilise `value=X` que lors de la toute
+    # première création du widget `K` de cette session ; les rendus
+    # suivants conservent silencieusement l'ancienne valeur de
+    # `st.session_state["K"]`, même si `value=` change entre deux
+    # rendus (ex. après suppression d'un brouillon libérant un numéro
+    # de période antérieur — le formulaire continuait à suggérer
+    # l'ancien numéro + 1, jamais recalculé). Écraser explicitement
+    # `st.session_state[...]` juste avant l'instanciation du widget
+    # force la synchronisation à chaque rendu, quelle que soit la cause
+    # du changement (suppression, insertion, navigation).
+    st.session_state["fp_nouvelle_numero_periode"] = numero_periode_defaut
     numero_periode = st.number_input(
         "Numéro de période",
         min_value=1,
         max_value=nb_periodes_annuelles,
         step=1,
-        value=numero_periode_defaut,
         disabled=True,
         key="fp_nouvelle_numero_periode",
     )
@@ -594,7 +805,17 @@ def _section_nouvelle_paie(
     # ------------------------------------------------------------------
     # Req 10 — assemblage de la paie.
     # ------------------------------------------------------------------
-    if st.button("Assembler la paie", type="primary", key="fp_nouvelle_assembler"):
+    # Req 3.1, 3.2 — bouton « Supprimer le brouillon » (visuel
+    # Bouton_Danger) désormais affiché plus haut, directement accolé au
+    # message « Formulaire pré-rempli depuis le brouillon '...' »
+    # (demande explicite de l'utilisateur — voir bloc de
+    # pré-remplissage ci-dessus), plutôt qu'ici à côté du bouton
+    # « Assembler la paie ».
+    bouton_assembler_clique = st.button(
+        "Assembler la paie", type="primary", key="fp_nouvelle_assembler"
+    )
+
+    if bouton_assembler_clique:
         # Conservé par `_assembler()` (nonlocal) pour transmission à
         # `st.session_state["fp_nouvelle_payroll_input_assemble"]" —
         # préparation pour la tâche 6.5 (persistance du PayrollInput via
@@ -1235,6 +1456,7 @@ def _section_corriger_paie(employes: tuple, annees_disponibles: tuple[int, ...])
         statut_choisi = st.radio(
             "Statut de la nouvelle version",
             ["BROUILLON", "EMISE"],
+            index=1,
             key="fp_corriger_statut_choisi",
         )
         saison = st.text_input(

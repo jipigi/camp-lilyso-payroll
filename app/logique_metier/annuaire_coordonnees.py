@@ -168,3 +168,45 @@ def lire_coordonnees(
         if fiche.employe_id == employe_id:
             return fiche
     return None
+
+
+def libelle_employe(
+    employe_id: str,
+    coordonnees_par_employe_id: dict[str, FicheCoordonnees],
+) -> str:
+    """Formate le libellé d'affichage d'un employé — ``"Prénom Nom (courriel)"``.
+
+    Extraite de l'ancienne closure ``_libelle_employe`` de
+    ``fiche_employe_detaillee.py`` (Req 2.1, 2.2), désormais publique et
+    partagée avec le Formulaire_Paie (Req 1.4) — comportement strictement
+    identique, seule la duplication est éliminée.
+
+    Repli explicite, dans l'ordre :
+
+    1. Aucune ``FicheCoordonnees`` pour ``employe_id`` → retourne
+       ``employe_id`` tel quel (identifiant technique brut).
+    2. ``FicheCoordonnees`` présente mais ``prenom``/``nom`` tous deux
+       absents ou vides une fois assemblés → retourne ``employe_id``.
+    3. ``prenom``/``nom`` disponibles, ``courriel`` absent → retourne
+       ``"Prénom Nom"`` (sans parenthèses).
+    4. ``prenom``/``nom`` et ``courriel`` disponibles → retourne
+       ``"Prénom Nom (courriel)"``.
+
+    Fonction pure — aucune E/S, aucun import ``streamlit`` (cohérent avec
+    le reste de ce module, Req 2.3). ``coordonnees_par_employe_id`` est
+    fourni par l'appelant (résultat d'un seul appel groupé à
+    ``lister_coordonnees()``, jamais un appel ``lire_coordonnees`` par
+    option de sélecteur — même optimisation que le code existant de
+    ``fiche_employe_detaillee.py``, Req 1.5).
+    """
+    fiche = coordonnees_par_employe_id.get(employe_id)
+    if fiche is None:
+        return employe_id
+    nom_complet = " ".join(
+        partie for partie in (fiche.prenom, fiche.nom) if partie
+    ).strip()
+    if not nom_complet:
+        return employe_id
+    if fiche.courriel:
+        return f"{nom_complet} ({fiche.courriel})"
+    return nom_complet

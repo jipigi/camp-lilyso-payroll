@@ -356,3 +356,525 @@ class TestAnneeCouranteSansParametresFiscaux:
         assert str(annee_sans_parametres) in message_erreur
         assert "parameters/" in message_erreur
         charger_parametres_mock.assert_not_called()
+
+
+class TestPreselectionRadioStatut:
+    """Tâche 9.2 — présélection des Radio_Statut_Correction/Radio_Statut_
+    Nouvelle_Paie (Req 6.1, 6.2).
+
+    Vérifie le **câblage** des deux appels `st.radio` distincts du
+    Formulaire_Paie : seul le `Radio_Statut_Correction` de
+    `_section_corriger_paie` (flux « Corriger une paie émise ») doit
+    recevoir `index=1` (présélection `EMISE`, tâche 9.1) ; le
+    `Radio_Statut_Nouvelle_Paie` de `_section_enregistrement` (flux
+    « Nouvelle paie », `cle_prefixe="fp_nouvelle"`) doit continuer à être
+    invoqué sans argument `index` (présélection `BROUILLON` inchangée).
+
+    Règle 04 : l'employé construit ci-dessous (`EMP001`, « Employé Test
+    EMP001 ») est fictif, aucune donnée personnelle réelle.
+    """
+
+    def test_radio_statut_correction_preselectionne_sur_emise(self) -> None:
+        """Le Radio_Statut_Correction du flux « Corriger une paie
+        émise » (`_section_corriger_paie`) est invoqué avec `index=1`
+        (Req 6.1)."""
+        from app.pages_ui.formulaire_paie import _section_corriger_paie
+        from models.payroll_result import PayrollResult
+
+        paie_brouillon, _ = _construire_paie_assemblee(date(2026, 1, 23))
+        # Réutilise le même patron que le code source
+        # (`_section_corriger_paie`, construction de `nouveau_resultat`)
+        # pour obtenir une variante EMISE valide de la paie ciblée.
+        ancienne_paie_emise = PayrollResult(
+            **{
+                **paie_brouillon.model_dump(),
+                "statut": StatutDePaie.EMISE,
+                "date_emission": datetime(2026, 1, 1, 12, 0),
+            }
+        )
+        employe = Employee(
+            id="EMP001",
+            nom_affichage="Employé Test EMP001",
+            date_naissance=date(2000, 1, 1),
+            province_travail=Juridiction.QUEBEC,
+            titre_emploi="Moniteur",
+            taux_horaire_base=Decimal("20.00"),
+            date_embauche=date(2024, 1, 1),
+            date_fin_emploi=None,
+            taux_indemnite_vacances=Decimal("0.04"),
+            exoneration_TP1015_3=False,
+            exoneration_TD1=False,
+            montant_total_TP1015_3=Decimal("0.00"),
+            montant_total_TD1=Decimal("0.00"),
+            retenue_additionnelle_QC=Decimal("0.00"),
+            retenue_additionnelle_federale=Decimal("0.00"),
+        )
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lire_paie",
+            return_value=(ancienne_paie_emise, None),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_coordonnees",
+            side_effect=KeyError("aucune fiche"),
+        ), patch(
+            "app.pages_ui.formulaire_paie.charger_parametres_fusionnes",
+            return_value=_charger_parametres_annee_2026_qc_ca(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_cumuls_ytd",
+            return_value=CumulsYTD.zero(
+                employe_id="EMP001",
+                annee_civile=ancienne_paie_emise.annee_fiscale,
+            ),
+        ):
+            # `fp_corriger_paie_reassemblee` pré-rempli en session pour
+            # atteindre directement le bloc d'affichage du
+            # Radio_Statut_Correction sans dépendre du câblage du
+            # bouton « Réassembler la paie » (`st.button` mocké à
+            # `False`, hors périmètre de cette tâche).
+            st_mock.session_state = {
+                "fp_corriger_ancien_id_actif": ancienne_paie_emise.id_paie,
+                "fp_corriger_paie_reassemblee": paie_brouillon,
+            }
+            st_mock.button.return_value = False
+            st_mock.checkbox.return_value = True
+            st_mock.date_input.return_value = date(2026, 1, 5)
+            st_mock.text_input.return_value = "0.00"
+            st_mock.selectbox.return_value = "0.04"
+
+            _section_corriger_paie(
+                (employe,), (ancienne_paie_emise.annee_fiscale,)
+            )
+
+        st_mock.radio.assert_called_once()
+        radio_call = st_mock.radio.call_args
+        assert radio_call.kwargs.get("index") == 1, (
+            "le Radio_Statut_Correction doit être présélectionné sur "
+            f"EMISE (index=1) ; obtenu {radio_call}"
+        )
+        assert radio_call.kwargs.get("key") == "fp_corriger_statut_choisi"
+
+    def test_radio_statut_nouvelle_paie_reste_preselectionne_sur_brouillon(
+        self,
+    ) -> None:
+        """Le Radio_Statut_Nouvelle_Paie du flux « Nouvelle paie »
+        (`_section_enregistrement`, `cle_prefixe="fp_nouvelle"`) reste
+        invoqué sans argument `index` — présélection `BROUILLON`
+        inchangée (Req 6.2)."""
+        paie_assemblee, date_fin = _construire_paie_assemblee(date(2026, 1, 23))
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lire_paie",
+            side_effect=KeyError("paie introuvable"),
+        ), patch("app.pages_ui.formulaire_paie.inserer_paie"):
+            st_mock.session_state = {}
+            st_mock.radio.return_value = "BROUILLON"
+            st_mock.text_input.return_value = "Été 2026"
+            st_mock.checkbox.return_value = True
+            st_mock.button.return_value = True
+
+            _section_enregistrement(
+                paie_assemblee,
+                paie_assemblee.annee_fiscale,
+                date_fin=date_fin,
+                date_paiement=date_fin,
+                cle_prefixe="fp_nouvelle",
+            )
+
+        st_mock.radio.assert_called_once()
+        radio_call = st_mock.radio.call_args
+        assert "index" not in radio_call.kwargs, (
+            "le Radio_Statut_Nouvelle_Paie ne doit recevoir aucun "
+            f"argument index (comportement existant inchangé) ; obtenu {radio_call}"
+        )
+        assert radio_call.kwargs.get("key") == "fp_nouvelle_statut_choisi"
+
+
+class TestNumeroPeriodeSuggereReflectToujoursLetatCourantDuRegistre:
+    """Bug signalé après démo (suite à la spec
+    ``formulaire-paie-suppression-et-ux``) : après suppression d'un
+    brouillon (ex. période 3), le formulaire de nouvelle paie
+    continuait à suggérer la période 4 plutôt que de recalculer 3 —
+    `st.number_input(..., value=X, key="K")` n'honore `value=X` qu'à la
+    toute première création du widget de cette clé ; les rendus
+    suivants gardaient l'ancienne valeur mémorisée dans
+    `st.session_state["K"]`, quel que soit le nouveau `value=` transmis.
+
+    Le correctif écrase explicitement `st.session_state[
+    "fp_nouvelle_numero_periode"]` avec le numéro recalculé juste avant
+    l'instanciation du widget, à chaque rendu — ce test vérifie que
+    cette écriture reflète bien `max(numeros_deja_utilises) + 1` (ou `1`
+    si aucune paie existante), à la fois quand `st.session_state`
+    contenait déjà une valeur périmée (rendu précédent) et quand elle
+    est absente (premier rendu).
+
+    Règle 04 : l'employé/les résumés de paie construits ci-dessous
+    (`EMP001`) sont fictifs, aucune donnée personnelle réelle.
+    """
+
+    def _executer_section_nouvelle_paie_et_capturer_numero_periode(
+        self, numeros_deja_utilises: tuple[int, ...], valeur_perimee: int | None
+    ) -> int:
+        """Exécute `_section_nouvelle_paie` avec `lire_resumes_paies`
+        mocké pour retourner des résumés portant les `numero_periode`
+        de `numeros_deja_utilises`, et retourne la valeur finale écrite
+        dans `st.session_state["fp_nouvelle_numero_periode"]` juste
+        avant l'appel à `st.number_input` (capturée via
+        `side_effect`)."""
+        from app.logique_metier.dernieres_paies import LignePaieResume
+        from app.pages_ui.formulaire_paie import _section_nouvelle_paie
+
+        annee_fiscale = 2026
+        employe = Employee(
+            id="EMP001",
+            nom_affichage="Employé Test EMP001",
+            date_naissance=date(2000, 1, 1),
+            province_travail=Juridiction.QUEBEC,
+            titre_emploi="Moniteur",
+            taux_horaire_base=Decimal("20.00"),
+            date_embauche=date(2024, 1, 1),
+            date_fin_emploi=None,
+            taux_indemnite_vacances=Decimal("0.04"),
+            exoneration_TP1015_3=False,
+            exoneration_TD1=False,
+            montant_total_TP1015_3=Decimal("0.00"),
+            montant_total_TD1=Decimal("0.00"),
+            retenue_additionnelle_QC=Decimal("0.00"),
+            retenue_additionnelle_federale=Decimal("0.00"),
+        )
+        resumes = tuple(
+            LignePaieResume(
+                id_paie=f"PAIE-EMP001-{annee_fiscale}-{n:02d}-v1",
+                numero_periode=n,
+                version=1,
+                # Valeur réelle de l'enum `StatutDePaie.EMISE.value`
+                # ("emise", minuscule) — telle que persistée en base
+                # (`payroll_engine.register`), jamais la valeur littérale
+                # du membre Python (`StatutDePaie.EMISE.name` serait
+                # "EMISE"). Une valeur incorrecte ici masquerait
+                # silencieusement le filtre sur statuts actifs ajouté
+                # par le correctif (bug signalé après démo).
+                statut=StatutDePaie.EMISE.value,
+                net="1000.00",
+                saison="Été 2026",
+                annee_fiscale=annee_fiscale,
+                date_creation="2026-01-01T00:00:00",
+            )
+            for n in numeros_deja_utilises
+        )
+
+        session_state: dict[str, object] = {}
+        if valeur_perimee is not None:
+            session_state["fp_nouvelle_numero_periode"] = valeur_perimee
+
+        numeros_periode_captures: list[int] = []
+
+        def _capturer_numero_periode(*_args: object, **_kwargs: object) -> int:
+            numeros_periode_captures.append(
+                session_state["fp_nouvelle_numero_periode"]
+            )
+            return session_state["fp_nouvelle_numero_periode"]
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lister_annees_disponibles",
+            return_value=(annee_fiscale,),
+        ), patch(
+            "app.pages_ui.formulaire_paie.charger_parametres_fusionnes",
+            return_value=_charger_parametres_annee_2026_qc_ca(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lister_coordonnees",
+            return_value=(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_resumes_paies",
+            return_value=resumes,
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_cumuls_ytd"
+        ):
+            st_mock.session_state = session_state
+            st_mock.query_params = {}
+
+            def _selectbox_side_effect(
+                libelle: str, options: object, *_args: object, **_kwargs: object
+            ) -> object:
+                # Distingue le sélecteur d'année (options = annees
+                # disponibles, valeur = `annee_fiscale`) du sélecteur
+                # d'employé (options = liste d'`employe_id`, valeur =
+                # premier employé) — un unique `return_value` renverrait
+                # à tort `annee_fiscale` pour les deux appels.
+                if libelle.startswith("Année"):
+                    return annee_fiscale
+                return employe.id
+
+            st_mock.selectbox.side_effect = _selectbox_side_effect
+            st_mock.number_input.side_effect = _capturer_numero_periode
+            st_mock.text_input.return_value = "0.00"
+            st_mock.checkbox.return_value = False
+            st_mock.date_input.return_value = None
+            st_mock.button.return_value = False
+            st_mock.columns.side_effect = lambda spec: tuple(
+                st_mock.__class__() for _ in (spec if isinstance(spec, list) else range(spec))
+            )
+
+            _section_nouvelle_paie((employe,), (annee_fiscale,))
+
+        assert numeros_periode_captures, (
+            "`st.number_input` doit avoir été invoqué pour le champ "
+            "« Numéro de période »."
+        )
+        return numeros_periode_captures[0]
+
+    def test_recalcule_le_numero_suggere_meme_si_session_state_contient_une_valeur_perimee(
+        self,
+    ) -> None:
+        """Périodes 1 et 2 déjà en BD (le brouillon de la période 3 a
+        été supprimé) : le numéro suggéré doit être 3, même si
+        `st.session_state["fp_nouvelle_numero_periode"]` contient
+        encore la valeur périmée `4` d'un rendu précédent (avant
+        suppression du brouillon 3)."""
+        numero_suggere = self._executer_section_nouvelle_paie_et_capturer_numero_periode(
+            numeros_deja_utilises=(1, 2), valeur_perimee=4
+        )
+        assert numero_suggere == 3, (
+            "le numéro de période suggéré doit toujours refléter "
+            "`max(numeros_deja_utilises) + 1` recalculé à partir de "
+            f"l'état courant du Registre, obtenu {numero_suggere!r}, "
+            "attendu 3 (périodes 1 et 2 existantes, brouillon 3 "
+            "supprimé)."
+        )
+
+    def test_premier_rendu_sans_valeur_perimee_suggere_egalement_le_bon_numero(
+        self,
+    ) -> None:
+        """Premier rendu (aucune valeur préexistante dans
+        `st.session_state`) : le numéro suggéré est également
+        `max(numeros_deja_utilises) + 1`."""
+        numero_suggere = self._executer_section_nouvelle_paie_et_capturer_numero_periode(
+            numeros_deja_utilises=(1, 2), valeur_perimee=None
+        )
+        assert numero_suggere == 3
+
+    def test_aucune_paie_existante_suggere_la_periode_1(self) -> None:
+        """Aucune paie existante pour cet employé/année : le numéro
+        suggéré est `1`, même si `st.session_state` contient une valeur
+        périmée d'un rendu précédent pour un autre employé."""
+        numero_suggere = self._executer_section_nouvelle_paie_et_capturer_numero_periode(
+            numeros_deja_utilises=(), valeur_perimee=5
+        )
+        assert numero_suggere == 1
+
+    def _executer_avec_resumes_explicites(
+        self, resumes: tuple, valeur_perimee: int | None
+    ) -> int:
+        """Variante de l'helper ci-dessus acceptant directement un tuple
+        de `LignePaieResume` (plutôt qu'une liste de `numero_periode`
+        tous `EMISE`) — nécessaire pour simuler des statuts mixtes
+        (`REMPLACE_PAR`, `ANNULEE`) sur une même période."""
+        from app.pages_ui.formulaire_paie import _section_nouvelle_paie
+
+        annee_fiscale = 2026
+        employe = Employee(
+            id="EMP001",
+            nom_affichage="Employé Test EMP001",
+            date_naissance=date(2000, 1, 1),
+            province_travail=Juridiction.QUEBEC,
+            titre_emploi="Moniteur",
+            taux_horaire_base=Decimal("20.00"),
+            date_embauche=date(2024, 1, 1),
+            date_fin_emploi=None,
+            taux_indemnite_vacances=Decimal("0.04"),
+            exoneration_TP1015_3=False,
+            exoneration_TD1=False,
+            montant_total_TP1015_3=Decimal("0.00"),
+            montant_total_TD1=Decimal("0.00"),
+            retenue_additionnelle_QC=Decimal("0.00"),
+            retenue_additionnelle_federale=Decimal("0.00"),
+        )
+
+        session_state: dict[str, object] = {}
+        if valeur_perimee is not None:
+            session_state["fp_nouvelle_numero_periode"] = valeur_perimee
+
+        numeros_periode_captures: list[int] = []
+
+        def _capturer_numero_periode(*_args: object, **_kwargs: object) -> int:
+            numeros_periode_captures.append(
+                session_state["fp_nouvelle_numero_periode"]
+            )
+            return session_state["fp_nouvelle_numero_periode"]
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lister_annees_disponibles",
+            return_value=(annee_fiscale,),
+        ), patch(
+            "app.pages_ui.formulaire_paie.charger_parametres_fusionnes",
+            return_value=_charger_parametres_annee_2026_qc_ca(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lister_coordonnees",
+            return_value=(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_resumes_paies",
+            return_value=resumes,
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_cumuls_ytd"
+        ):
+            st_mock.session_state = session_state
+            st_mock.query_params = {}
+
+            def _selectbox_side_effect(
+                libelle: str, options: object, *_args: object, **_kwargs: object
+            ) -> object:
+                if libelle.startswith("Année"):
+                    return annee_fiscale
+                return employe.id
+
+            st_mock.selectbox.side_effect = _selectbox_side_effect
+            st_mock.number_input.side_effect = _capturer_numero_periode
+            st_mock.text_input.return_value = "0.00"
+            st_mock.checkbox.return_value = False
+            st_mock.date_input.return_value = None
+            st_mock.button.return_value = False
+            st_mock.columns.side_effect = lambda spec: tuple(
+                st_mock.__class__() for _ in (spec if isinstance(spec, list) else range(spec))
+            )
+
+            _section_nouvelle_paie((employe,), (annee_fiscale,))
+
+        assert numeros_periode_captures
+        return numeros_periode_captures[0]
+
+    def test_periode_dont_lunique_ligne_active_a_ete_supprimee_naffiche_plus_comme_utilisee(
+        self,
+    ) -> None:
+        """Reproduction exacte du bug signalé après démo : la période 3
+        n'a plus, en base, qu'une ligne `REMPLACE_PAR` orpheline (sa
+        version successeure `BROUILLON` a été supprimée physiquement via
+        « Supprimer le brouillon »). Les périodes 1 et 2 ont chacune une
+        ligne `EMISE` active. Le numéro suggéré doit être `3` — la
+        période 3 ne doit plus jamais compter comme « déjà utilisée »
+        puisqu'aucune de ses lignes n'est dans un statut actif
+        (`BROUILLON`/`EMISE`)."""
+        from app.logique_metier.dernieres_paies import LignePaieResume
+
+        annee_fiscale = 2026
+
+        def _resume(numero_periode: int, statut: str, version: int) -> LignePaieResume:
+            return LignePaieResume(
+                id_paie=f"PAIE-EMP001-{annee_fiscale}-{numero_periode:02d}-v{version}",
+                numero_periode=numero_periode,
+                version=version,
+                statut=statut,
+                net="1000.00",
+                saison="Été 2026",
+                annee_fiscale=annee_fiscale,
+                date_creation="2026-01-01T00:00:00",
+            )
+
+        resumes = (
+            _resume(1, "emise", 1),
+            _resume(2, "emise", 1),
+            # Période 3 : seule ligne restante, `remplace_par` orpheline
+            # (son successeur `v2` a été physiquement supprimé).
+            _resume(3, "remplace_par", 1),
+        )
+
+        numero_suggere = self._executer_avec_resumes_explicites(
+            resumes, valeur_perimee=4
+        )
+        assert numero_suggere == 3, (
+            "une période dont l'unique ligne restante est `REMPLACE_PAR` "
+            "(orpheline, successeur supprimé) ne doit plus être comptée "
+            f"comme utilisée, obtenu {numero_suggere!r}, attendu 3."
+        )
+
+
+class TestNettoyageQueryParamsApresBrouillonSupprime:
+    """Bug signalé après démo : le lien HTML « Modifier » du tableau des
+    Paies transmet l'``id_paie`` du brouillon ciblé via
+    ``st.query_params["id_paie"]`` (jamais retiré automatiquement par la
+    navigation). Une fois ce brouillon supprimé physiquement (bouton
+    « Supprimer le brouillon »), ``st.query_params["id_paie"]``
+    continuait à référencer un ``id_paie`` désormais inexistant,
+    provoquant une `KeyError` affichée en boucle à chaque rendu suivant
+    du formulaire — jamais nettoyée puisque seule la clé de
+    `st.session_state` était retirée. Ce test vérifie que
+    `st.query_params.pop("id_paie", None)` est bien invoqué dès que la
+    relecture du brouillon échoue avec `KeyError` (id_paie absent du
+    Registre), afin que le prochain rendu ne re-tente plus cette
+    lecture.
+
+    Règle 04 : l'``id_paie`` utilisé ci-dessous (``PAIE-EMP001-2026-
+    03-v1``) est fictif, aucune donnée personnelle réelle.
+    """
+
+    def test_key_error_sur_relecture_du_brouillon_retire_id_paie_des_query_params(
+        self,
+    ) -> None:
+        from app.pages_ui.formulaire_paie import _section_nouvelle_paie
+
+        id_paie_supprime = "PAIE-EMP001-2026-03-v1"
+        annee_fiscale = 2026
+        employe = Employee(
+            id="EMP001",
+            nom_affichage="Employé Test EMP001",
+            date_naissance=date(2000, 1, 1),
+            province_travail=Juridiction.QUEBEC,
+            titre_emploi="Moniteur",
+            taux_horaire_base=Decimal("20.00"),
+            date_embauche=date(2024, 1, 1),
+            date_fin_emploi=None,
+            taux_indemnite_vacances=Decimal("0.04"),
+            exoneration_TP1015_3=False,
+            exoneration_TD1=False,
+            montant_total_TP1015_3=Decimal("0.00"),
+            montant_total_TD1=Decimal("0.00"),
+            retenue_additionnelle_QC=Decimal("0.00"),
+            retenue_additionnelle_federale=Decimal("0.00"),
+        )
+        query_params: dict[str, str] = {"id_paie": id_paie_supprime}
+
+        with patch("app.pages_ui.formulaire_paie.st") as st_mock, patch(
+            "app.pages_ui.formulaire_paie.lister_annees_disponibles",
+            return_value=(annee_fiscale,),
+        ), patch(
+            "app.pages_ui.formulaire_paie.charger_parametres_fusionnes",
+            return_value=_charger_parametres_annee_2026_qc_ca(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lister_coordonnees",
+            return_value=(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_resumes_paies",
+            return_value=(),
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_cumuls_ytd"
+        ), patch(
+            "app.pages_ui.formulaire_paie.lire_paie",
+            side_effect=KeyError(f"Aucune paie trouvée pour id_paie={id_paie_supprime!r}."),
+        ):
+            st_mock.session_state = {}
+            st_mock.query_params = query_params
+
+            def _selectbox_side_effect(
+                libelle: str, options: object, *_args: object, **_kwargs: object
+            ) -> object:
+                if libelle.startswith("Année"):
+                    return annee_fiscale
+                return employe.id
+
+            st_mock.selectbox.side_effect = _selectbox_side_effect
+            st_mock.number_input.return_value = 1
+            st_mock.text_input.return_value = "0.00"
+            st_mock.checkbox.return_value = False
+            st_mock.date_input.return_value = None
+            st_mock.button.return_value = False
+            st_mock.columns.side_effect = lambda spec: tuple(
+                st_mock.__class__() for _ in (spec if isinstance(spec, list) else range(spec))
+            )
+
+            _section_nouvelle_paie((employe,), (annee_fiscale,))
+
+        st_mock.error.assert_called_once()
+        assert "id_paie" not in query_params, (
+            "après une `KeyError` sur la relecture du brouillon "
+            "pré-chargé, `st.query_params[\"id_paie\"]` doit être "
+            "retiré pour ne pas re-déclencher la même erreur au rendu "
+            f"suivant, obtenu {query_params!r}."
+        )
